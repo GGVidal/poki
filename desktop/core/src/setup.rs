@@ -388,7 +388,8 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
     let existing = device::install::find_apps(&phone, crate::POKI_BUNDLE_ID).await.unwrap_or_default();
     let upgrade = existing.iter().any(|a| a.bundle_id == built.bundle_id);
     if upgrade {
-        make_sure_poki_is_closed(&phone, opts.close_poki, reporter).await?;
+        let path = existing.iter().find(|a| a.bundle_id == built.bundle_id).and_then(|a| a.path.clone());
+        make_sure_poki_is_closed(&phone, path, opts.close_poki, reporter).await?;
     }
     device::install::install_ipa(&phone, &built.ipa, upgrade, reporter).await?;
 
@@ -462,24 +463,27 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
 /// Before an update replaces Poki: checks it is not running, and closes it when `close` says so.
 /// When the device cannot say what is running (the developer disk image is not mounted, an older
 /// iOS), the update goes on, as it did before this check.
-pub async fn make_sure_poki_is_closed(phone: &Phone, close: bool, reporter: &Reporter) -> Result<()> {
+pub async fn make_sure_poki_is_closed(phone: &Phone, app_path: Option<String>, close: bool, reporter: &Reporter) -> Result<()> {
     reporter.step("close", "Making sure Poki is closed");
     if !matches!(device::ddi::mounted(phone).await, Ok(true)) {
-        let _ = device::ddi::mount(phone, &Reporter::silent()).await;
+        if let Err(e) = device::ddi::mount(phone, &Reporter::silent()).await {
+            tracing::warn!(error = %e, "could not mount the developer disk image before checking for Poki");
+        }
     }
-    match device::running::poki(phone).await {
+    match device::running::poki(phone, app_path.clone()).await {
         Ok(list) if list.is_empty() => {
             reporter.done("close", Some("Poki is not running".into()));
             Ok(())
         }
         Ok(_) if close => {
             reporter.part("close", 0.5, Some("Closing Poki on the device".into()));
-            device::running::close_poki(phone).await?;
+            device::running::close_poki(phone, app_path).await?;
             reporter.done("close", Some("Closed Poki".into()));
             Ok(())
         }
         Ok(_) => Err(Error::PokiRunning("Poki is open on the device. Close it before updating, or let Poki Setup close it.".into())),
         Err(e) => {
+            tracing::warn!(error = %e, "could not check whether Poki is running");
             reporter.note("close", format!("Could not check whether Poki is running ({e}). Updating anyway."));
             reporter.done("close", None);
             Ok(())
@@ -494,7 +498,14 @@ pub async fn poki_running(udid: &str) -> Result<Option<bool>> {
     if !matches!(device::ddi::mounted(&phone).await, Ok(true)) {
         let _ = device::ddi::mount(&phone, &Reporter::silent()).await;
     }
-    Ok(device::running::poki(&phone).await.ok().map(|l| !l.is_empty()))
+    let path = device::install::find_apps(&phone, crate::POKI_BUNDLE_ID).await.ok().and_then(|apps| apps.into_iter().find_map(|a| a.path));
+    match device::running::poki(&phone, path).await {
+        Ok(l) => Ok(Some(!l.is_empty())),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not tell whether Poki is running");
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(feature = "device")]
@@ -526,7 +537,8 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
         let built = sign_for_team(signer, &team, Some((udid, &facts.name)), &ipa, zipp.as_deref(), &out, reporter).await?;
         device::install::install_profiles(&phone, &built.profiles, reporter).await?;
         // A renewal runs by itself, or after the person was asked: it closes Poki first.
-        make_sure_poki_is_closed(&phone, true, reporter).await?;
+        let path = device::install::find_apps(&phone, &rec.bundle_id).await.ok().and_then(|apps| apps.into_iter().find(|a| a.bundle_id == rec.bundle_id).and_then(|a| a.path));
+        make_sure_poki_is_closed(&phone, path, true, reporter).await?;
         device::install::install_ipa(&phone, &built.ipa, true, reporter).await?;
         let apple_id = signer.account.apple_id().unwrap_or("").to_string();
         hand_signing_identity(&phone, &built, &apple_id, reporter).await;

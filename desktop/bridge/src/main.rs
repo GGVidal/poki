@@ -144,7 +144,11 @@ async fn main() {
             let id = req.id;
             let reply = match dispatch(&state, &out, &req.cmd, &req.args).await {
                 Ok(v) => json!({ "id": id, "ok": v }),
-                Err(f) => json!({ "id": id, "err": f }),
+                Err(f) => {
+                    let f = serde_json::to_value(&f).unwrap_or(Value::Null);
+                    tracing::warn!(cmd = %req.cmd, kind = %f["kind"], message = %f["message"], "command failed");
+                    json!({ "id": id, "err": f })
+                }
             };
             out.send(reply);
         });
