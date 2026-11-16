@@ -14,7 +14,7 @@ struct SecuritySettingsView: View {
 
     var body: some View {
         List {
-            ApprovalsSections()
+            SecurityApprovalSections()
 
             Section {
                 NavigationLink { HistoryGate { HistoryPermissionsPage().settingsPage() } } label: {
