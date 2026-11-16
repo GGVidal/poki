@@ -48,6 +48,7 @@ enum Harness {
         if ApprovalClassifier.mode == .reply {
             parts.append("Approvals here are decided from what the owner said in this chat. When a step is refused (declined), do not tell the owner to tap anything: ask them in plain words whether they want that step done, naming the step, and if they say yes, send the same step again.")
         }
+        if BacktapeContext.offered { parts.append(BacktapeContext.brief) }
         if let apps = appIDs(for: task) { parts.append(apps) }
         if !brief.isEmpty { parts.append(brief) }
         return parts.joined(separator: "\n\n")
@@ -65,7 +66,9 @@ enum Harness {
     }
 
     /// Poki's own browser's tools (ESP-145) sit beside the phone's.
-    static let tools: [ToolSpec] = phoneTools + WebTools.specs + [reportPlan, finishTask]
+    /// personal_context is always listed (the loop keeps its tools for its whole life) and answers
+    /// that it is off until the owner turns it on; the instructions name it only when it is on.
+    static let tools: [ToolSpec] = phoneTools + WebTools.specs + [BacktapeContext.spec, reportPlan, finishTask]
 
     /// PokiCore's catalog: look, do and status.
     static let phoneTools: [ToolSpec] = {
