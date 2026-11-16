@@ -35742,6 +35742,326 @@
           }
         }
       }
+    },
+    "Senses" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "感知"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "感知"
+          }
+        }
+      }
+    },
+    "Senses Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "感知设置"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "感知設定"
+          }
+        }
+      }
+    },
+    "Nothing here yet. What Poki and agents do on this iPhone shows up here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这里还没有内容。Poki 和智能体在这台 iPhone 上做的事会显示在这里。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這裡還沒有內容。Poki 和智慧體在這部 iPhone 上做的事會顯示在這裡。"
+          }
+        }
+      }
+    },
+    "Pause Until I Turn It On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂停到我重新打开"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暫停到我重新開啟"
+          }
+        }
+      }
+    },
+    "Security" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全性"
+          }
+        }
+      }
+    },
+    "Which apps Backtape reads and when, its lock, what Poki may ask it and the records are in Security." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倒带读取哪些 App、何时读取、它的锁、Poki 可以问它什么，以及各项记录，都在“安全”里。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倒帶讀取哪些 App、何時讀取、它的鎖、Poki 可以問它什麼，以及各項記錄，都在「安全性」裡。"
+          }
+        }
+      }
+    },
+    "With Backtape on, Poki reads the text of the app in front every few seconds and keeps it on this iPhone. It takes no screenshots, and password fields are left out. Nothing is sent anywhere. With Backtape off, Senses shows only what Poki and agents did." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开倒带后，Poki 每隔几秒读取前台 App 的文字并保存在这台 iPhone 上。不截屏，密码栏会被略过，任何内容都不会发送出去。关闭倒带后，感知只显示 Poki 和智能体做过的事。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開啟倒帶後，Poki 每隔幾秒讀取前景 App 的文字並儲存在這部 iPhone 上。不截圖，密碼欄位會被略過，任何內容都不會傳送出去。關閉倒帶後，感知只顯示 Poki 和智慧體做過的事。"
+          }
+        }
+      }
+    },
+    "Apps Backtape Leaves Out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倒带不读取的 App"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倒帶不讀取的 App"
+          }
+        }
+      }
+    },
+    "Apps Backtape Reads" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倒带读取的 App"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倒帶讀取的 App"
+          }
+        }
+      }
+    },
+    "Records" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "记录"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "記錄"
+          }
+        }
+      }
+    },
+    "The Activity Log lists every step Poki took and every approval. The Observing Record lists when Backtape was on, paused or left an app out." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活动记录列出 Poki 的每一步操作和每一次审批。读取记录列出倒带何时开启、暂停或略过了某个 App。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活動記錄列出 Poki 的每一步操作和每一次審批。讀取記錄列出倒帶何時開啟、暫停或略過了某個 App。"
+          }
+        }
+      }
+    },
+    "How Poki Works" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 如何工作"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 如何運作"
+          }
+        }
+      }
+    },
+    "Safety and Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全与访问"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全與存取"
+          }
+        }
+      }
+    },
+    "This App" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 App"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 App"
+          }
+        }
+      }
+    },
+    "Change it from Poki’s menu. Tap Poki’s picture at the top of the chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Poki 的菜单里更改。轻点聊天顶部的 Poki 头像。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Poki 的選單裡更改。點一下聊天頂端的 Poki 頭像。"
+          }
+        }
+      }
+    },
+    "%@ worked on this iPhone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 操作了这台 iPhone。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 操作了這部 iPhone。"
+          }
+        }
+      }
+    },
+    "%1$@ worked in %2$@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 在%2$@中进行了操作。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 在%2$@中進行了操作。"
+          }
+        }
+      }
+    },
+    "You used %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你使用了%@。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你使用了%@。"
+          }
+        }
+      }
+    },
+    "%1$@ in %2$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 在 %2$@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 在 %2$@"
+          }
+        }
+      }
+    },
+    "%lld more" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另有 %lld 项"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另有 %lld 項"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
