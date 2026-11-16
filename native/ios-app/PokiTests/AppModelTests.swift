@@ -1335,6 +1335,40 @@ final class InProcessPasscodeTests: XCTestCase {
         try XCTUnwrap(image.pngData()).write(to: folder.appendingPathComponent("\(name).png"))
     }
 
+    func testDeclinedPasscodeAfterBootBlocksOpenUntilOwnerTurnsAutomationOffAndOn() async {
+        await openSessionForATask()
+        await standByWhenIdle()
+
+        session.holdNextOpen()
+        model.wakeRunner()
+        await waitFor("the simulator's runner check answered") { ["failed", "running"].contains(self.model.runner.state) }
+        model.runnerChanged(RunnerStatus(state: "running"))
+        await waitFor("the re-authorized open is under way") { self.session.isHoldingOpen }
+        session.setAuthorizationWait(4)
+        model.checkIdle(now: Date().addingTimeInterval(6))
+        XCTAssertTrue(model.passcodeHint)
+        session.answer(["ok": false, "code": "com.apple.dt.XCTest.XCTFuture 1000", "detail": "Timed out while enabling automation mode.", "seconds": 60.0])
+        await waitFor("iOS gave up on the passcode") { !self.model.passcodeHint && !self.model.host.currentRunner.describe.hasPrefix("starting") }
+        XCTAssertTrue(InProcessWDA.automationDeclined)
+
+        let gated = InProcessWDA.openThroughGate { ["ok": true, "generation": 99] }
+        XCTAssertEqual(gated["ok"] as? Bool, false, "A declined 8-hour passcode prompt must block POST /session even after automation started earlier in this boot")
+        XCTAssertEqual(gated["code"] as? String, "passcode_declined")
+
+        let core = PokiCore(config: CoreConfig(), host: model.host, transport: SessionScreenTransport(session: session))
+        let refused = await core.callTool("look", arguments: "{}")
+        XCTAssertTrue(refused.isError, refused.text)
+        XCTAssertTrue(refused.text.contains("owner did not enter the iPhone passcode"), refused.text)
+
+        model.pauseByOwner()
+        XCTAssertTrue(model.ownerPaused)
+        model.wakeRunner()
+        XCTAssertFalse(InProcessWDA.automationDeclined, "Turning Automation off and on must clear the declined passcode lock")
+        await finishPreparing()
+        await waitFor("automation reopens after the owner turns Poki off and on") { self.model.hasOpenInProcessSession }
+        XCTAssertTrue(session.isOpen)
+    }
+
 }
 
 @MainActor

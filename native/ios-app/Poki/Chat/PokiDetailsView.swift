@@ -427,7 +427,7 @@ struct ConnectionView: View {
             chat.stop()
             model.pauseByOwner()
         } else if model.sessionOn {
-            model.wakeRunner()
+            model.wakeRunner(asked: "turned on by the owner", byOwner: true)
         } else {
             model.startSession()
         }
@@ -455,7 +455,7 @@ struct AdvancedSettingsView: View {
                         ForEach(SettingsHome.idleChoices, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     if model.runnerPaused {
-                        Button("Start Now") { model.wakeRunner() }
+                        Button("Start Now") { model.wakeRunner(asked: "Start Now", byOwner: true) }
                     } else {
                         Button("Stop Runner", role: .destructive) { model.pauseRunner() }.disabled(!model.approvals.isEmpty)
                     }
