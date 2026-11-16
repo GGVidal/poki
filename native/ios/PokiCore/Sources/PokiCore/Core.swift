@@ -359,7 +359,7 @@ public final class PokiCore: @unchecked Sendable {
     /// The owner tapped Done on a step the model handed to them (the Live Activity).
     public func handoffDone(id: String) { computer.handoffDone(id: id) }
     /// The step the model handed to the owner that is still waiting, if any.
-    public var handoff: Handoff? { computer.handoff.value.flatMap { $0.done == nil ? $0 : nil } }
+    public var handoff: Handoff? { computer.handoff.active }
 
     public var pendingApproval: Approval? { approvals.pending }
 
@@ -370,11 +370,11 @@ public final class PokiCore: @unchecked Sendable {
     /// is refused.
     public func clearTap(on text: String, inApp bundleID: String?, named name: String?, waiting seconds: Double) async -> TapClearance {
         guard !computer.hasLocalWorkspace else { return .refused("Another task is using Split View.") }
+        guard !computer.handoffWaiting else { return .refused("A step is handed to the owner.") }
         let app = Foreground(bundleID: bundleID, name: name)
         // The approval card is in Poki: a tap there is refused, and the request waiting stays for the owner.
         if config.isPoki(app) { return .refused(CoreConfig.ownAppRefusal) }
-        // Like `do`: a tap withdraws the request still waiting, so two taps never wait side by side.
-        if let pending = approvals.pending { approvals.withdraw(id: pending.id) }
+        approvals.withdrawMismatching(fingerprint: nil, workspaceSession: nil)
         let element = Element(type: "Other", label: text, value: nil, identifier: nil, frame: Rect(x: 0, y: 0, width: 0, height: 0), depth: 0)
         // No readable text: the rules cannot tell what it does, so the owner is asked.
         let unreadable = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

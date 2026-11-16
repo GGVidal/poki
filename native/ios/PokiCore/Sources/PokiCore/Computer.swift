@@ -31,8 +31,8 @@ final class Computer: @unchecked Sendable {
     let config: CoreConfig
     let approvals: Approvals
     let emit: @Sendable (CoreEvent) -> Void
-    /// The step the model handed to the owner (`{handoff: {kind, text}}`), until Done is reported once.
-    let handoff = LockedBox<Handoff?>(nil)
+    /// Explicit state machine for steps handed to the owner (`{handoff: {kind, text}}`).
+    let handoff: HandoffTracker
 
     // Kept between calls; one tool call runs at a time (the gate in PokiCore), so no lock is needed.
     /// The numbers of the latest read. An element that is still there in the next read keeps its
@@ -144,6 +144,7 @@ final class Computer: @unchecked Sendable {
         self.config = config
         self.humanize = Humanize(enabled: config.humanize ?? Humanize.envEnabled)
         self.approvals = approvals
+        self.handoff = HandoffTracker(emit: emit)
         self.memory = config.memory ?? RoutineStore.shared
     }
 
@@ -475,32 +476,17 @@ final class Computer: @unchecked Sendable {
 
     /// The `handoff:` line: a step handed to the owner that is waiting, or just done (reported once).
     func handoffLine(clear: Bool) -> String? {
-        guard let h = handoff.value else { return nil }
-        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-        if let done = h.done {
-            if clear { handoff.value = nil }
-            return "handoff: done at \(f.string(from: done)) (\(h.kind), \(Int(done.timeIntervalSince(h.requested))) s after \"\(h.text.prefix(80))\"); inputs are sent again, go on with the task"
-        }
-        return "handoff: waiting (\(h.kind)) since \(f.string(from: h.requested)) (\(Int(Date().timeIntervalSince(h.requested))) s): \"\(h.text.prefix(80))\"; no input is sent until the owner taps Done on the phone or you send {handoff: false}; keep polling with look, or {wait_until: {handoff_done: true, ms: 10000}}"
+        handoff.apply(.readLine(consumeCompleted: clear, now: Date())).line
     }
 
-    var handoffWaiting: Bool { handoff.value.map { $0.done == nil } ?? false }
+    var handoffWaiting: Bool { handoff.isWaiting }
 
     func handoffDone(id: String) {
-        let ended = handoff.update { r -> Bool in
-            guard var current = r, current.id == id, current.done == nil else { return false }
-            current.done = Date(); r = current; return true
-        }
-        if ended { emit(.handoffEnded(id: id, how: "done")) }
+        handoff.apply(.ownerCompleted(id: id, now: Date()))
     }
 
-    private func endWorkspaceHandoff() {
-        guard hasLocalWorkspace else { return }
-        let ended = handoff.update { current in
-            defer { current = nil }
-            return current?.done == nil ? current?.id : nil
-        }
-        if let ended { emit(.handoffEnded(id: ended, how: "taskEnded")) }
+    private func endHandoff() {
+        handoff.apply(.endTask)
     }
 
     func look(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil) async -> ToolResult {
@@ -716,15 +702,30 @@ final class Computer: @unchecked Sendable {
         clearPaneRead()
     }
 
-    private func approvalFingerprint(_ actions: [JSON]) -> String {
+    private func referencedTargetSignatures(in action: JSON) -> [String] {
+        Self.refs(in: action).sorted().map { n in
+            guard let element = refs[n] else { return "\(n):missing" }
+            return "\(n):\(element.type):\(element.label ?? ""):\(element.identifier ?? "")"
+        }
+    }
+
+    private func approvalFingerprint(_ actions: [JSON], afterPrefix prefix: [JSON] = []) -> String {
         let steps = JSON.array(actions).serialized()
-        return selectedPane.map { "\($0.identity)\n\(steps)" } ?? steps
+        let prefixChangesScreen = prefix.contains { ActionKind($0)?.changesScreen($0) == true }
+        let app = prefixChangesScreen ? "after_change" : "\(lastForeground?.bundleID ?? "")|\(lastForeground?.name ?? "")"
+        let targets = prefixChangesScreen ? "unread" : actions.flatMap(referencedTargetSignatures).joined(separator: "|")
+        let scope = "\(app)\n\(targets)\n\(steps)"
+        return selectedPane.map { "\($0.identity)\n\(scope)" } ?? scope
     }
 
     /// Drop references on an owner stop without a runner request or a visible app switch.
     func forgetTask() {
-        approvals.discardWorkspaceDecisions(session: workspaceOwner.value)
-        endWorkspaceHandoff()
+        if let ws = workspaceOwner.value {
+            approvals.discardWorkspaceDecisions(session: ws)
+        } else {
+            approvals.discardAll()
+        }
+        endHandoff()
         if selectedPane == nil { workspaceOwner.value = nil }
         origin = nil
         workspaceReads.removeAll()
@@ -853,7 +854,7 @@ final class Computer: @unchecked Sendable {
             return ToolResult(text: "not_sent: \(Self.repeatedDrop)",
                               jpeg: nil, isError: true)
         }
-        if !harmless, handoffWaiting, let h = handoff.value {
+        if !harmless, let h = handoff.active {
             var result = await withPicture("not_sent: a step is handed to the owner (\(h.kind): \"\(h.text.prefix(80))\"), so no input is sent until they tap Done on the phone or you send {handoff: false}. Keep polling with look, or {wait_until: {handoff_done: true, ms: 10000}}.", timeout: until - now() - 0.5, isErrorWithoutPicture: false)
             result.waitingForOwner = true
             return result
@@ -911,13 +912,12 @@ final class Computer: @unchecked Sendable {
         let steps = sensitiveSteps(actions)
         let sensitive = firstSensitive(actions)
         let workspaceSession = workspaceOwner.value
-        // Any other actions withdraw a pending request: nothing the automation does can approve it.
-        if let pending = approvals.pending, pending.fingerprint != sensitive.map({ approvalFingerprint(Array(actions[$0.at...])) }) {
-            approvals.withdraw(id: pending.id)
-        }
+        let matchingFingerprint = sensitive.map { approvalFingerprint(Array(actions[$0.at...]), afterPrefix: Array(actions[..<$0.at])) }
+        // Any other actions withdraw an unconsumed request or grant so stale approvals never carry over.
+        approvals.withdrawMismatching(fingerprint: matchingFingerprint, workspaceSession: workspaceSession)
         if let (at, reason) = sensitive {
             let tail = Array(actions[at...])
-            let fingerprint = approvalFingerprint(tail)
+            let fingerprint = matchingFingerprint!
             if approvals.consumeGrant(fingerprint: fingerprint, workspaceSession: workspaceSession) != nil {
                 approvedNote = "approval: approved on the phone (\(reason))"
             } else {
@@ -1129,8 +1129,8 @@ final class Computer: @unchecked Sendable {
     /// Ends the task: the app it began in comes to the front again (the home screen by the Home
     /// button), and nothing is sent when it is in front already. nil when no task was open.
     func returnToOrigin() async -> String? {
+        endHandoff()
         if let selectedPane {
-            endWorkspaceHandoff()
             let exit = await selectPane("auto", session: selectedPane.session, until: now() + 3)
             origin = nil
             if exit != nil {
@@ -1150,6 +1150,7 @@ final class Computer: @unchecked Sendable {
             forgetTask()
             return "finish: the phone stays in its current layout"
         }
+        approvals.discardAll()
         guard let task = origin else { return nil }
         origin = nil
         guard let bundle = task.app.bundleID else { return nil }

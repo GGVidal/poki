@@ -923,6 +923,57 @@ final class ApprovalTests: XCTestCase {
         let email = await core.call("do", ["actions": [["type": "a@b.c", "ref": 1]]])
         XCTAssertFalse(email.isError, email.text)
     }
+
+    func testApprovedGrantDoesNotCarryAcrossScreensOrOtherActions() async throws {
+        let wda = screenWithDelete()
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let firstApproval = try XCTUnwrap(core.pendingApproval)
+        core.resolveApproval(id: firstApproval.id, approved: true)
+
+        wda.source([("Button", "Pay"), ("Button", "Cancel")], app: "Shop")
+        _ = await core.call("look", [:])
+        let onNewScreen = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertTrue(onNewScreen.isError, onNewScreen.text)
+        XCTAssertTrue(onNewScreen.text.contains("approval_required"), onNewScreen.text)
+        XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, "stale grant pressed Pay on another screen")
+
+        let secondApproval = try XCTUnwrap(core.pendingApproval)
+        core.resolveApproval(id: secondApproval.id, approved: true)
+        _ = await core.call("do", ["actions": [["tap": 2]]])
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1)
+
+        let afterOtherAction = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertTrue(afterOtherAction.isError, afterOtherAction.text)
+        XCTAssertTrue(afterOtherAction.text.contains("approval_required"), afterOtherAction.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "intervening action left the earlier grant active")
+    }
+
+    func testEndingAStandardTaskReleasesAnUnfinishedOwnerHandoff() async throws {
+        let wda = FakeWDA()
+        wda.source([("Button", "Continue")], app: "Shop")
+        let (core, _, _) = makeCore(wda)
+        let events = LockedBox<[CoreEvent]>([])
+        Task { for await e in core.events { events.update { $0.append(e) } } }
+        _ = await core.call("look", [:])
+        let handed = await core.call("do", ["actions": [["handoff": ["kind": "password", "text": "Enter account password"]]]])
+        XCTAssertFalse(handed.isError, handed.text)
+        let id = try XCTUnwrap(core.handoff?.id)
+
+        let voiceTap = await core.clearTap(on: "Continue", inApp: "com.example.shop", named: "Shop", waiting: 0.2)
+        XCTAssertFalse(voiceTap.mayTap, "\(voiceTap)")
+
+        _ = await core.finishTask(switching: false)
+        XCTAssertNil(core.handoff, "task end left the unfinished handoff active")
+        let ended = await eventually { events.value.contains(.handoffEnded(id: id, how: "taskEnded")) }
+        XCTAssertTrue(ended, "no handoffEnded event when the task ended")
+
+        let nextTask = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertFalse(nextTask.isError, nextTask.text)
+        XCTAssertFalse(nextTask.text.contains("not_sent: a step is handed to the owner"), nextTask.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1)
+    }
 }
 
 final class MCPTests: XCTestCase {
