@@ -48,11 +48,23 @@ final class LiveCore: CoreSession {
     func setHostTools(_ tools: [HostTool]) { core.setHostTools(tools) }
     func tool(_ name: String, arguments: String) async -> ToolResult { await core.tool(name, arguments: arguments) }
     /// `look`, `do` or `status` for the chat's model loop inside the app.
-    func callTool(_ name: String, arguments: String) async -> PokiCore.ToolAnswer { await core.callTool(name, arguments: arguments) }
+    func callTool(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil) async -> PokiCore.ToolAnswer {
+        await core.callTool(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps)
+    }
     func settle(timeout: Double) async -> Bool { await core.settle(timeout: timeout) }
+    func prepareWorkspace(session: String) async -> Bool { await core.prepareWorkspace(session: session) }
+    func clearWorkspacePaneForSetup(session: String) async -> Bool {
+        await core.clearWorkspacePaneForSetup(session: session)
+    }
+    func workspaceLauncherStep(session: String, request: JSON) async throws -> JSON {
+        try await core.workspaceLauncherStep(session: session, request: request)
+    }
     /// Ends the task: the phone goes back to the app it began in (or, `switching: false`, stays). The
     /// line says what happened.
-    func finishTask(switching: Bool = true) async -> String? { await core.finishTask(switching: switching) }
+    func finishTask(switching: Bool = true, localSession: String? = nil, ifNoLocalWorkspace: Bool = false) async -> String? {
+        await core.finishTask(switching: switching, localSession: localSession, ifNoLocalWorkspace: ifNoLocalWorkspace)
+    }
+    func finishTask(session: String) async -> String? { await core.finishTask(session: session) }
 
     private static func map(_ event: CoreEvent) -> ShellEvent {
         switch event {
@@ -121,16 +133,21 @@ final class AppCoreHost: CoreHost, @unchecked Sendable {
         guard let ask = lock.withLock({ consent }) else { return false }
         return await ask(client, callback, connector)
     }
-    /// PokiCore asks before every device tool. A paused runner is started here, so the call answers
-    /// "starting" and the next one finds it running. A failed one is answered as it is, and the app
-    /// is asked to try again for the next call.
+    /// PokiCore asks as each device tool begins. A paused runner is started here, so the call answers
+    /// "starting" and the next one finds it running. A failed session is opened again for this call,
+    /// which waits for it: the call that heard the failure has already ended without asking.
     func runnerState() -> RunnerState {
         let (state, then) = lock.withLock { () -> (RunnerState, (@Sendable () -> Void)?) in
             guard paused else {
                 // Failed, or still starting: the app is asked to (re)open its session. Opening is
                 // idempotent and the app ignores the ask while an open is under way, so a call that
-                // waits on "starting" can never wait on an open nobody started.
-                if case .failed = runner { return (runner, retry) }
+                // waits on "starting" can never wait on an open nobody started. After the ask the app
+                // sets the state again, so a failure it does not retry (a missed passcode) still
+                // reaches the call.
+                if case .failed = runner, retry != nil {
+                    runner = .starting("opening a new automation session after the last one failed; it takes a few seconds")
+                    return (runner, retry)
+                }
                 if case .starting = runner { return (runner, retry) }
                 return (runner, nil)
             }

@@ -175,10 +175,13 @@ static BOOL SRABI(id target, SEL selector, const char *result, NSArray<NSString 
     id _observed, _token, _enabled;
     uint64_t _generation, _enabledGeneration;
     BOOL _invalidated, _reused, _handlerFired;
+    /// When the enable of Automation Mode under way began (uptime), 0 while none is.
+    NSTimeInterval _enablingSince;
     NSString *_closeDetail, *_rebindDetail;
     /// Signalled by the current session's invalidation handler: close waits on it, not on a clock.
     dispatch_semaphore_t _gone;
     NSMutableSet<NSString *> *_loaded;
+    NSLock *_frameworkLock;
     /// An open of this process's own session still under way: a prepare that gave up waiting for
     /// it leaves it running, and the next prepare waits for the same one instead of starting another.
     dispatch_semaphore_t _opening;
@@ -189,11 +192,18 @@ static BOOL SRABI(id target, SEL selector, const char *result, NSArray<NSString 
     if ((self = [super init])) {
         _prepareLock = [NSLock new]; _lifecycleLock = [NSRecursiveLock new];
         _loaded = [NSMutableSet new];
+        _frameworkLock = [NSLock new];
     }
     return self;
 }
 - (uint64_t)generation {
     [_lifecycleLock lock]; uint64_t value = _generation; [_lifecycleLock unlock]; return value;
+}
+- (double)enablingSeconds {
+    [_lifecycleLock lock];
+    double value = _enablingSince > 0 ? NSProcessInfo.processInfo.systemUptime - _enablingSince : 0;
+    [_lifecycleLock unlock];
+    return value;
 }
 - (BOOL)enableWasReused {
     [_lifecycleLock lock]; BOOL value = _reused; [_lifecycleLock unlock]; return value;
@@ -297,7 +307,12 @@ static NSArray<NSString *> *SRSelectorsWith(Class cls, NSString *part) {
     @try { return [self prepareLocked:error]; }
     @finally { [_prepareLock unlock]; }
 }
-- (id)prepareLocked:(NSError **)error {
+- (BOOL)loadDeveloperFrameworks:(NSError **)error {
+    [_frameworkLock lock];
+    @try { return [self loadDeveloperFrameworksLocked:error]; }
+    @finally { [_frameworkLock unlock]; }
+}
+- (BOOL)loadDeveloperFrameworksLocked:(NSError **)error {
     // Ordered NSArray recovered from 0x100ce91a8 -> 0x100ce7ef0.
     NSArray *paths = @[
         @"/System/Developer/Library/PrivateFrameworks/XCTestSupport.framework/XCTestSupport",
@@ -321,10 +336,14 @@ static NSArray<NSString *> *SRSelectorsWith(Class cls, NSString *part) {
     for (NSString *path in paths) {
         if ([_loaded containsObject:path]) continue;
         if (!dlopen(path.UTF8String, RTLD_NOW | RTLD_GLOBAL)) {
-            SRFail(error, @"developer_framework_unavailable"); return nil;
+            return SRFail(error, @"developer_framework_unavailable");
         }
         [_loaded addObject:path]; // Keep loaded for the lifetime of the process.
     }
+    return YES;
+}
+- (id)prepareLocked:(NSError **)error {
+    if (![self loadDeveloperFrameworks:error]) return nil;
     Class cls = NSClassFromString(@"XCTRunnerDaemonSession");
     if (![cls respondsToSelector:@selector(sharedSessionPromiseAndImplicitlyInitiateSession:)]) {
         SRFail(error, @"session_api_unavailable"); return nil;
@@ -437,7 +456,12 @@ static NSArray<NSString *> *SRSelectorsWith(Class cls, NSString *part) {
     [_lifecycleLock unlock];
     if (!current) { SRFail(error, @"native_session_invalidated"); return nil; }
     if (reused) return session;
-    if (![session enableAutomationModeWithError:error]) return nil;
+    // The one call that waits on the owner: iOS shows its passcode screen from inside it. How long it
+    // has been waiting is the evidence for asking the owner; a slow session open is not.
+    [_lifecycleLock lock]; _enablingSince = NSProcessInfo.processInfo.systemUptime; [_lifecycleLock unlock];
+    BOOL enabledNow = [session enableAutomationModeWithError:error];
+    [_lifecycleLock lock]; _enablingSince = 0; [_lifecycleLock unlock];
+    if (!enabledNow) return nil;
     [_lifecycleLock lock];
     current = _observed == session && _generation == generation && !_invalidated && _token != nil;
     if (current) { _enabled = session; _enabledGeneration = generation; }

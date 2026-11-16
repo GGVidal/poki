@@ -11,6 +11,7 @@ import SwiftUI
 struct ChatView: View {
     @Environment(AppModel.self) private var model
     @Environment(ChatModel.self) private var chat
+    var sharedDraft: Binding<String>? = nil
     /// Opens Poki's card: under Poki's picture over the greeting on the home page (the bottom of the
     /// picture, in global points), under the top bar in the chat (nil).
     var openDetails: (_ under: CGFloat?) -> Void
@@ -35,15 +36,14 @@ struct ChatView: View {
     /// How far Poki's picture rises from the home page into the top bar.
     @State private var flightRise: CGFloat = 0
 
-    /// A tap on Poki, on the home page or in the chat: the bear says hi and Poki's card opens.
+    /// A tap on Poki, on the home page or in the chat: the bear says hi while its menu opens.
     private func tapPoki() {
         pokes += 1
-        openDetails(isGreeting ? homeBottom : nil)
     }
-    /// `-pokiDraft <text>` starts with a message already written, for recordings.
-    @State private var draft = UserDefaults.standard.string(forKey: "pokiDraft") ?? ""
     /// The message field has the keyboard.
     @State private var writing = false
+    @State private var standaloneDraft = ""
+    private var draft: Binding<String> { sharedDraft ?? $standaloneDraft }
     /// Taps on New Conversation on the home page, for the message field (`ComposerInputView.restarts`).
     @State private var restarts = 0
     /// The page's height, for how far your first words rise.
@@ -120,7 +120,7 @@ struct ChatView: View {
             }
             // The home page stays in the tree while the conversation is in front, neither seen nor
             // touched, so a new conversation brings it back on the same animation.
-            HomePage(home: home, writing: writing, rise: flightRise, pick: { model.prepareForTask(); draft = $0; writing = true }) {
+            HomePage(home: home, writing: writing, rise: flightRise, pick: { model.prepareForTask(); draft.wrappedValue = $0; writing = true }) {
                 if home, let update { UpdatePill(version: update, open: openUpdates) }
                 if home, let hint = homeHint {
                     SetupHintLine(hint: hint, openSetupStep: openSetupStep, openSetup: openSetup, openModel: openModel,
@@ -136,14 +136,19 @@ struct ChatView: View {
         .topBar {
             if !bare {
                 ChatTopBar(status: status, home: home, busy: busy, openThreads: openThreads,
-                           newConversation: { if home { restarts += 1 } else { chat.newConversation() } }, openDetails: tapPoki)
+                           newConversation: { if home { restarts += 1 } else { chat.newConversation() } }, openDetails: tapPoki, openModel: openModel)
             }
         }
-        .bottomBar {
+        .bottomBar(softEdge: true) {
             if !bare { VStack(spacing: 8) {
                 asks
-                ComposerInputView(input: $draft, focused: $writing, running: busy, progress: progress, restarts: restarts,
-                                  send: { chat.send($0, attachments: $1) }, stop: chat.stop, openVoice: openVoice, openVoiceKey: openVoiceKey)
+                if chat.waitingForSplitView {
+                    Label(ActivityWords.local("Waiting for Split View"), systemImage: "rectangle.split.2x1")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                ComposerInputView(input: draft, focused: $writing, running: busy, progress: progress, restarts: restarts,
+                                  send: { chat.send($0, attachments: $1) }, stop: chat.stop, openVoice: openVoice, openVoiceKey: openVoiceKey,
+                                  noticeHeight: max(120, pageHeight * 0.6))
             }
             .padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 10)
             .frame(maxWidth: 720) }
@@ -153,7 +158,7 @@ struct ChatView: View {
             GeometryReader { proxy in
                 if !bare {
                     PokiFlight(status: status, home: home, writing: writing, places: anchors.mapValues { proxy[$0] }, pokes: pokes,
-                               tap: tapPoki, landed: { homeBottom = $0 }, travel: { flightRise = $0 })
+                               tap: tapPoki, openModel: openModel, landed: { homeBottom = $0 }, travel: { flightRise = $0 })
                 }
             }
         }
@@ -280,9 +285,10 @@ struct ChatView: View {
 extension View {
     /// The message field's place on the bottom edge: a safe-area bar on iOS 26 (the conversation fades
     /// under it, as under the system's bars), an inset before it.
-    @ViewBuilder func bottomBar<Bar: View>(@ViewBuilder _ bar: () -> Bar) -> some View {
+    @ViewBuilder func bottomBar<Bar: View>(softEdge: Bool = false, @ViewBuilder _ bar: () -> Bar) -> some View {
         if #available(iOS 26.0, *) {
             safeAreaBar(edge: .bottom, spacing: 0) { GlassEffectContainer(spacing: 8) { bar() } }
+                .scrollEdgeEffectStyle(softEdge ? .soft : .automatic, for: .bottom)
         } else {
             safeAreaInset(edge: .bottom, spacing: 0) { bar() }
         }
@@ -684,6 +690,11 @@ struct ChatTranscript<Footer: View>: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(Text("^[\(pictures.count) attachment](inflect: true)"))
                 }
+                if let documents = entry.textDocuments {
+                    ForEach(Array(documents.enumerated()), id: \.offset) { _, document in
+                        ChatTextDocumentChip(document: document)
+                    }
+                }
                 if !text.isEmpty { MessageBubble(direction: .outgoing, text: text, tail: last) }
                 if last, delivered {
                     Text("Delivered").font(.caption2.weight(.medium)).foregroundStyle(Color(.secondaryLabel))
@@ -835,19 +846,24 @@ enum ChatFollow: Equatable {
 /// Back to the newest message, over the bottom of a conversation you have scrolled up in.
 private struct NewestButton: View {
     var action: () -> Void
+    var controlSize = CompactControlMetrics(base: 44, maximum: 52)
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "arrow.down")
                 .font(.body.weight(.semibold))
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                 .foregroundStyle(Color(.label))
-                .frame(width: 40, height: 40)
+                .frame(width: controlSize.side, height: controlSize.side)
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
         .glassSurface(in: Circle(), interactive: true)
         .accessibilityLabel(Text("Newest Messages", tableName: "Chat"))
         .accessibilityIdentifier("chat.latest")
+        .accessibilityShowsLargeContentViewer {
+            Label { Text("Newest Messages", tableName: "Chat") } icon: { Image(systemName: "arrow.down") }
+        }
     }
 }
 
@@ -970,15 +986,18 @@ private struct StepLine: View {
 // licence file). Changed: Poki's picture at the board's 56 pt instead of 20, the 12 pt name with its
 // chevron, no video button, and a view of its own instead of a toolbar item.
 struct MessageListHeader: View {
+    var backSize = CompactControlMetrics(base: 44, maximum: 52)
     var dark: Bool
     /// The model answering, under the name (the chat); nil on the voice page.
     var subtitle: String? = nil
     var title: String = "Poki"
     var back: (() -> Void)? = nil
     var openDetails: () -> Void
+    /// Settings › Models, for the menu's Add Model.
+    var openModel: () -> Void = {}
 
     var body: some View {
-        Button(action: openDetails) {
+        PokiMenu(openModel: openModel, tapped: openDetails) {
             VStack(spacing: 4) {
                 PokiAvatar(size: 56)
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
@@ -1006,11 +1025,17 @@ struct MessageListHeader: View {
         .overlay(alignment: .topLeading) {
             if let back, UserDefaults.standard.string(forKey: "pokiChat") == nil, UserDefaults.standard.string(forKey: "pokiVoiceSample") == nil {
                 Button(action: back) {
-                    Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundStyle(dark ? .white : Site.blue)
-                        .frame(width: 44, height: 44).contentShape(.rect)
+                    Image(systemName: "chevron.backward")
+                        .font(.title3.weight(.semibold))
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .foregroundStyle(dark ? .white : Site.blue)
+                        .frame(width: backSize.side, height: backSize.side).contentShape(.rect)
                 }
                 .buttonStyle(.plain).padding(.leading, 6)
                 .accessibilityLabel(Text("Sessions"))
+                .accessibilityShowsLargeContentViewer {
+                    Label("Sessions", systemImage: "chevron.backward")
+                }
             }
         }
         .background {
@@ -1177,7 +1202,7 @@ struct ModeLabels: View {
 // iMessageClone/MessageList/View/Composer/ComposerInputView.swift, by Stefan Blos; no licence file in
 // the repository), with the plus button in front from exyte/Chat (commit f382a14,
 // Sources/ExyteChat/Views/InputView/InputView.swift, Copyright (c) 2019 exyte, MIT License). Now one
-// row on one sheet of glass (the owner's home of 2026-11-12, boards 定稿 04 and 06): the plus menu, the
+// row on one sheet of glass: the plus menu, the
 // message, the microphone when Settings › Voice shows it, and one button that talks, sends or stops;
 // the photos and PDFs picked for the message stand over it.
 struct ComposerInputView: View {
@@ -1199,6 +1224,9 @@ struct ComposerInputView: View {
     var openVoice: () -> Void
     /// Settings, where the OpenAI key that Talk with Poki needs is added (or Live Voice turned on).
     var openVoiceKey: () -> Void = {}
+    /// Leave conversation context above a long voice notice; its content remains scrollable.
+    var noticeHeight: CGFloat = 360
+    @State private var voiceContentHeight: CGFloat = 0
     @State private var dictation = FieldDictation()
     /// Talk with Poki was asked for with no voice key: the field says so, in its own place.
     @State private var needsKey = false
@@ -1220,6 +1248,22 @@ struct ComposerInputView: View {
     /// A swipe down that started on a message scrolled away from its first line: it scrolls the message.
     @State private var swipeScrolls: Bool?
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .body) private var scaledButtonDiameter = 44.0
+    @ScaledMetric(relativeTo: .body) private var scaledControlInset = 6.0
+    @ScaledMetric(relativeTo: .body) private var scaledControlSpacing = 8.0
+    @ScaledMetric(relativeTo: .body) private var fieldHeight = 112.0
+
+    private var buttonDiameter: CGFloat { min(56, max(36, scaledButtonDiameter)) }
+    private var buttonHitSide: CGFloat { max(44, buttonDiameter) }
+    private var controlInset: CGFloat { min(8, max(4, scaledControlInset)) }
+    private var controlSpacing: CGFloat { min(12, max(6, scaledControlSpacing)) }
+    private var cornerRadius: CGFloat {
+        let radius = (buttonHitSide + 2 * controlInset) / 2
+        return expanded ? min(24, radius) : radius
+    }
+    private var expanded: Bool { typeSize >= .xxxLarge }
 
     private var voice: VoiceModel { model.voice }
     private var hasText: Bool { !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -1240,44 +1284,54 @@ struct ComposerInputView: View {
             }
             // One row on one glass sheet (ESP-376): plus, the message, and the one button that talks,
             // sends or stops. The buttons inside are plain fills: no glass on glass.
-            HStack(alignment: .bottom, spacing: 10) {
-                if let talk = voice.talkState {
-                    TalkBar(state: talk, since: talkStarted, muted: voice.muted, toggleMute: { voice.muted.toggle() },
-                            interrupt: voice.stopTalking, end: voice.stop,
-                            retry: { voice.dismissProblem(); openVoice() }, dismiss: voice.dismissProblem)
-                        .transition(.blurReplace)
-                } else if needsKey {
-                    // In the field's own place and on its glass, as the talk's bar is: nothing floats
-                    // over the field or slides out from behind it.
-                    VoiceKeyNotice(addKey: { needsKey = false; openVoiceKey() }, close: { needsKey = false })
-                        .transition(.blurReplace)
-                } else {
-                Group {
-                plus
-                // An app's name in the message shows as its capsule (ESP-377); the text itself stays plain.
-                CapsuleField(text: $input, focused: $focused, maxLines: 6, scroll: fieldScroll,
-                             onSwipe: { up in if up { focused = true } else if focused { focused = false } }, onSubmit: submit)
-                    .overlay(alignment: .topLeading) {
-                        if input.isEmpty {
-                            Text(dictation.on ? "Listening…" : attachments.isEmpty ? "Message Poki" : "Add a message")
-                                .foregroundStyle(Tint.homePlaceholder).lineLimit(1)
-                                .padding(.top, 6).allowsHitTesting(false).accessibilityHidden(true)
+            Group {
+                if voice.talkState != nil || needsKey {
+                    ScrollView {
+                        Group {
+                            if let talk = voice.talkState {
+                                TalkBar(state: talk, since: talkStarted, muted: voice.muted, toggleMute: { voice.muted.toggle() },
+                                        interrupt: voice.stopTalking, end: voice.stop,
+                                        retry: { voice.dismissProblem(); openVoice() }, dismiss: voice.dismissProblem)
+                            } else {
+                                VoiceKeyNotice(addKey: { needsKey = false; openVoiceKey() }, close: { needsKey = false })
+                            }
                         }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { voiceContentHeight = $0 }
                     }
-                    .frame(minHeight: 48)
-                if dictation.on { dictating } else if dictationButton, !running { microphone }
-                mainButton
-                }
-                .transition(.blurReplace)
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(height: min(voiceContentHeight, noticeHeight))
+                    .transition(.blurReplace)
+                } else {
+                    ComposerLayout(expansion: expanded ? 1 : 0, spacing: controlSpacing) {
+                        plus
+                        // An app's name in the message shows as its capsule (ESP-377); the text itself stays plain.
+                        CapsuleField(text: $input, focused: $focused, maxLines: 6, maxHeight: min(200, fieldHeight), scroll: fieldScroll,
+                                     onSwipe: { up in if up { focused = true } else if focused { focused = false } }, onSubmit: submit)
+                            .overlay(alignment: .topLeading) {
+                                if input.isEmpty {
+                                    Text(dictation.on ? "Listening…" : attachments.isEmpty ? "Message Poki" : "Add a message")
+                                        .foregroundStyle(Tint.homePlaceholder).lineLimit(1)
+                                        .padding(.top, 6).allowsHitTesting(false).accessibilityHidden(true)
+                                }
+                            }
+                            .padding(.horizontal, expanded ? 8 : 0)
+                            .accessibilitySortPriority(1)
+                        HStack(spacing: 4) {
+                            if dictation.on { dictating } else if dictationButton, !running { microphone }
+                            mainButton
+                        }
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                    }
+                    .simultaneousGesture(swipe)
+                    .transition(.blurReplace)
                 }
             }
-            .padding(8)
+            .padding(controlInset)
             .contentShape(.rect)
             .onTapGesture { if voice.talkState == nil, !needsKey { focused = true } }
-            .simultaneousGesture(swipe)
-            .glassSurface(in: RoundedRectangle(cornerRadius: 32, style: .continuous), fallback: .bar)
-            // Controls in a bar stop growing where the system's bars do; the message itself grows freely.
-            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+            .glassSurface(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), fallback: .bar)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: expanded)
         }
         .animation(.snappy, value: dictation.on)
         .animation(TalkMotion.enter, value: voice.talkState != nil)
@@ -1324,7 +1378,7 @@ struct ComposerInputView: View {
             picked = []
             Task { await addPhotos(items) }
         }
-        .fileImporter(isPresented: $choosingFiles, allowedContentTypes: [.image, .pdf], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $choosingFiles, allowedContentTypes: AttachmentReader.fileTypes, allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result else { return }
             for url in urls { add { try AttachmentReader.file(url) } }
         }
@@ -1373,8 +1427,8 @@ struct ComposerInputView: View {
         #endif
     }
 
-    /// A swipe up on the message field brings the keyboard, a swipe down puts it away (the owner,
-    /// 2026-11-13), on the home page and in the chat. Only a mostly upright drag of some length counts,
+    /// A swipe up on the message field brings the keyboard, a swipe down puts it away on the home
+    /// page and in the chat. Only a mostly upright drag of some length counts,
     /// so a tap on plus or Send stays a tap and a sideways drag does nothing. It lives on the field
     /// alone, so the conversation above scrolls as before; a swipe down on a long message scrolled
     /// away from its first line scrolls it back instead.
@@ -1398,10 +1452,13 @@ struct ComposerInputView: View {
             Image(systemName: "mic.fill")
                 .font(.body.weight(.medium)).foregroundStyle(Tint.red)
                 .symbolEffect(.pulse, isActive: true)
-                .frame(width: 40, height: 48).contentShape(.rect)
+                .frame(width: buttonHitSide, height: buttonHitSide).contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text("Stop Dictation"))
+        .accessibilityShowsLargeContentViewer {
+            Label("Stop Dictation", systemImage: "mic.fill")
+        }
     }
 
     /// Settings › Voice turned it on: dictation into the field. The words appear in the field; nothing
@@ -1410,12 +1467,15 @@ struct ComposerInputView: View {
         Button { dictation.start(model, after: input) } label: {
             Image(systemName: "mic")
                 .font(.body.weight(.medium)).foregroundStyle(Color(.label))
-                .frame(width: 40, height: 48).contentShape(.rect)
+                .frame(width: buttonHitSide, height: buttonHitSide).contentShape(.rect)
         }
         .buttonStyle(.plain)
         .disabled(voice.isOn)
         .accessibilityLabel(Text("Dictate"))
         .accessibilityIdentifier("composer.dictate")
+        .accessibilityShowsLargeContentViewer {
+            Label("Dictate", systemImage: "mic")
+        }
     }
 
     // MARK: The plus menu
@@ -1437,16 +1497,20 @@ struct ComposerInputView: View {
                 .accessibilityIdentifier("composer.files")
         } label: {
             Image(systemName: "plus")
-                .font(.title3.weight(.medium)).foregroundStyle(Color(.label))
-                .frame(width: 48, height: 48)
+                .font(.title3.weight(.medium)).dynamicTypeSize(...DynamicTypeSize.xxxLarge).foregroundStyle(Color(.label))
+                .frame(width: buttonDiameter, height: buttonDiameter)
                 .background(Color(.label).opacity(scheme == .dark ? 0.16 : 0.12), in: .circle)
-                .contentShape(.circle)
+                .frame(width: buttonHitSide, height: buttonHitSide)
+                .contentShape(.interaction, Rectangle())
         }
         // Photos first, as on the board, though the menu opens upward from the button.
         .menuOrder(.fixed)
         .disabled(attachments.count >= Self.most)
         .accessibilityLabel(Text("Add Photos or Files"))
         .accessibilityIdentifier("composer.plus")
+        .accessibilityShowsLargeContentViewer {
+            Label("Add Photos or Files", systemImage: "plus")
+        }
     }
 
     private func addPhotos(_ items: [PhotosPickerItem]) async {
@@ -1465,8 +1529,12 @@ struct ComposerInputView: View {
         do {
             let item = try read()
             withAnimation(.snappy) { attachments.append(item) }
+        } catch AttachmentReader.Failure.tooLarge {
+            problem = AppLocalization.text(LocalizedStringResource("Text files must be 100 KB or smaller."))
+        } catch AttachmentReader.Failure.invalidUTF8 {
+            problem = AppLocalization.text(LocalizedStringResource("This text file must use UTF-8 encoding."))
         } catch AttachmentReader.Failure.unsupported {
-            problem = AppLocalization.text(LocalizedStringResource("Only photos and PDFs can be added."))
+            problem = AppLocalization.text(LocalizedStringResource("Only images, PDFs, JSON, Markdown, and plain text files can be added."))
         } catch {
             problem = AppLocalization.text(LocalizedStringResource("Couldn’t read this file."))
         }
@@ -1477,7 +1545,7 @@ struct ComposerInputView: View {
     /// as a ring around it.
     private var mainButton: some View {
         Button {
-            // On an empty field: Talk with Poki, at once (the owner, 2026-11-13). Dictation has its own
+            // On an empty field: Talk with Poki at once. Dictation has its own
             // button beside this one. Without a voice key `openVoice` has the field say so.
             if running { stop() } else if canSend { submit() } else { dictation.stop(model); openVoice() }
         } label: {
@@ -1485,7 +1553,7 @@ struct ComposerInputView: View {
                 .font(.body.weight(.semibold))
                 .contentTransition(.symbolEffect(.replace))
                 .foregroundStyle(running ? Tint.onSolid : .white)
-                .frame(width: 48, height: 48)
+                .frame(width: buttonDiameter, height: buttonDiameter)
                 .background(running ? Tint.solid : Tint.blue, in: .circle)
                 .overlay {
                     if running {
@@ -1496,11 +1564,16 @@ struct ComposerInputView: View {
                             .animation(.easeInOut(duration: 0.4), value: progress)
                     }
                 }
-                .contentShape(.circle)
+                .frame(width: buttonHitSide, height: buttonHitSide)
+                .contentShape(.interaction, Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(running ? "Stop" : canSend ? "Send" : "Talk with Poki"))
         .accessibilityIdentifier("composer.main")
+        .accessibilityShowsLargeContentViewer {
+            Label(running ? "Stop" : canSend ? "Send" : "Talk with Poki",
+                  systemImage: running ? "stop.fill" : canSend ? "arrow.up" : "waveform")
+        }
         .contextMenu {
             if !running, hasText {
                 Button("New Line", systemImage: "return") {
@@ -1535,7 +1608,7 @@ struct ComposerInputView: View {
 final class FieldDictation {
     /// The setting (Settings › Voice) that shows the microphone beside Send.
     nonisolated static let buttonKey = "pokiDictationButton"
-    /// Shown unless turned off (the owner, 2026-11-13): the field's main button starts a talk with Poki,
+    /// Shown unless turned off: the field's main button starts a talk with Poki,
     /// so the microphone is the one way to dictate.
     nonisolated static let buttonShown = true
     /// Set once the first launch of the version with this setting has decided it (see `keepButtonForUpgrade`).
@@ -1627,7 +1700,7 @@ struct LiveVoiceTranscript: View {
             let lines = voice.lines
             VStack(spacing: 4) {
                 Label(voice.isOn ? LocalizedStringKey("Talk with Poki") : LocalizedStringKey("Voice conversation"), systemImage: "waveform")
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(ChatColor.secondary)
+                    .font(.caption.weight(.medium)).foregroundStyle(ChatColor.secondary)
                     .padding(.top, 12).padding(.bottom, 4).frame(maxWidth: .infinity)
                 ForEach(Array(lines.enumerated()), id: \.element.id) { i, line in
                     let pending = i == lines.count - 1 && line.role == .you && voice.phase == .hearing

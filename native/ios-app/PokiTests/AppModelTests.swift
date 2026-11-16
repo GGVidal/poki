@@ -18,6 +18,7 @@ final class FakeLauncher: RunnerLauncher, @unchecked Sendable {
 final class FakeAutomation: InProcessAutomation, @unchecked Sendable {
     private let lock = NSLock()
     private var open = false
+    var isOpen: Bool { lock.withLock { open } }
     private var gate: DispatchSemaphore?
     private var heldOpenStarted = false
     private var answer: [String: Any]?
@@ -28,7 +29,6 @@ final class FakeAutomation: InProcessAutomation, @unchecked Sendable {
     var openingTimes: (requested: TimeInterval, ready: TimeInterval) { lock.withLock { (requested, ready) } }
     /// The next open waits until `answer(_:)`.
     func holdNextOpen() { lock.withLock { gate = DispatchSemaphore(value: 0); heldOpenStarted = false } }
-    var isOpen: Bool { lock.withLock { open } }
     var isHoldingOpen: Bool { lock.withLock { gate != nil && heldOpenStarted } }
     /// Lets a held open go on, with this answer instead of opening (nil opens).
     func answer(_ result: [String: Any]?) { lock.withLock { answer = result; gate?.signal(); gate = nil } }
@@ -49,6 +49,10 @@ final class FakeAutomation: InProcessAutomation, @unchecked Sendable {
     }
     func close() -> [String: Any] { lock.withLock { defer { open = false }; return ["closed": open, "generation": 1, "seconds": 0.0] } }
     func pauseAutomation() -> [String: Any] { ["paused": true, "how": "fake"] }
+    /// How long iOS has held its "allow automation" call in the open under way.
+    func setAuthorizationWait(_ seconds: Double) { lock.withLock { authorizationWait = seconds } }
+    private var authorizationWait = 0.0
+    func authorizationWaitSeconds() -> Double { lock.withLock { authorizationWait } }
 }
 
 final class FakePairing: DevicePairing {
@@ -434,6 +438,9 @@ final class InProcessPasscodeTests: XCTestCase {
 
     override func setUp() async throws {
         try XCTSkipUnless(AutomationPath.current == .inProcess, "Poki Runner path")
+        // The open gate is process-wide: a suite that sent Poki to the background before this one
+        // must not leave each open here refused as "open Poki first".
+        InProcessWDA.gate.withLock { $0 = InProcessWDA.OpenGate() }
         saved = (UserDefaults.standard.string(forKey: "relayAddress"), UserDefaults.standard.object(forKey: "relayEnabled"), SetupState.load())
         session = FakeAutomation()
         launcher = FakeLauncher()
@@ -562,6 +569,15 @@ final class InProcessPasscodeTests: XCTestCase {
         session.onPrepare = { opened.fulfill() }
 
         try await activateEntry(entry, window: window, chat: chat)
+        if entry == .send {
+            // The chat has already ended without touching the phone: like any task, it stood by
+            // again at its end, and it never opened automation.
+            await fulfillment(of: [opened], timeout: 0.2)
+            XCTAssertTrue(model.runnerPaused, "a chat that never touched the phone stands by again when it ends")
+            XCTAssertFalse(session.isOpen)
+            XCTAssertFalse(model.hasOpenInProcessSession)
+            return
+        }
         await waitFor("the UI entry resumes prerequisites") { !self.model.runnerPaused }
         guard !model.runnerPaused else {
             await fulfillment(of: [opened], timeout: 0.2)
@@ -817,6 +833,7 @@ final class InProcessPasscodeTests: XCTestCase {
         // On the simulator the launcher is WebDriverAgent on the Mac; its answer comes first.
         await waitFor("the simulator's runner check answered") { ["failed", "running"].contains(self.model.runner.state) }
         model.runnerChanged(RunnerStatus(state: "running"))
+        session.setAuthorizationWait(4)
         model.checkIdle(now: Date().addingTimeInterval(6))
         XCTAssertTrue(model.passcodeHint, "Poki's home asks the owner for the passcode")
         let waiting = model.host.currentRunner.describe
@@ -827,6 +844,73 @@ final class InProcessPasscodeTests: XCTestCase {
         let failed = model.host.currentRunner.describe
         XCTAssertTrue(failed.contains("owner did not enter the iPhone passcode"), failed)
         XCTAssertTrue(failed.contains("the owner turns Poki off and on"), failed)
+
+        // Poki does not ask again by itself, so the next call hears it at once instead of waiting.
+        let core = PokiCore(config: CoreConfig(), host: model.host, transport: SessionScreenTransport(session: session))
+        let started = Date()
+        let look = await core.callTool("look", arguments: "{}")
+        XCTAssertTrue(look.isError, look.text)
+        XCTAssertTrue(look.text.contains("owner did not enter the iPhone passcode"), look.text)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+    }
+
+    /// Issue 347: an open that is only slow (the session, or its first read) is not iOS asking for
+    /// the passcode. Nobody is asked for it until iOS has held its own "allow automation" call.
+    func testASlowOpenAloneAsksForNoPasscode() async {
+        session.holdNextOpen()
+        model.wakeRunner()
+        await waitFor("the simulator's runner check answered") { ["failed", "running"].contains(self.model.runner.state) }
+        model.runnerChanged(RunnerStatus(state: "running"))
+        await waitFor("the open is under way") { self.session.isHoldingOpen }
+        model.checkIdle(now: Date().addingTimeInterval(12))
+        XCTAssertFalse(model.passcodeHint, "a slow open is not a passcode request")
+        XCTAssertFalse(model.host.currentRunner.describe.contains("passcode"), model.host.currentRunner.describe)
+        session.answer(nil)
+        await waitFor("the session opened") { self.model.hasOpenInProcessSession }
+        XCTAssertFalse(model.passcodeHint)
+    }
+
+    /// A session that opened but answers no element tree is a failure the agent reads as such, with
+    /// the reason, and not a ready session.
+    func testAnUnreadableSessionIsReportedAndNotTakenAsOpen() async {
+        session.holdNextOpen()
+        model.wakeRunner()
+        await waitFor("the simulator's runner check answered") { ["failed", "running"].contains(self.model.runner.state) }
+        model.runnerChanged(RunnerStatus(state: "running"))
+        await waitFor("the open is under way") { self.session.isHoldingOpen }
+        session.answer(["ok": false, "code": "session_unreadable", "detail": "accessibility did not load for this session", "seconds": 1.0])
+        await waitFor("the failure is reported") { self.model.host.currentRunner.describe.contains("could not read the screen") }
+        XCTAssertFalse(model.hasOpenInProcessSession)
+        XCTAssertTrue(model.host.currentRunner.describe.contains("accessibility did not load"), model.host.currentRunner.describe)
+    }
+
+    /// A look that waits for the session and hears it cannot read ends there: nothing opens another
+    /// session (and brings the banner back) until the agent calls again. That next call opens a new
+    /// session and reads the screen.
+    func testAFailedOpenEndsTheCallThatWaitedAndTheNextCallReads() async {
+        await prepareWithoutPhoneTask()
+        model.runnerChanged(RunnerStatus(state: "running"))
+        session.holdNextOpen()
+        async let first = model.runTool("look", arguments: "{}")
+        await waitFor("the look's open is under way") { self.session.isHoldingOpen }
+        let reopened = expectation(description: "no session opens after the failed look")
+        reopened.isInverted = true
+        session.onPrepare = { reopened.fulfill() }
+        session.answer(["ok": false, "code": "session_unreadable", "detail": "accessibility did not load for this session", "seconds": 1.0])
+
+        let failed = await first
+        XCTAssertTrue(failed.isError, failed.text)
+        XCTAssertTrue(failed.text.contains("could not read the screen"), failed.text)
+        await fulfillment(of: [reopened], timeout: 1.5)
+        XCTAssertFalse(session.isOpen)
+        XCTAssertFalse(model.hasOpenInProcessSession)
+
+        session.onPrepare = nil
+        let core = PokiCore(config: CoreConfig(), host: model.host, transport: SessionScreenTransport(session: session))
+        let next = await core.callTool("look", arguments: "{}")
+        XCTAssertFalse(next.isError, next.text)
+        XCTAssertTrue(next.text.contains("General"), next.text)
+        XCTAssertTrue(model.hasOpenInProcessSession)
     }
 
     func testSessionStaysOpenDuringTaskAndClosesAfterIdle() async {
@@ -999,12 +1083,16 @@ final class InProcessPasscodeTests: XCTestCase {
 @MainActor
 final class FrontendSubtractionTests: XCTestCase {
     private var savedSetup: SetupState!
+    private var savedLanguage = AppLocalization.system
 
     override func setUp() {
         savedSetup = SetupState.load()
+        savedLanguage = AppLocalization.shared.preference
+        AppLocalization.shared.preference = "en"
     }
 
     override func tearDown() {
+        AppLocalization.shared.preference = savedLanguage
         savedSetup.save()
     }
 
@@ -1208,39 +1296,6 @@ final class FrontendSubtractionTests: XCTestCase {
         let runnerIssue = detailsIssues.first { $0.id == "runner" }
         XCTAssertNotNil(runnerIssue, "#78: PokiDetailsView Issue.current(model) includes the runner failure")
         XCTAssertEqual(runnerIssue?.fix, .setup)
-    }
-}
-
-private final class SessionScreenTransport: HTTPTransport, @unchecked Sendable {
-    private let session: FakeAutomation
-    private let lock = NSLock()
-    private var reads = 0
-    private var firstRead: TimeInterval?
-    var firstReadAt: TimeInterval? { lock.withLock { firstRead } }
-    var screenReads: Int { lock.withLock { reads } }
-    init(session: FakeAutomation) { self.session = session }
-
-    func send(method: String, url: URL, body: Data?, timeout: Double) async throws -> (status: Int, body: Data) {
-        guard session.isOpen else { throw URLError(.cannotConnectToHost) }
-        let path = url.path.replacingOccurrences(of: #"^/session/[^/]+"#, with: "", options: .regularExpression)
-        let value: JSON
-        switch path {
-        case "/session": value = ["sessionId": "fixture-session"]
-        case "/status": value = ["ready": true]
-        case "/wda/locked": value = false
-        case "/wda/screen": value = ["screenSize": ["width": 390, "height": 844]]
-        case "/wda/activeAppInfo": value = ["bundleId": "com.apple.Preferences", "name": "Settings"]
-        case "/screenshot": value = .string("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII=")
-        case "/source":
-            lock.withLock {
-                reads += 1
-                if firstRead == nil { firstRead = ProcessInfo.processInfo.systemUptime }
-            }
-            value = .string(#"<AppiumAUT><XCUIElementTypeApplication name="Settings" label="Settings" x="0" y="0" width="390" height="844"><XCUIElementTypeButton name="General" label="General" x="16" y="100" width="358" height="44" /></XCUIElementTypeApplication></AppiumAUT>"#)
-        default: value = .null
-        }
-        let response: JSON = ["value": value]
-        return (200, response.data())
     }
 }
 

@@ -15,6 +15,8 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @interface SRNativeSession : NSObject
+/// Loads developer frameworks without opening a daemon session or enabling Automation Mode.
+- (BOOL)loadDeveloperFrameworks:(NSError **)error;
 // Call from a worker queue: the upstream promise wait can take 3 seconds.
 - (nullable id)prepare:(NSError **)error;
 - (BOOL)isCurrent:(id)session generation:(uint64_t)generation;
@@ -31,6 +33,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)deviceRebuilt;
 - (uint64_t)generation;
 - (BOOL)enableWasReused;
+/// How long the enable of Automation Mode under way has been waiting, in seconds; 0 while none is.
+/// iOS shows its passcode screen from inside that call, so a long wait here is the owner being asked.
+- (double)enablingSeconds;
 /// Turns Automation Mode (and iOS's banner) off while the session stays open, when this iOS offers a
 /// way; the next prepare turns it on again. Keys: paused, how, selectors (what the session offers).
 - (NSDictionary<NSString *, id> *)pauseAutomation;
