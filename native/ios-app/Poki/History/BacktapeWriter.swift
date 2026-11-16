@@ -31,7 +31,7 @@ enum BacktapeWriter {
     @MainActor
     static func write(_ entries: [HistoryEntry], period: String = "10 minutes") async -> BacktapeNote? {
         // Reads past the time limit keep no text: there is nothing to describe in them.
-        let entries = entries.filter { !$0.text.isEmpty }
+        let entries = entries.filter { !$0.text.isEmpty && $0.gap == nil }
         guard available, !entries.isEmpty else { return nil }
         // The models' windows are small: up to 14 reads spread evenly over the time, the start of
         // each, about 3,000 characters in all.

@@ -12,6 +12,8 @@ struct HistoryEntry: Identifiable, Hashable {
     /// Who did it. nil: the owner, read off the screen. "": Poki, for its own chat. Otherwise the
     /// outside agent Poki worked for (BacktapeActivity).
     var by: String? = nil
+    /// Not a read: a time Backtape was on and could not read, with the reason (a `Status`).
+    var gap: String? = nil
 }
 
 /// One line of the observing record: when reading was on, paused, blocked or left an app out.

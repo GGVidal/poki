@@ -228,7 +228,8 @@ struct HistoryPage: View {
     /// The owner's reads while Backtape is on, and what Poki did either way, newest first.
     private func load() async {
         let kept = capture.enabled ? await HistoryStore.shared.recent() : []
-        let steps = BacktapeActivity.entries()
+        // Poki's steps, and the times Backtape was on with nothing to read through.
+        let steps = BacktapeActivity.entries() + (capture.enabled ? await BacktapeActivity.gaps() : [])
         let entries = steps.isEmpty ? kept : (kept + steps).sorted { $0.at > $1.at }
         layout = BacktapeLayout.build(entries)
         loaded = true
