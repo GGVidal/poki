@@ -13,6 +13,8 @@ struct CapsuleField: UIViewRepresentable {
     /// Whether the message is scrolled away from its first line, for a swipe down on the field: that
     /// swipe scrolls the message back, it does not put the keyboard away.
     var scroll: CapsuleScroll? = nil
+    /// How far the field top sits below the top edge of the composer sheet.
+    var above: CGFloat = 0
     /// An upright swipe on the field itself, true for up. The text view's own drag wins over a SwiftUI
     /// gesture around it while it has the keyboard, so the field reads the swipe itself as well. From
     /// iOS 26 a drag down takes the keyboard with the finger and this is not called for it.
@@ -50,8 +52,11 @@ struct CapsuleField: UIViewRepresentable {
             view.keyboardDismissMode = context.coordinator.mode(view)
             view.alwaysBounceVertical = true
         }
+        context.coordinator.watch(view)
         return view
     }
+
+    static func dismantleUIView(_ view: CapsuleTextView, coordinator: Coordinator) { coordinator.clear() }
 
     func updateUIView(_ view: CapsuleTextView, context: Context) {
         context.coordinator.parent = self
@@ -60,6 +65,7 @@ struct CapsuleField: UIViewRepresentable {
         // A write from outside (a recommendation, dictation, Send emptying the field): render it whole,
         // caret at the end.
         if view.plainText != text { view.setPlain(text) }
+        DispatchQueue.main.async { [coordinator = context.coordinator] in coordinator.rest(view) }
         if focused, !view.isFirstResponder {
             DispatchQueue.main.async { view.becomeFirstResponder() }
         } else if !focused, view.isFirstResponder {
@@ -91,6 +97,8 @@ struct CapsuleField: UIViewRepresentable {
         private var touchDown: CGPoint?
         /// A swipe on the field is under way: interactive dismissal stays as the swipe began until it ends.
         private var dragging = false
+        private weak var lined: UIView?
+        private weak var field: UITextView?
 
         init(parent: CapsuleField) { self.parent = parent }
 
@@ -151,7 +159,10 @@ struct CapsuleField: UIViewRepresentable {
             let start = touchDown.map { root.convert($0, from: nil).y } ?? pan.location(in: root).y
             let stays = startedScrolled || !view.isFirstResponder
             view.keyboardDismissMode = stays ? .none : .interactive
-            guide.keyboardDismissPadding = stays ? 0 : max(0, guide.layoutFrame.minY - start)
+            if !stays {
+                guide.keyboardDismissPadding = max(0, guide.layoutFrame.minY - start)
+                lined = root
+            }
             keyboardTop = guide.layoutFrame.minY
         }
 
@@ -159,20 +170,42 @@ struct CapsuleField: UIViewRepresentable {
             view.isFirstResponder ? .interactive : .none
         }
 
-        /// As the swipe ends: whether the keyboard left its place under it. The line goes back to the
-        /// keyboard's own top for the next drag, the conversation's included, once every recogniser
-        /// has seen this one end.
+        func watch(_ view: CapsuleTextView) {
+            field = view
+            view.onLayout = { [weak self, weak view] in if let view { self?.rest(view) } }
+            NotificationCenter.default.addObserver(self, selector: #selector(keyboardShown), name: UIResponder.keyboardDidShowNotification, object: nil)
+        }
+
+        @objc private func keyboardShown() { if let field { rest(field) } }
+
+        /// Between swipes on iOS 26, keep the window keyboard dismissal line on the top edge of the
+        /// composer sheet while this field holds focus, as Messages does (WWDC23, Keep up with the
+        /// keyboard). Clear the shared window guide when focus leaves this field.
+        func rest(_ view: UITextView) {
+            guard #available(iOS 26.0, *), !dragging else { return }
+            guard view.isFirstResponder, let root = view.window?.rootViewController?.view else { return clear() }
+            let guide = root.keyboardLayoutGuide
+            let line = max(0, guide.layoutFrame.minY - view.convert(view.bounds, to: root).minY + parent.above)
+            if abs(guide.keyboardDismissPadding - line) > 0.5 { guide.keyboardDismissPadding = line }
+            lined = root
+        }
+
+        func clear() {
+            guard #available(iOS 17.0, *) else { return }
+            lined?.keyboardLayoutGuide.keyboardDismissPadding = 0
+            lined = nil
+        }
+
+        /// As the swipe ends: whether the keyboard left its place under it.
         private func keyboardFollowed(_ view: UITextView) -> Bool {
             dragging = false
             DispatchQueue.main.async { [self] in
                 guard !dragging else { return }
                 if #available(iOS 26.0, *) { view.keyboardDismissMode = mode(view) }
+                rest(view)
             }
             guard let keyboardTop, let root = view.window?.rootViewController?.view else { return false }
-            let guide = root.keyboardLayoutGuide
-            let followed = guide.layoutFrame.minY > keyboardTop + 1
-            DispatchQueue.main.async { guide.keyboardDismissPadding = 0 }
-            return followed
+            return root.keyboardLayoutGuide.layoutFrame.minY > keyboardTop + 1
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -209,6 +242,7 @@ struct CapsuleField: UIViewRepresentable {
         func textViewDidEndEditing(_ textView: UITextView) {
             if parent.focused { parent.focused = false }
             if #available(iOS 26.0, *), !dragging { textView.keyboardDismissMode = mode(textView) }
+            clear()
         }
     }
 }
@@ -252,6 +286,13 @@ final class CapsuleTextView: UITextView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("Not implemented") }
+
+    var onLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
+    }
 
     override var keyCommands: [UIKeyCommand]? {
         let newline = UIKeyCommand(input: "\r", modifierFlags: .shift, action: #selector(insertLineBreak))

@@ -1241,6 +1241,8 @@ struct ComposerInputView: View {
     @State private var fieldScroll = CapsuleScroll()
     /// A swipe down that started on a message scrolled away from its first line: it scrolls the message.
     @State private var swipeScrolls: Bool?
+    @State private var fieldTop: CGFloat = 8
+    private static let sheet = "composer.sheet"
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1300,8 +1302,9 @@ struct ComposerInputView: View {
                     ComposerLayout(expansion: expanded ? 1 : 0, spacing: controlSpacing) {
                         plus
                         // An app's name in the message shows as its capsule (ESP-377); the text itself stays plain.
-                        CapsuleField(text: $input, focused: $focused, maxLines: 6, maxHeight: min(200, fieldHeight), scroll: fieldScroll,
+                        CapsuleField(text: $input, focused: $focused, maxLines: 6, maxHeight: min(200, fieldHeight), scroll: fieldScroll, above: fieldTop,
                                      onSwipe: { up in if up { focused = true } else if focused { focused = false } }, onSubmit: submit)
+                            .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .named(Self.sheet)).minY }) { fieldTop = $0 }
                             .overlay(alignment: .topLeading) {
                                 if input.isEmpty {
                                     Text(dictation.on ? "Listening…" : attachments.isEmpty ? "Message Poki" : "Add a message")
@@ -1322,6 +1325,7 @@ struct ComposerInputView: View {
                 }
             }
             .padding(controlInset)
+            .coordinateSpace(.named(Self.sheet))
             .contentShape(.rect)
             .onTapGesture { if voice.talkState == nil, !needsKey { focused = true } }
             .glassSurface(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), fallback: .bar)
