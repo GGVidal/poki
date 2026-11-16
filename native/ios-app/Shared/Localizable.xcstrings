@@ -36062,6 +36062,86 @@
           }
         }
       }
+    },
+    "Not read. This iPhone was not paired." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未读取。这台 iPhone 当时未配对。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未讀取。這部 iPhone 當時未配對。"
+          }
+        }
+      }
+    },
+    "Not read. The local connection was off." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未读取。本地连接当时已断开。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未讀取。本機連線當時已中斷。"
+          }
+        }
+      }
+    },
+    "Part of this time was not read. This iPhone was not paired." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这段时间有一部分未读取。这台 iPhone 当时未配对。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這段時間有一部分未讀取。這部 iPhone 當時未配對。"
+          }
+        }
+      }
+    },
+    "Part of this time was not read. The local connection was off." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这段时间有一部分未读取。本地连接当时已断开。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這段時間有一部分未讀取。本機連線當時已中斷。"
+          }
+        }
+      }
+    },
+    "Not Read" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未读取"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未讀取"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -260,6 +260,7 @@ struct BacktapeIconRow: View {
         let shares = Array(BacktapeApps.shares(span).prefix(limit))
         HStack(spacing: -5) {
             // Poki and the agents that worked in this time come first, round.
+            if span.gap != nil, !span.described { BacktapeGapMark(size: ((small + large) / 2).rounded()) }
             ForEach(Array(span.workers.prefix(2)), id: \.self) { worker in
                 BacktapeWorkerBadge(by: worker, size: ((small + large) / 2).rounded())
                     .zIndex(Double(limit + 1))
@@ -423,7 +424,7 @@ final class BacktapeNotes {
 
     /// Whether a note is still to come for this tile, so its place is held.
     func waiting(_ tile: BacktapeTile) -> Bool {
-        notes[tile.id] == nil && !failed.contains(tile.id) && BacktapeWriter.available
+        notes[tile.id] == nil && !failed.contains(tile.id) && tile.span.described && BacktapeWriter.available
     }
 
     /// History changed (something was forgotten): every note is looked up again.
@@ -435,7 +436,7 @@ final class BacktapeNotes {
     private func next() -> BacktapeTile? {
         let centre = focus ?? Date()
         return wanted.values
-            .filter { notes[$0.id] == nil && !failed.contains($0.id) }
+            .filter { notes[$0.id] == nil && !failed.contains($0.id) && $0.span.described }
             .min { abs($0.start.timeIntervalSince(centre)) < abs($1.start.timeIntervalSince(centre)) }
     }
 

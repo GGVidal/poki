@@ -26,6 +26,28 @@ enum BacktapeActivity {
         return steps.isEmpty ? kept : (kept + steps).sorted { $0.at < $1.at }
     }
 
+    /// Times Backtape was on and could not read because the local connection was down (the owner,
+    /// 2026-11-16: those times belong on the tape, without a summary). One entry for each 10 minutes
+    /// of the last three days, from the Observing Record.
+    static func gaps() async -> [HistoryEntry] {
+        let records = await HistoryStore.shared.records(limit: 3000).reversed().filter { HistoryCapture.Status(rawValue: $0.kind) != nil }
+        let now = Date()
+        let floor = now.addingTimeInterval(-3 * 86_400)
+        var found: [HistoryEntry] = []
+        for (index, record) in records.enumerated() where record.kind == "noConnection" || record.kind == "notPaired" {
+            let last = index + 1 == records.count
+            // The latest record stands only while it is still the state.
+            if last, HistoryCapture.shared.status.rawValue != record.kind { continue }
+            let end = last ? now : min(now, records[index + 1].at)
+            var at = max(record.at, floor)
+            while at < end, found.count < 500 {
+                found.append(HistoryEntry(id: -1_000_000 - Int64(found.count), at: at, app: "", title: "", text: "", gap: record.kind))
+                at = BacktapeZoom.all.end(BacktapeZoom.all.start(at))
+            }
+        }
+        return found
+    }
+
     /// Who worked: Poki for its own chat, or the outside agent by its name.
     static func name(_ by: String) -> String { by.isEmpty ? "Poki" : by }
 }
@@ -39,7 +61,13 @@ extension HistorySpan {
     }
 
     /// Whether any of it is the owner's own use, read off the screen.
-    var owned: Bool { entries.contains { $0.by == nil } }
+    var owned: Bool { entries.contains { $0.by == nil && $0.gap == nil } }
+
+    /// Why nothing was read for some of it, where that happened.
+    var gap: String? { entries.first { $0.gap != nil }?.gap }
+
+    /// Whether there is anything in it a note could be written about.
+    var described: Bool { entries.contains { $0.gap == nil } }
 }
 
 /// A span in plain words, for where no model wrote a note: who worked in which apps.
@@ -74,6 +102,13 @@ enum BacktapeWords {
         }
         let own = apps(span.entries.filter { $0.by == nil })
         if !own.isEmpty { parts.append(String(format: AppLocalization.text("You used %@."), list(own))) }
+        if let gap = span.gap {
+            let whole = !span.described
+            let pairing = gap == "notPaired"
+            parts.append(AppLocalization.text(whole
+                ? (pairing ? "Not read. This iPhone was not paired." : "Not read. The local connection was off.")
+                : (pairing ? "Part of this time was not read. This iPhone was not paired." : "Part of this time was not read. The local connection was off.")))
+        }
         return parts.joined(separator: " ")
     }
 }
@@ -94,6 +129,20 @@ struct BacktapeWorkerBadge: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
         .accessibilityLabel(Text(verbatim: BacktapeActivity.name(by)))
+    }
+}
+
+/// The mark of a time that could not be read.
+struct BacktapeGapMark: View {
+    var size: CGFloat
+
+    var body: some View {
+        Image(systemName: "wifi.slash")
+            .font(.system(size: size * 0.46, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: size, height: size)
+            .background(Color(.tertiarySystemFill), in: Circle())
+            .accessibilityHidden(true)
     }
 }
 
@@ -134,6 +183,7 @@ struct BacktapeDetail: View {
         var end: Date
         var titles: [String]
         var more = 0
+        var gap = false
     }
 
     /// Reads that follow one another in the same app, by the same hand, as one stretch.
@@ -141,7 +191,7 @@ struct BacktapeDetail: View {
         var parts: [Part] = []
         for entry in tile.span.entries.reversed() {
             let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let last = parts.last, last.by == entry.by, last.app.caseInsensitiveCompare(entry.app) == .orderedSame {
+            if let last = parts.last, last.by == entry.by, last.gap == (entry.gap != nil), last.app.caseInsensitiveCompare(entry.app) == .orderedSame {
                 let index = parts.count - 1
                 parts[index].end = entry.at
                 if !title.isEmpty, !parts[index].titles.contains(title) {
@@ -149,13 +199,13 @@ struct BacktapeDetail: View {
                 }
             } else {
                 if !parts.isEmpty { parts[parts.count - 1].end = entry.at }
-                parts.append(Part(id: parts.count, app: entry.app, by: entry.by, start: entry.at, end: entry.at, titles: title.isEmpty ? [] : [title]))
+                parts.append(Part(id: parts.count, app: entry.app, by: entry.by, start: entry.at, end: entry.at, titles: title.isEmpty ? [] : [title], gap: entry.gap != nil))
             }
         }
         // The last stretch runs a few seconds past its last read, never past the block or now.
         if !parts.isEmpty {
             let index = parts.count - 1
-            parts[index].end = min(tile.end, Date(), parts[index].end.addingTimeInterval(8))
+            parts[index].end = min(tile.end, Date(), parts[index].gap ? tile.end : parts[index].end.addingTimeInterval(8))
         }
         return parts
     }
@@ -166,6 +216,7 @@ struct BacktapeDetail: View {
     }
 
     private func name(_ part: Part) -> String {
+        if part.gap { return AppLocalization.text("Not Read") }
         guard let by = part.by else { return BacktapeApps.name(part.app) }
         let who = BacktapeActivity.name(by)
         return part.app.isEmpty ? who : String(format: AppLocalization.text("%1$@ in %2$@"), who, BacktapeApps.name(part.app))
@@ -192,7 +243,7 @@ struct BacktapeDetail: View {
                             let width = max(3, part.end.timeIntervalSince(part.start) / total * geometry.size.width)
                             // Poki's time is the one colour on the strip.
                             Capsule()
-                                .fill(part.by == nil ? Color.primary.opacity(0.34) : Color.accentColor)
+                                .fill(part.gap ? Color.primary.opacity(0.12) : part.by == nil ? Color.primary.opacity(0.34) : Color.accentColor)
                                 .frame(width: min(width, max(3, geometry.size.width - x)))
                                 .offset(x: x)
                         }
@@ -212,7 +263,9 @@ struct BacktapeDetail: View {
             ForEach(parts) { part in
                 HStack(alignment: .top, spacing: 10) {
                     Group {
-                        if part.app.isEmpty, let by = part.by {
+                        if part.gap {
+                            BacktapeGapMark(size: 28)
+                        } else if part.app.isEmpty, let by = part.by {
                             BacktapeWorkerBadge(by: by, size: 28)
                         } else {
                             BacktapeAppIcon(app: part.app, size: 28, order: part.id)

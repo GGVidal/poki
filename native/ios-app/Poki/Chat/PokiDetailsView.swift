@@ -692,7 +692,7 @@ private struct LanguageSettingsView: View {
 /// Poki asks before a sensitive step, and how much your chat model may approve by itself. The way of
 /// asking is chosen from Poki's menu only (the owner: one setting in one place); this says which is in
 /// use and what it does. The sensitivity's four levels are segments in their own order, least asking first.
-struct ApprovalsSections: View {
+struct SecurityApprovalSections: View {
     @Environment(AppModel.self) private var model
     /// The way of asking says itself in one line; Learn More opens the whole of it.
     @State private var more = false
