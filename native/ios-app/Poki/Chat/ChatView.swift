@@ -1241,8 +1241,11 @@ struct ComposerInputView: View {
     /// A file Poki can't read, said for a moment over the message field.
     @State private var problem: String?
     @State private var fieldScroll = CapsuleScroll()
-    /// A swipe down that started on a message scrolled away from its first line: it scrolls the message.
-    @State private var swipeScrolls: Bool?
+    /// As a swipe on the bar began: whether the message was scrolled away from its first line (a swipe
+    /// down then scrolls it back) and whether the field had the keyboard. A swipe that brings the keyboard
+    /// never puts it away: the bar rises with the keyboard, so in the bar's own space the end of that
+    /// swipe reads as a move down.
+    @State private var swipeStart: (scrolled: Bool, focused: Bool)?
     @State private var fieldTop: CGFloat = 8
     private static let sheet = "composer.sheet"
     @Environment(\.colorScheme) private var scheme
@@ -1437,17 +1440,17 @@ struct ComposerInputView: View {
     private var swipe: some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { drag in
-                if swipeScrolls == nil { swipeScrolls = fieldScroll.scrolledDown }
+                if swipeStart == nil { swipeStart = (fieldScroll.scrolledDown, focused) }
                 let (dx, dy) = (drag.translation.width, drag.translation.height)
                 if dy < -12, abs(dy) > abs(dx) * 1.5, !focused { focused = true }
             }
             .onEnded { drag in
-                let scrolled = swipeScrolls ?? false
-                swipeScrolls = nil
+                let start = swipeStart ?? (false, focused)
+                swipeStart = nil
                 let (dx, dy) = (drag.translation.width, drag.predictedEndTranslation.height)
                 guard abs(drag.translation.height) > abs(dx) * 1.5 else { return }
                 if dy < -36, !focused { focused = true }
-                if dy > 36, focused, !scrolled { focused = false }
+                if dy > 36, focused, start.focused, !start.scrolled { focused = false }
             }
     }
 
