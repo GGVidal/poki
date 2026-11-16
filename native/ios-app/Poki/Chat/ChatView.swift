@@ -135,6 +135,8 @@ struct ChatView: View {
             .allowsHitTesting(home)
             .accessibilityHidden(!home)
         }
+        .contentShape(.rect)
+        .gesture(TapGesture().onEnded { writing = false }, isEnabled: writing)
         .opacity(bare ? 0 : 1)
         // The conversation passes under the top bar's floating controls through the system's soft
         // scroll edge (`topBar`), with no line under them.
