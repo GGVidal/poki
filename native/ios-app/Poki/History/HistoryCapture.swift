@@ -104,10 +104,22 @@ final class HistoryCapture: ObservableObject {
     }
 
     /// Screens that sit over the app in front for a moment and say nothing about what the owner did.
-    static let overlays = [
+    nonisolated static let overlays = [
         "com.apple.ScreenshotServicesService", "com.apple.InCallService", "com.apple.CoreAuthUI",
         "com.apple.SharingViewService", "com.apple.PassbookUIService",
     ]
+
+    /// Not an app the owner was using (the owner, 2026-11-16): a process the reader could not name
+    /// ("no app name, pid 11643"), the Home Screen's widgets, and Apple's sheets that belong to no
+    /// app. Never kept, never listed. A nameless process may be an app the owner left out, so it is
+    /// not guessed at either.
+    nonisolated static func isNoise(_ app: String) -> Bool {
+        let low = app.lowercased()
+        if low.isEmpty || low.hasPrefix("no app name") { return true }
+        if low.hasPrefix("com.apple.chrono") || low.contains("widgetrenderer") { return true }
+        if overlays.contains(where: { $0.lowercased() == low }) { return true }
+        return low.hasPrefix("com.apple.") && (low.hasSuffix("uiservice") || low.hasSuffix("viewservice"))
+    }
 
     /// The title a kept notification carries, so the page can tell it from a screen.
     static let bannerTitle = "Notification"
@@ -168,6 +180,7 @@ final class HistoryCapture: ObservableObject {
             Task { @MainActor in self?.tick() }
         }
         prune()
+        HistoryStore.shared.dropNoise()
         evaluate()
     }
 
@@ -307,7 +320,7 @@ final class HistoryCapture: ObservableObject {
         var lines = read
         var tree = (line["tree"] as? [Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }
         // System overlays are not something the owner was doing, so they are never kept.
-        if Self.overlays.contains(where: { $0.caseInsensitiveCompare(app) == .orderedSame }) { return }
+        if Self.isNoise(app) { return }
         if app.caseInsensitiveCompare("com.apple.springboard") == .orderedSame {
             // The Home Screen itself is left out. A notification banner over it is kept once, under
             // the name of the app that sent it.

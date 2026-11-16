@@ -141,14 +141,22 @@ struct HistoryPage: View {
     @State private var loaded = false
     @State private var asking = false
 
+    /// Backtape's tape is behind its lock. With Backtape off the page holds only what Poki did,
+    /// which the Activity Log always showed openly.
+    private var locked: Bool { capture.enabled && !lock.unlocked }
+
     var body: some View {
         Group {
-            // The whole page opens only after Face ID, Touch ID or Poki's PIN.
-            if !lock.unlocked {
+            if locked {
                 BacktapeLockScreen()
             } else if layout.isEmpty {
                 List {
                     if !capture.enabled {
+                        if loaded {
+                            Section {
+                                Text("Nothing here yet. What Poki and agents do on this iPhone shows up here.").foregroundStyle(.secondary)
+                            }
+                        }
                         Section {
                             Button("Turn On Backtape") { asking = true }
                         } footer: {
@@ -164,24 +172,26 @@ struct HistoryPage: View {
                 BacktapeLibrary(layout: layout)
             }
         }
-        .navigationTitle(AppLocalization.text("Backtape"))
+        .navigationTitle(AppLocalization.text("Senses"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if lock.unlocked {
+            if !locked {
                 ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink { HistoryGate { BacktapeSettingsPage().settingsPage() } } label: {
+                    NavigationLink { HistoryGate(whenOff: true) { BacktapeSettingsPage().settingsPage() } } label: {
                         Image(systemName: "slider.horizontal.3")
                     }
-                    .accessibilityLabel(Text("Backtape Settings"))
+                    .accessibilityLabel(Text("Senses Settings"))
                 }
-                // Its own glass, apart from Settings (the owner, 2026-11-15).
-                if #available(iOS 26.0, *) {
-                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                if capture.enabled {
+                    // Its own glass, apart from Settings (the owner, 2026-11-15).
+                    if #available(iOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) { recording }
                 }
-                ToolbarItem(placement: .topBarTrailing) { recording }
             }
         }
-        .task(id: capture.changes) { await load() }
+        .task(id: "\(capture.changes) \(capture.enabled)") { await load() }
         .sensoryFeedback(.impact(weight: .heavy), trigger: capture.isPaused)
         .sensoryFeedback(.impact(weight: .heavy), trigger: capture.enabled)
         .alert("Turn On Backtape", isPresented: $asking) {
@@ -192,33 +202,34 @@ struct HistoryPage: View {
         }
     }
 
-    /// Start, pause and stop, in a menu that opens in place next to the button.
+    /// Pause and resume, in a menu that opens in place next to the button. Backtape itself is
+    /// turned on and off in Senses Settings.
     private var recording: some View {
         Menu {
-            if !capture.enabled {
-                Button { asking = true } label: { Label("Start Recording", systemImage: "record.circle") }
-            } else if capture.isPaused {
+            if capture.isPaused {
                 Button { capture.resume() } label: { Label("Resume Recording", systemImage: "play") }
-                Button(role: .destructive) { capture.enabled = false } label: { Label("Stop Recording", systemImage: "stop") }
             } else {
                 Button { capture.pause(until: Date().addingTimeInterval(3600)) } label: { Label("Pause for 1 Hour", systemImage: "pause") }
                 Button {
                     capture.pause(until: Calendar.current.startOfDay(for: Date().addingTimeInterval(86_400)))
                 } label: { Label("Pause Until Tomorrow", systemImage: "moon") }
-                Button(role: .destructive) { capture.enabled = false } label: { Label("Stop Recording", systemImage: "stop") }
+                Button { capture.pause(until: .distantFuture) } label: { Label("Pause Until I Turn It On", systemImage: "stop") }
             }
         } label: {
-            if capture.enabled, !capture.isPaused {
-                Image(systemName: "pause.fill")
-            } else {
+            if capture.isPaused {
                 Image(systemName: "record.circle").foregroundStyle(.red)
+            } else {
+                Image(systemName: "pause.fill")
             }
         }
         .accessibilityLabel(Text("Recording"))
     }
 
+    /// The owner's reads while Backtape is on, and what Poki did either way, newest first.
     private func load() async {
-        let entries = await HistoryStore.shared.recent()
+        let kept = capture.enabled ? await HistoryStore.shared.recent() : []
+        let steps = BacktapeActivity.entries()
+        let entries = steps.isEmpty ? kept : (kept + steps).sorted { $0.at > $1.at }
         layout = BacktapeLayout.build(entries)
         loaded = true
     }
@@ -291,22 +302,13 @@ private struct BacktapeSummarySection: View {
     }
 }
 
-/// Everything that sets Backtape up, on a page of its own: the switch, pause, access times, apps,
-/// how long tape is kept, the reminder, the lock and the record.
+/// Senses Settings: Backtape as a switch (the owner, 2026-11-16), pause, how long tape is kept, who
+/// writes the notes and the storage. Apps, access times, the lock and the records are in Security.
 struct BacktapeSettingsPage: View {
     @ObservedObject private var capture = HistoryCapture.shared
     @State private var size: (entries: Int, bytes: Int64) = (0, 0)
     @State private var asking = false
     @State private var clearing = false
-
-    private func time(_ minutes: Binding<Int>) -> Binding<Date> {
-        Binding(get: {
-            Calendar.current.date(bySettingHour: minutes.wrappedValue / 60, minute: minutes.wrappedValue % 60, second: 0, of: Date()) ?? Date()
-        }, set: { date in
-            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
-            minutes.wrappedValue = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
-        })
-    }
 
     var body: some View {
         List {
@@ -329,43 +331,7 @@ struct BacktapeSettingsPage: View {
                     }
                 }
             } footer: {
-                Text("Poki reads the text of the app in front every few seconds and keeps it on this iPhone. It takes no screenshots, and password fields are left out. Nothing is sent anywhere. Turning the local connection off stops it completely.")
-            }
-            Section {
-                Toggle("Read Only at Set Times", isOn: $capture.scheduleOn)
-                if capture.scheduleOn {
-                    let symbols = Calendar.current.veryShortWeekdaySymbols
-                    HStack(spacing: 0) {
-                        ForEach(1...7, id: \.self) { day in
-                            let on = capture.weekdays.contains(day)
-                            Button {
-                                if on { capture.weekdays.removeAll { $0 == day } } else { capture.weekdays = (capture.weekdays + [day]).sorted() }
-                            } label: {
-                                Text(verbatim: symbols.indices.contains(day - 1) ? symbols[day - 1] : "\(day)")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(on ? Color.white : Color.secondary)
-                                    .frame(width: 36, height: 36)
-                                    .background(Circle().fill(on ? Color.accentColor : Color(.tertiarySystemFill)))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                    DatePicker("From", selection: time($capture.startMinute), displayedComponents: .hourAndMinute)
-                    DatePicker("Until", selection: time($capture.endMinute), displayedComponents: .hourAndMinute)
-                }
-            } header: {
-                Text("Access Times")
-            } footer: {
-                Text("Outside these times nothing is read.")
-            }
-            Section {
-                NavigationLink { HistoryGate { HistoryPermissionsPage().settingsPage() } } label: {
-                    LabeledContent("Permissions") {
-                        Text(LocalizedStringKey(capture.listMode == .exclude ? "Exclude These Apps" : "Include Only These Apps"))
-                    }
-                }
+                Text("With Backtape on, Poki reads the text of the app in front every few seconds and keeps it on this iPhone. It takes no screenshots, and password fields are left out. Nothing is sent anywhere. With Backtape off, Senses shows only what Poki and agents did.")
             }
             Section {
                 Picker("Keep History For", selection: $capture.retentionDays) {
@@ -403,13 +369,11 @@ struct BacktapeSettingsPage: View {
                 Text("Up to two ideas from your recent tape can join the suggestions on the home page. They are made on this iPhone, only when clearly useful, and leave out anything private. They show without unlocking Backtape.")
             }
             Section {
-                Toggle("Poki Can Ask Backtape", isOn: $capture.agentAsks)
+                NavigationLink(value: DetailsRoute.approvals) { Text("Security") }
             } footer: {
-                Text("During a task, Poki can ask what you recently did. A model on this iPhone writes a short answer and decides whether you must approve it before it goes to the model Poki runs on. Your screen text never leaves this iPhone. Each answer is listed in Observing Record.")
+                Text("Which apps Backtape reads and when, its lock, what Poki may ask it and the records are in Security.")
             }
             Section {
-                NavigationLink { HistoryGate { HistoryLockSettings().settingsPage() } } label: { Text("Backtape Lock") }
-                NavigationLink { HistoryGate { HistoryRecordPage().settingsPage() } } label: { Text("Observing Record") }
                 LabeledContent("Storage Used") {
                     Text(verbatim: "\(ByteCountFormatter.string(fromByteCount: size.bytes, countStyle: .file))")
                 }
@@ -419,7 +383,7 @@ struct BacktapeSettingsPage: View {
                 Button("Clear History", role: .destructive) { clearing = true }.disabled(size.entries == 0)
             }
         }
-        .navigationTitle(AppLocalization.text("Backtape Settings"))
+        .navigationTitle(AppLocalization.text("Senses Settings"))
         .navigationBarTitleDisplayMode(.inline)
         .task(id: capture.changes) { size = await HistoryStore.shared.size() }
         .alert("Turn On Backtape", isPresented: $asking) {
@@ -497,7 +461,7 @@ struct HistoryBlockPage: View {
 // MARK: Privacy controls
 
 /// Which apps are read: every app but the ones listed, or only the ones listed.
-private struct HistoryPermissionsPage: View {
+struct HistoryPermissionsPage: View {
     @ObservedObject private var capture = HistoryCapture.shared
     @State private var seen: [String] = []
     @State private var search = ""
@@ -512,9 +476,15 @@ private struct HistoryPermissionsPage: View {
         for app in suggested + seen + KnownApps.all.map(\.id) where !all.contains(where: { $0.caseInsensitiveCompare(app) == .orderedSame }) {
             all.append(app)
         }
-        let open = all.filter { app in !HistoryCapture.isPoki(app) && !chosen.contains { $0.caseInsensitiveCompare(app) == .orderedSame } }
+        let open = all.filter { app in
+            !HistoryCapture.isPoki(app) && !HistoryCapture.isNoise(app) && !chosen.contains { $0.caseInsensitiveCompare(app) == .orderedSame }
+        }
         let wanted = search.trimmingCharacters(in: .whitespaces)
-        guard !wanted.isEmpty else { return open }
+        // Unsearched, only what Poki can show properly: an app it knows or has an icon for. Anything
+        // else is still found by searching its name or bundle ID.
+        guard !wanted.isEmpty else {
+            return open.filter { KnownApps.byID[$0.lowercased()] != nil || AppIconStore.shared.icon($0) != nil }
+        }
         return open.filter { $0.localizedCaseInsensitiveContains(wanted) || HistoryNames.app($0).localizedCaseInsensitiveContains(wanted) }
     }
 
@@ -574,7 +544,7 @@ private struct HistoryPermissionsPage: View {
 }
 
 /// When reading was on, paused, blocked or left an app out.
-private struct HistoryRecordPage: View {
+struct HistoryRecordPage: View {
     @State private var records: [HistoryRecord] = []
 
     private func detail(_ record: HistoryRecord) -> String {
