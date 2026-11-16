@@ -1,8 +1,10 @@
 import CryptoKit
 import LocalAuthentication
+import SQLite3
 import Security
 import SwiftUI
 import UIKit
+import notify
 
 /// The lock in front of iPhone History (the owner, 2026-11-14): its pages open only after Face ID or
 /// Touch ID, with no fall back to the iPhone's passcode, or after a PIN that belongs to Poki alone.
@@ -11,60 +13,154 @@ import UIKit
 final class HistoryLock: ObservableObject {
     static let shared = HistoryLock()
 
-    @Published private(set) var unlocked = false
-    @Published private(set) var hasPIN: Bool
+    enum AuthMethods: Equatable {
+        case biometricsOnly
+        case pinOnly
+        case biometricsAndPIN
+
+        init?(biometrics: Bool, pin: Bool) {
+            switch (biometrics, pin) {
+            case (true, true): self = .biometricsAndPIN
+            case (true, false): self = .biometricsOnly
+            case (false, true): self = .pinOnly
+            case (false, false): return nil
+            }
+        }
+
+        var usesBiometrics: Bool { self != .pinOnly }
+        var hasPIN: Bool { self != .biometricsOnly }
+    }
+
+    struct PINCooldown: Equatable {
+        var failures = 0
+        var blockedUntil: Date?
+    }
+
+    enum State: Equatable {
+        case unconfigured
+        case locked(methods: AuthMethods, evaluatingBiometrics: UUID?, cooldown: PINCooldown)
+        case biometricsUnavailable
+        case deviceLocked
+        case unlocked(methods: AuthMethods)
+    }
+
+    private enum StoredPIN {
+        case present(Data)
+        case absent
+        case inaccessibleWhileDeviceLocked
+    }
+
+    private struct BiometricsSnapshot {
+        let ready: Bool
+        let name: String
+        let blockedOrDeniedOnHardware: Bool
+    }
+
+    private struct Environment {
+        let biometricsOn: Bool
+        let biometrics: BiometricsSnapshot
+        let storedPIN: StoredPIN
+        let armed: Bool
+    }
+
+    private enum Event {
+        case refresh
+        case enteredBackground
+        case beginBiometrics(UUID)
+        case finishBiometrics(attempt: UUID, passed: Bool)
+        case setPIN(String)
+        case unlockWithPIN(String)
+        case removePIN
+        case setBiometrics(Bool)
+    }
+
+    @Published private(set) var state: State = .unconfigured
     /// The owner's choice. Whether it can be used also depends on the iPhone (`biometricsReady`).
     @Published private(set) var biometricsOn: Bool
-    @Published private(set) var failures = 0
-    @Published private(set) var blockedUntil: Date?
 
     private static let service = "nz.zheha.poki.history-lock"
-    private static let account = "pin"
+    private static let pinAccount = "pin"
+    private static let armedAccount = "armed"
+    private static let biometricsKey = "history.lock.biometrics"
+    private static let armedKey = "history.lock.armed"
+    private var enrollmentToken: Int32 = NOTIFY_TOKEN_INVALID
 
     private init() {
-        hasPIN = Self.stored() != nil
-        biometricsOn = UserDefaults.standard.object(forKey: "history.lock.biometrics") as? Bool ?? true
-        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+        biometricsOn = UserDefaults.standard.object(forKey: Self.biometricsKey) as? Bool ?? true
+        _ = transition(.refresh)
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.lock() }
+        }
+        center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in _ = self?.transition(.refresh) }
+        }
+        center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in _ = self?.transition(.refresh) }
+        }
+        notify_register_dispatch("com.apple.BiometricKit.enrollmentChanged", &enrollmentToken, DispatchQueue.main) { [weak self] _ in
+            Task { @MainActor in _ = self?.transition(.refresh) }
+        }
+    }
+
+    private var effectiveState: State {
+        Self.reconcile(state, env: currentEnvironment(), now: Date())
+    }
+
+    var unlocked: Bool {
+        if case .unlocked = effectiveState { return true }
+        return false
+    }
+
+    var hasPIN: Bool {
+        switch effectiveState {
+        case .locked(let methods, _, _), .unlocked(let methods): return methods.hasPIN
+        case .unconfigured, .biometricsUnavailable, .deviceLocked: return false
         }
     }
 
     // MARK: Biometrics
 
     /// Face ID or Touch ID is set up on this iPhone and allowed for Poki.
-    var biometricsReady: Bool {
-        var error: NSError?
-        return LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
-    }
+    var biometricsReady: Bool { Self.biometricsSnapshot().ready }
 
-    var usesBiometrics: Bool { biometricsOn && biometricsReady }
-
-    /// "Face ID", "Touch ID" or "Optic ID", as this iPhone has it.
-    var biometricsName: String {
-        let context = LAContext()
-        var error: NSError?
-        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
-        switch context.biometryType {
-        case .touchID: return "Touch ID"
-        case .opticID: return "Optic ID"
-        default: return "Face ID"
+    var usesBiometrics: Bool {
+        switch effectiveState {
+        case .locked(let methods, _, _), .unlocked(let methods): return methods.usesBiometrics
+        case .unconfigured, .biometricsUnavailable, .deviceLocked: return false
         }
     }
+
+    /// "Face ID", "Touch ID" or "Optic ID", as this iPhone has it.
+    var biometricsName: String { Self.biometricsSnapshot().name }
 
     /// The same name in Poki's language.
     var biometricsLabel: String { AppLocalization.bundle.localizedString(forKey: biometricsName, value: nil, table: nil) }
 
     /// Nothing can unlock history yet: a PIN has to be made first.
-    var needsSetup: Bool { !usesBiometrics && !hasPIN }
+    var needsSetup: Bool { effectiveState == .unconfigured }
+
+    var biometricsUnavailable: Bool { effectiveState == .biometricsUnavailable }
+
+    var failures: Int {
+        if case .locked(_, _, let cooldown) = effectiveState { return cooldown.failures }
+        return 0
+    }
+
+    var blockedUntil: Date? {
+        if case .locked(_, _, let cooldown) = effectiveState { return cooldown.blockedUntil }
+        return nil
+    }
 
     func unlockWithBiometrics() async {
-        guard usesBiometrics, !unlocked else { return }
+        let attempt = UUID()
+        guard transition(.beginBiometrics(attempt)) else { return }
         let context = LAContext()
         // No "Enter Passcode" button: the iPhone's passcode does not open history.
         context.localizedFallbackTitle = ""
         let reason = AppLocalization.text("Unlock Screen History")
         let passed = (try? await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)) ?? false
-        if passed { opened() }
+        _ = transition(.finishBiometrics(attempt: attempt, passed: passed))
     }
 
     /// Asks for Face ID or Touch ID again, for something that cannot be undone. The page stays as it is.
@@ -77,14 +173,228 @@ final class HistoryLock: ObservableObject {
 
     // MARK: PIN
 
-    private static func stored() -> Data? {
+    static func valid(_ pin: String) -> Bool { (4...8).contains(pin.count) && pin.allSatisfy(\.isNumber) }
+
+    /// Keeps a new PIN. Allowed while history is unlocked, or when nothing can unlock it yet.
+    @discardableResult
+    func setPIN(_ pin: String) -> Bool { transition(.setPIN(pin)) }
+
+    func unlock(pin: String) -> Bool { transition(.unlockWithPIN(pin)) }
+
+    /// Removes the PIN. Refused unless Face ID or Touch ID stays as the way in.
+    @discardableResult
+    func removePIN() -> Bool { transition(.removePIN) }
+
+    /// Turns Face ID or Touch ID on or off for history. Turning it off is refused without a PIN.
+    @discardableResult
+    func setBiometrics(_ on: Bool) -> Bool { transition(.setBiometrics(on)) }
+
+    func lock() { _ = transition(.enteredBackground) }
+
+    // MARK: State machine
+
+    @discardableResult
+    private func transition(_ event: Event, now: Date = Date()) -> Bool {
+        var env = currentEnvironment()
+        if biometricsOn != env.biometricsOn { biometricsOn = env.biometricsOn }
+        let current = Self.reconcile(state, env: env, now: now)
+        if env.armed { Self.persistArmed() }
+
+        let next: State
+        let accepted: Bool
+
+        switch event {
+        case .refresh:
+            next = current
+            accepted = true
+
+        case .enteredBackground:
+            let base: State = switch current {
+            case .unlocked(let methods):
+                .locked(methods: methods, evaluatingBiometrics: nil, cooldown: PINCooldown())
+            case .locked(let methods, _, let cooldown):
+                .locked(methods: methods, evaluatingBiometrics: nil, cooldown: cooldown)
+            case .unconfigured, .biometricsUnavailable, .deviceLocked:
+                current
+            }
+            next = Self.reconcile(base, env: env, now: now)
+            accepted = true
+
+        case .beginBiometrics(let attempt):
+            guard case .locked(let methods, nil, let cooldown) = current, methods.usesBiometrics else {
+                if state != current { state = current }
+                return false
+            }
+            next = .locked(methods: methods, evaluatingBiometrics: attempt, cooldown: cooldown)
+            accepted = true
+
+        case .finishBiometrics(let attempt, let passed):
+            guard case .locked(let methods, let active?, let cooldown) = current, active == attempt else {
+                if state != current { state = current }
+                return false
+            }
+            if passed, methods.usesBiometrics {
+                Self.persistArmed()
+                next = .unlocked(methods: methods)
+                accepted = true
+            } else {
+                next = .locked(methods: methods, evaluatingBiometrics: nil, cooldown: cooldown)
+                accepted = false
+            }
+
+        case .setPIN(let pin):
+            let allowed = switch current {
+            case .unconfigured, .unlocked: true
+            case .locked, .biometricsUnavailable, .deviceLocked: false
+            }
+            guard Self.valid(pin), allowed, Self.writeStoredPIN(pin) else {
+                if state != current { state = current }
+                return false
+            }
+            Self.persistArmed()
+            env = currentEnvironment()
+            guard let methods = AuthMethods(biometrics: env.biometricsOn && env.biometrics.ready, pin: true) else {
+                return false
+            }
+            next = .unlocked(methods: methods)
+            accepted = true
+
+        case .unlockWithPIN(let pin):
+            switch current {
+            case .locked(let methods, let attempt, var cooldown) where methods.hasPIN:
+                if let until = cooldown.blockedUntil, until > now {
+                    if state != current { state = current }
+                    return false
+                }
+                guard case .present(let value) = env.storedPIN else {
+                    if state != current { state = current }
+                    return false
+                }
+                if Self.matchesPIN(pin, stored: value) {
+                    Self.persistArmed()
+                    next = .unlocked(methods: methods)
+                    accepted = true
+                } else {
+                    cooldown.failures += 1
+                    // Five wrong tries in a row, then a wait that doubles: 30 s, 1 min, 2 min, up to an hour.
+                    if cooldown.failures >= 5 {
+                        cooldown.blockedUntil = now.addingTimeInterval(min(3600, 30 * pow(2, Double(cooldown.failures - 5))))
+                    }
+                    next = .locked(methods: methods, evaluatingBiometrics: attempt, cooldown: cooldown)
+                    accepted = false
+                }
+            case .unlocked(let methods) where methods.hasPIN:
+                guard case .present(let value) = env.storedPIN else { return false }
+                next = current
+                accepted = Self.matchesPIN(pin, stored: value)
+            default:
+                if state != current { state = current }
+                return false
+            }
+
+        case .removePIN:
+            guard case .unlocked(.biometricsAndPIN) = current else {
+                if state != current { state = current }
+                return false
+            }
+            Self.deleteStoredPIN()
+            next = .unlocked(methods: .biometricsOnly)
+            accepted = true
+
+        case .setBiometrics(let on):
+            guard case .unlocked(let methods) = current, on || methods.hasPIN,
+                  let updated = AuthMethods(biometrics: on && env.biometrics.ready, pin: methods.hasPIN) else {
+                if state != current { state = current }
+                return false
+            }
+            biometricsOn = on
+            UserDefaults.standard.set(on, forKey: Self.biometricsKey)
+            if on, env.biometrics.ready { Self.persistArmed() }
+            next = .unlocked(methods: updated)
+            accepted = true
+        }
+
+        if state != next { state = next }
+        return accepted
+    }
+
+    private func currentEnvironment() -> Environment {
+        let on = UserDefaults.standard.object(forKey: Self.biometricsKey) as? Bool ?? true
+        let bio = Self.biometricsSnapshot()
+        let pin = Self.storedPIN()
+        let pinExists: Bool = switch pin {
+        case .present, .inaccessibleWhileDeviceLocked: true
+        case .absent: false
+        }
+        let armed = Self.isArmedPersisted()
+            || pinExists
+            || (on && bio.ready)
+            || (on && bio.blockedOrDeniedOnHardware && Self.storeHasProtectedEntries())
+        return Environment(biometricsOn: on, biometrics: bio, storedPIN: pin, armed: armed)
+    }
+
+    private static func reconcile(_ state: State, env: Environment, now: Date) -> State {
+        let knownHasPIN: Bool = switch state {
+        case .locked(let methods, _, _), .unlocked(let methods): methods.hasPIN
+        case .unconfigured, .biometricsUnavailable, .deviceLocked: false
+        }
+        let hasPIN: Bool = switch env.storedPIN {
+        case .present: true
+        case .absent: false
+        case .inaccessibleWhileDeviceLocked: knownHasPIN
+        }
+        let usesBiometrics = env.biometricsOn && env.biometrics.ready
+        if case .inaccessibleWhileDeviceLocked = env.storedPIN, !usesBiometrics, !hasPIN {
+            if case .unlocked(let methods) = state { return .unlocked(methods: methods) }
+            return .deviceLocked
+        }
+        guard let methods = AuthMethods(biometrics: usesBiometrics, pin: hasPIN) else {
+            return env.armed ? .biometricsUnavailable : .unconfigured
+        }
+        switch state {
+        case .unlocked:
+            return .unlocked(methods: methods)
+        case .locked(_, let activeAttempt, var cooldown):
+            if let until = cooldown.blockedUntil, until <= now { cooldown.blockedUntil = nil }
+            return .locked(methods: methods, evaluatingBiometrics: methods.usesBiometrics ? activeAttempt : nil, cooldown: cooldown)
+        case .unconfigured, .biometricsUnavailable, .deviceLocked:
+            return .locked(methods: methods, evaluatingBiometrics: nil, cooldown: PINCooldown())
+        }
+    }
+
+    // MARK: Boundaries
+
+    private static func biometricsSnapshot() -> BiometricsSnapshot {
+        let context = LAContext()
+        var error: NSError?
+        let ready = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        let name: String = switch context.biometryType {
+        case .touchID: "Touch ID"
+        case .opticID: "Optic ID"
+        default: "Face ID"
+        }
+        let code = error?.code
+        let blockedOrDenied = code == LAError.biometryLockout.rawValue
+            || (context.biometryType != .none && code == LAError.biometryNotAvailable.rawValue)
+        return BiometricsSnapshot(ready: ready, name: name, blockedOrDeniedOnHardware: blockedOrDenied)
+    }
+
+    private static func storedPIN() -> StoredPIN {
         let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: pinAccount,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-        return item as? Data
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data, data.count > 16 else { return .absent }
+            return .present(data)
+        case errSecInteractionNotAllowed:
+            return .inaccessibleWhileDeviceLocked
+        default:
+            return .absent
+        }
     }
 
     private static func digest(_ pin: String, salt: Data) -> Data {
@@ -94,68 +404,68 @@ final class HistoryLock: ObservableObject {
         return hash
     }
 
-    static func valid(_ pin: String) -> Bool { (4...8).contains(pin.count) && pin.allSatisfy(\.isNumber) }
+    private static func matchesPIN(_ pin: String, stored value: Data) -> Bool {
+        guard value.count > 16 else { return false }
+        let salt = Data(value.prefix(16))
+        return digest(pin, salt: salt) == value.dropFirst(16)
+    }
 
-    /// Keeps a new PIN. Allowed while history is unlocked, or when nothing can unlock it yet.
-    @discardableResult
-    func setPIN(_ pin: String) -> Bool {
-        guard Self.valid(pin), unlocked || needsSetup else { return false }
+    private static func writeStoredPIN(_ pin: String) -> Bool {
         var salt = Data(count: 16)
         guard salt.withUnsafeMutableBytes({ SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }) == errSecSuccess else { return false }
-        let value = salt + Self.digest(pin, salt: salt)
-        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: Self.account]
+        let value = salt + digest(pin, salt: salt)
+        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: pinAccount]
         SecItemDelete(match as CFDictionary)
         var add = match
         add[kSecValueData as String] = value
         add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { return false }
-        hasPIN = true
-        opened()
-        return true
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 
-    func unlock(pin: String) -> Bool {
-        if let until = blockedUntil, until > Date() { return false }
-        guard let value = Self.stored(), value.count > 16 else { return false }
-        let salt = value.prefix(16)
-        if Self.digest(pin, salt: Data(salt)) == value.dropFirst(16) {
-            opened()
-            return true
-        }
-        failures += 1
-        // Five wrong tries in a row, then a wait that doubles: 30 s, 1 min, 2 min, up to an hour.
-        if failures >= 5 { blockedUntil = Date().addingTimeInterval(min(3600, 30 * pow(2, Double(failures - 5)))) }
-        return false
-    }
-
-    /// Removes the PIN. Refused unless Face ID or Touch ID stays as the way in.
-    @discardableResult
-    func removePIN() -> Bool {
-        guard unlocked, usesBiometrics else { return false }
-        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: Self.account]
+    private static func deleteStoredPIN() {
+        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: pinAccount]
         SecItemDelete(match as CFDictionary)
-        hasPIN = false
-        return true
     }
 
-    /// Turns Face ID or Touch ID on or off for history. Turning it off is refused without a PIN.
-    @discardableResult
-    func setBiometrics(_ on: Bool) -> Bool {
-        guard unlocked, on || hasPIN else { return false }
-        biometricsOn = on
-        UserDefaults.standard.set(on, forKey: "history.lock.biometrics")
-        return true
+    private static func isArmedPersisted() -> Bool {
+        if UserDefaults.standard.bool(forKey: armedKey) { return true }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: armedAccount,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
-    // MARK: State
-
-    private func opened() {
-        unlocked = true
-        failures = 0
-        blockedUntil = nil
+    private static func persistArmed() {
+        UserDefaults.standard.set(true, forKey: armedKey)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: armedAccount,
+        ]
+        guard SecItemCopyMatching(query as CFDictionary, nil) == errSecItemNotFound else { return }
+        var add = query
+        add[kSecValueData as String] = Data([1])
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(add as CFDictionary, nil)
     }
 
-    func lock() { unlocked = false }
+    private static func storeHasProtectedEntries() -> Bool {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let file = base.appendingPathComponent("History/history.sqlite")
+        guard FileManager.default.fileExists(atPath: file.path) else { return false }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(file.path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK, let handle else {
+            if let handle { sqlite3_close(handle) }
+            return false
+        }
+        defer { sqlite3_close(handle) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "SELECT 1 FROM entries LIMIT 1", -1, &statement, nil) == SQLITE_OK, let statement else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
 }
 
 /// Shows its content only while iPhone History is unlocked.
@@ -210,6 +520,12 @@ struct BacktapeLockScreen: View {
                         Button { Task { await lock.unlockWithBiometrics() } } label: {
                             Text(verbatim: String(format: AppLocalization.text("Unlock with %@"), lock.biometricsLabel))
                                 .padding(.horizontal, 6)
+                        }
+                        .glassButton(prominent: true)
+                        .controlSize(.large)
+                    } else if lock.biometricsUnavailable, let url = URL(string: UIApplication.openSettingsURLString) {
+                        Button { UIApplication.shared.open(url) } label: {
+                            Text("Open Settings").padding(.horizontal, 6)
                         }
                         .glassButton(prominent: true)
                         .controlSize(.large)
@@ -308,8 +624,9 @@ struct HistoryUnlockSections: View {
     @State private var pin = ""
     @State private var again = ""
     @State private var wrong = false
+    @State private var now = Date()
 
-    private var waiting: Bool { lock.blockedUntil.map { $0 > Date() } ?? false }
+    private var waiting: Bool { lock.blockedUntil.map { $0 > now } ?? false }
 
     var body: some View {
         Group {
@@ -336,6 +653,12 @@ struct HistoryUnlockSections: View {
                     } header: {
                         Text("Screen History Is Locked")
                     }
+                } else if lock.biometricsUnavailable, let url = URL(string: UIApplication.openSettingsURLString) {
+                    Section {
+                        Button("Open Settings") { UIApplication.shared.open(url) }
+                    } header: {
+                        Text("Screen History Is Locked")
+                    }
                 }
                 if lock.hasPIN {
                     Section {
@@ -343,6 +666,7 @@ struct HistoryUnlockSections: View {
                         Button("Unlock") {
                             wrong = !lock.unlock(pin: pin)
                             pin = ""
+                            now = Date()
                         }
                         .disabled(pin.isEmpty || waiting)
                     } footer: {
@@ -356,6 +680,13 @@ struct HistoryUnlockSections: View {
             }
         }
         .task { await lock.unlockWithBiometrics() }
+        .task(id: lock.blockedUntil) {
+            while let until = lock.blockedUntil, until > Date() {
+                try? await Task.sleep(for: .seconds(1))
+                now = Date()
+            }
+            now = Date()
+        }
     }
 }
 

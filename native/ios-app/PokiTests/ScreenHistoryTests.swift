@@ -1,4 +1,6 @@
+import Security
 import XCTest
+import notify
 @testable import Poki
 
 /// Screen History keeps only what the owner allows: a left-out app or the Home Screen leaves no read
@@ -113,5 +115,70 @@ final class ScreenHistoryTests: XCTestCase {
         XCTAssertEqual(size.entries, 0)
         XCTAssertEqual(notes.map(\.note.title), [])
         XCTAssertEqual(record.map(\.kind), [])
+    }
+
+    func testTurningOffBiometricsDoesNotLetANewPINOpenProtectedHistory() async {
+        let defaults = UserDefaults.standard
+        let lockKeys = ["history.lock.biometrics", "history.lock.armed"]
+        let savedDefaults = Dictionary(uniqueKeysWithValues: lockKeys.map { ($0, defaults.object(forKey: $0)) })
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "nz.zheha.poki.history-lock",
+        ]
+        SecItemDelete(match as CFDictionary)
+        lockKeys.forEach { defaults.removeObject(forKey: $0) }
+        setSimulatorBiometricsEnrolled(false)
+        let lock = HistoryLock.shared
+        lock.lock()
+        defer {
+            setSimulatorBiometricsEnrolled(false)
+            SecItemDelete(match as CFDictionary)
+            for (key, value) in savedDefaults {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+            lock.lock()
+        }
+
+        XCTAssertTrue(lock.needsSetup)
+        XCTAssertTrue(lock.setPIN("2468"))
+        XCTAssertTrue(lock.unlocked)
+        lock.lock()
+        XCTAssertFalse(lock.unlock(pin: "0000"))
+        XCTAssertTrue(lock.unlock(pin: "2468"))
+
+        setSimulatorBiometricsEnrolled(true)
+        XCTAssertTrue(lock.biometricsReady)
+        XCTAssertTrue(lock.setBiometrics(true))
+        XCTAssertTrue(lock.removePIN())
+        XCTAssertFalse(lock.hasPIN)
+
+        let capture = HistoryCapture()
+        XCTAssertTrue(capture.keep(read("com.apple.mobilenotes", ["Private medical note"])))
+        lock.lock()
+        XCTAssertFalse(lock.unlocked)
+
+        setSimulatorBiometricsEnrolled(false)
+        XCTAssertFalse(lock.biometricsReady)
+        XCTAssertFalse(lock.usesBiometrics)
+        XCTAssertTrue(lock.biometricsUnavailable)
+        XCTAssertFalse(lock.needsSetup, "Protected Screen History must not fall back to initial PIN setup when biometrics becomes unavailable")
+        XCTAssertFalse(lock.setPIN("1234"), "A locked Screen History without biometrics must refuse a new PIN")
+        XCTAssertFalse(lock.unlock(pin: "1234"))
+        XCTAssertFalse(lock.unlocked)
+
+        setSimulatorBiometricsEnrolled(true)
+        XCTAssertTrue(lock.biometricsReady)
+        XCTAssertTrue(lock.usesBiometrics)
+        XCTAssertFalse(lock.biometricsUnavailable)
+        XCTAssertFalse(lock.needsSetup)
+        XCTAssertFalse(lock.unlocked)
+    }
+
+    private func setSimulatorBiometricsEnrolled(_ enrolled: Bool) {
+        var token: Int32 = 0
+        guard notify_register_check("com.apple.BiometricKit.enrollmentChanged", &token) == NOTIFY_STATUS_OK else { return }
+        _ = notify_set_state(token, enrolled ? 1 : 0)
+        _ = notify_post("com.apple.BiometricKit.enrollmentChanged")
+        _ = notify_cancel(token)
     }
 }
