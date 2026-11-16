@@ -22,7 +22,7 @@ struct VoicePage: View {
     var body: some View {
         let face = Self.sample ?? currentFace
         VStack(spacing: 0) {
-            MessageListHeader(dark: true, back: back, openDetails: openDetails)
+            MessageListHeader(dark: true, back: back, openDetails: openDetails, openModel: openModel)
             stage(face).frame(maxHeight: .infinity)
             HoldButton(listening: face == .listening, hint: hint(face))
                 .gesture(hold)
@@ -124,7 +124,7 @@ struct VoicePage: View {
                 if !holding {
                     holding = true
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    if voice.canTalk { Task { await voice.press() } } else { openModel() }
+                    if voice.canTalk { model.prepareForTask(); Task { await voice.press() } } else { openModel() }
                 }
                 cancelling = value.translation.height < -60
             }
