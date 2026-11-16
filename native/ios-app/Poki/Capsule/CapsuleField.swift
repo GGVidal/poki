@@ -47,7 +47,7 @@ struct CapsuleField: UIViewRepresentable {
         // puts the keyboard away as the finger lifts. A message that fits is nothing to scroll, and the
         // text view would not take the drag: it is told to.
         if #available(iOS 26.0, *) {
-            view.keyboardDismissMode = .interactive
+            view.keyboardDismissMode = context.coordinator.mode(view)
             view.alwaysBounceVertical = true
         }
         return view
@@ -89,6 +89,8 @@ struct CapsuleField: UIViewRepresentable {
         /// Where the finger came down, in the window. A pan is seen some points later, and its own
         /// count of the way starts short of them.
         private var touchDown: CGPoint?
+        /// A swipe on the field is under way: interactive dismissal stays as the swipe began until it ends.
+        private var dragging = false
 
         init(parent: CapsuleField) { self.parent = parent }
 
@@ -116,6 +118,7 @@ struct CapsuleField: UIViewRepresentable {
             case .began:
                 startedScrolled = Self.scrolledDown(view)
                 raised = false
+                dragging = true
                 follow(pan, on: view)
             case .changed:
                 // Up brings the keyboard while the finger is still moving, not when it lifts.
@@ -139,21 +142,32 @@ struct CapsuleField: UIViewRepresentable {
         /// (WWDC23, Keep up with the keyboard; the root view's guide as in atlou/KeyboardAccessory, MIT),
         /// here to where the finger came down, so the keyboard and the bar over it are under the finger
         /// from the moment the drag is seen. A message scrolled away from its first line scrolls back
-        /// instead, and the keyboard stays.
+        /// instead, and the keyboard stays. So does a keyboard this swipe brings up: one that was down
+        /// as the swipe began is not taken back down to the finger once it is up.
         private func follow(_ pan: UIPanGestureRecognizer, on view: UITextView) {
             keyboardTop = nil
             guard #available(iOS 26.0, *), let root = view.window?.rootViewController?.view else { return }
             let guide = root.keyboardLayoutGuide
             let start = touchDown.map { root.convert($0, from: nil).y } ?? pan.location(in: root).y
-            view.keyboardDismissMode = startedScrolled ? .none : .interactive
-            guide.keyboardDismissPadding = startedScrolled ? 0 : max(0, guide.layoutFrame.minY - start)
+            let stays = startedScrolled || !view.isFirstResponder
+            view.keyboardDismissMode = stays ? .none : .interactive
+            guide.keyboardDismissPadding = stays ? 0 : max(0, guide.layoutFrame.minY - start)
             keyboardTop = guide.layoutFrame.minY
+        }
+
+        func mode(_ view: UITextView) -> UIScrollView.KeyboardDismissMode {
+            view.isFirstResponder ? .interactive : .none
         }
 
         /// As the swipe ends: whether the keyboard left its place under it. The line goes back to the
         /// keyboard's own top for the next drag, the conversation's included, once every recogniser
         /// has seen this one end.
         private func keyboardFollowed(_ view: UITextView) -> Bool {
+            dragging = false
+            DispatchQueue.main.async { [self] in
+                guard !dragging else { return }
+                if #available(iOS 26.0, *) { view.keyboardDismissMode = mode(view) }
+            }
             guard let keyboardTop, let root = view.window?.rootViewController?.view else { return false }
             let guide = root.keyboardLayoutGuide
             let followed = guide.layoutFrame.minY > keyboardTop + 1
@@ -187,8 +201,15 @@ struct CapsuleField: UIViewRepresentable {
             view.contentSize.height > view.bounds.height + 1 && view.contentOffset.y + view.adjustedContentInset.top > 1
         }
 
-        func textViewDidBeginEditing(_ textView: UITextView) { if !parent.focused { parent.focused = true } }
-        func textViewDidEndEditing(_ textView: UITextView) { if parent.focused { parent.focused = false } }
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            if !parent.focused { parent.focused = true }
+            if #available(iOS 26.0, *), !dragging { textView.keyboardDismissMode = mode(textView) }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if parent.focused { parent.focused = false }
+            if #available(iOS 26.0, *), !dragging { textView.keyboardDismissMode = mode(textView) }
+        }
     }
 }
 
