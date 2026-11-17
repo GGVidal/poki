@@ -425,6 +425,7 @@ async fn run() -> Result<()> {
                             Err(e) if poki_setup_core::apple::gsa::is_rate_limit(&e) => return Err(e.into()),
                             Err(e) => {
                                 current = signer.pending().cloned().unwrap_or(current);
+                    signer.set_pending_keep_password(true);
                                 if current.failed_attempts >= 2 {
                                     return Err(e.into());
                                 }

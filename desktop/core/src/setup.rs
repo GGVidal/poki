@@ -53,6 +53,13 @@ impl Signer {
         self.pending.as_ref().filter(|p| p.is_fresh(now_unix()))
     }
 
+    pub fn set_pending_keep_password(&mut self, keep_password: bool) {
+        if let Some(p) = &mut self.pending {
+            p.keep_password = keep_password;
+            let _ = store::save_pending(p);
+        }
+    }
+
     pub fn is_rate_limited(&self) -> bool {
         self.account.is_rate_limited(now_unix())
     }
@@ -126,10 +133,8 @@ impl Signer {
             SignInOutcome::NeedsCode(mut p) => {
                 p.keep_password = keep_password;
                 p.anisette = Some(self.client.anisette().source().clone());
-                let saved_password = self.account.password.clone();
                 self.remember_anisette();
-                store::save(&store::Account { password: saved_password, ..self.account.clone() })?;
-                self.account.password = keep_password.then(|| password.to_string()).or(self.account.password.clone());
+                store::save(&self.account)?;
                 let _ = store::save_pending(&p);
                 self.pending = Some(p.clone());
                 Ok(Some(p))
@@ -152,9 +157,7 @@ impl Signer {
                 let _ = store::clear_pending();
                 self.account.clear_rate_limit();
                 self.remember_anisette();
-                if active.keep_password && self.account.password.is_none() {
-                    self.account.password = Some(active.password_str().to_string());
-                }
+                self.account.password = active.keep_password.then(|| active.password_str().to_string());
                 self.account.session = Some(session);
                 self.account.xcode_token = None;
                 store::save(&self.account)?;
