@@ -968,6 +968,7 @@ mod rate_limit_regressions {
     struct MockBehavior {
         apple_id: String,
         password: String,
+        srp_status: u16,
         hsc: i64,
         au: Option<String>,
         include_session_keys_on_409: bool,
@@ -975,8 +976,10 @@ mod rate_limit_regressions {
         sms_auth_status: u16,
         sms_send_status: u16,
         accepted_code: String,
+        expired_code: String,
         apptokens_status: u16,
         apptokens_ec: i64,
+        apptokens_em: String,
     }
 
     impl Default for MockBehavior {
@@ -984,6 +987,7 @@ mod rate_limit_regressions {
             Self {
                 apple_id: "person@example.com".into(),
                 password: "correct-horse-battery".into(),
+                srp_status: 200,
                 hsc: 409,
                 au: Some("trustedDeviceSecondaryAuth".into()),
                 include_session_keys_on_409: true,
@@ -991,8 +995,10 @@ mod rate_limit_regressions {
                 sms_auth_status: 200,
                 sms_send_status: 200,
                 accepted_code: "654321".into(),
+                expired_code: "999999".into(),
                 apptokens_status: 200,
                 apptokens_ec: 0,
+                apptokens_em: String::new(),
             }
         }
     }
@@ -1000,7 +1006,7 @@ mod rate_limit_regressions {
     struct MockGsa {
         base_url: String,
         counts: Arc<Mutex<Counts>>,
-        _behavior: Arc<Mutex<MockBehavior>>,
+        behavior: Arc<Mutex<MockBehavior>>,
     }
 
     fn plist_xml(d: plist::Dictionary) -> Vec<u8> {
@@ -1125,14 +1131,18 @@ mod rate_limit_regressions {
                                 match op {
                                     "init" => {
                                         counts.lock().unwrap().srp_init += 1;
-                                        *last_a.lock().unwrap() = data(req, "A2k").unwrap().to_vec();
-                                        let mut r = plist::Dictionary::new();
-                                        r.insert("sp".into(), "s2k".into());
-                                        r.insert("s".into(), plist::Value::Data(srp_srv.salt));
-                                        r.insert("i".into(), plist::Value::Integer((srp_srv.iterations as i64).into()));
-                                        r.insert("B".into(), plist::Value::Data(srp_srv.b_pub));
-                                        r.insert("c".into(), "srv-c".into());
-                                        (200u16, "text/x-xml-plist", gs_response(r, 0, 200, None))
+                                        if b.srp_status != 200 {
+                                            (b.srp_status, "text/plain", b"rate limited".to_vec())
+                                        } else {
+                                            *last_a.lock().unwrap() = data(req, "A2k").unwrap().to_vec();
+                                            let mut r = plist::Dictionary::new();
+                                            r.insert("sp".into(), "s2k".into());
+                                            r.insert("s".into(), plist::Value::Data(srp_srv.salt));
+                                            r.insert("i".into(), plist::Value::Integer((srp_srv.iterations as i64).into()));
+                                            r.insert("B".into(), plist::Value::Data(srp_srv.b_pub));
+                                            r.insert("c".into(), "srv-c".into());
+                                            (200u16, "text/x-xml-plist", gs_response(r, 0, 200, None))
+                                        }
                                     }
                                     "complete" => {
                                         counts.lock().unwrap().srp_complete += 1;
@@ -1150,10 +1160,20 @@ mod rate_limit_regressions {
                                     }
                                     "apptokens" => {
                                         counts.lock().unwrap().apptokens += 1;
-                                        if b.apptokens_status != 200 {
+                                        if b.apptokens_ec != 0 {
+                                            let mut st = plist::Dictionary::new();
+                                            st.insert("ec".into(), b.apptokens_ec.into());
+                                            st.insert("hsc".into(), (b.apptokens_status as i64).into());
+                                            if !b.apptokens_em.is_empty() {
+                                                st.insert("em".into(), b.apptokens_em.clone().into());
+                                            }
+                                            let mut r = plist::Dictionary::new();
+                                            r.insert("Status".into(), plist::Value::Dictionary(st));
+                                            let mut root = plist::Dictionary::new();
+                                            root.insert("Response".into(), plist::Value::Dictionary(r));
+                                            (b.apptokens_status, "text/x-xml-plist", plist_xml(root))
+                                        } else if b.apptokens_status != 200 {
                                             (b.apptokens_status, "text/plain", b"rate limited".to_vec())
-                                        } else if b.apptokens_ec != 0 {
-                                            (200, "text/x-xml-plist", gs_response(plist::Dictionary::new(), b.apptokens_ec, 200, None))
                                         } else {
                                             let mut r = plist::Dictionary::new();
                                             r.insert("et".into(), plist::Value::Data(encrypt_apptoken_for_test(&[7u8; 32])));
@@ -1195,6 +1215,10 @@ mod rate_limit_regressions {
                                 if code == b.accepted_code {
                                     d.insert("ec".into(), 0.into());
                                     (200, "text/x-xml-plist", plist_xml(d))
+                                } else if code == b.expired_code {
+                                    d.insert("ec".into(), (-21670).into());
+                                    d.insert("em".into(), "The verification code has expired.".into());
+                                    (400, "text/x-xml-plist", plist_xml(d))
                                 } else {
                                     d.insert("ec".into(), (-21669).into());
                                     d.insert("em".into(), "Incorrect verification code.".into());
@@ -1207,6 +1231,12 @@ mod rate_limit_regressions {
                                 let code = v.get("securityCode").and_then(|s| s.get("code")).and_then(|c| c.as_str()).unwrap_or("");
                                 if code == b.accepted_code {
                                     (200, "application/json", b"{}".to_vec())
+                                } else if code == b.expired_code {
+                                    let err = serde_json::json!({
+                                        "securityCode": { "codeExpired": true },
+                                        "serviceErrors": [{ "code": "-21670", "title": "Expired Code", "message": "The verification code has expired." }]
+                                    });
+                                    (400, "application/json", err.to_string().into_bytes())
                                 } else {
                                     let err = serde_json::json!({
                                         "serviceErrors": [{ "code": "-21669", "title": "Incorrect Code", "message": "Incorrect verification code." }]
@@ -1238,7 +1268,7 @@ mod rate_limit_regressions {
             }
         });
 
-        MockGsa { base_url: format!("http://{addr}"), counts, _behavior: behavior }
+        MockGsa { base_url: format!("http://{addr}"), counts, behavior }
     }
 
     fn test_client(base_url: &str) -> Client {
@@ -1433,6 +1463,191 @@ mod rate_limit_regressions {
             let c2 = mock.counts.lock().unwrap().clone();
             assert_eq!(c2.apptokens, 1);
             assert_eq!(c2.srp_init + c2.srp_complete + c2.trusted_device_push, 0);
+        });
+    }
+
+    struct LogLines(Arc<Mutex<Vec<String>>>);
+    struct MsgVisitor(String);
+    impl tracing::field::Visit for MsgVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            } else {
+                self.0.push_str(&format!(" {}={value:?}", field.name()));
+            }
+        }
+    }
+    impl tracing::Subscriber for LogLines {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool { true }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id { tracing::span::Id::from_u64(1) }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut v = MsgVisitor(String::new());
+            event.record(&mut v);
+            self.0.lock().unwrap().push(v.0);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn sequential_gsa_replay_requests_at_most_one_code_and_logs_without_secrets() {
+        let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sub = LogLines(logs.clone());
+        tracing::subscriber::with_default(sub, || {
+            run_in_vault(async {
+                let mock = start_mock_gsa(MockBehavior {
+                    au: None,
+                    ..MockBehavior::default()
+                })
+                .await;
+
+                let mut s1 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let p1 = s1.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("409 without au");
+                s1.finish_sign_in(p1, "654321").await.unwrap();
+                let c = mock.counts.lock().unwrap().clone();
+                assert_eq!(c.trusted_device_push + c.sms_send, 0, "409 without au already pushed 1 code on complete");
+                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 1);
+
+                s1.sign_out().unwrap();
+                *mock.behavior.lock().unwrap() = MockBehavior {
+                    au: Some("secondaryAuth".into()),
+                    ..MockBehavior::default()
+                };
+                let mut s2 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let p2 = s2.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("409 secondaryAuth");
+                s2.finish_sign_in(p2, "654321").await.unwrap();
+                let c = mock.counts.lock().unwrap().clone();
+                assert_eq!(c.trusted_device_push, 0, "secondaryAuth must never touch trusteddevice");
+                assert_eq!(c.sms_send, 1, "secondaryAuth sends at most 1 SMS code");
+                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 2);
+
+                s2.sign_out().unwrap();
+                *mock.behavior.lock().unwrap() = MockBehavior {
+                    au: Some("trustedDeviceSecondaryAuth".into()),
+                    trusted_device_status: 500,
+                    ..MockBehavior::default()
+                };
+                let mut s3 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                assert!(s3.sign_in("person@example.com", "correct-horse-battery", true).await.is_err());
+                let c = mock.counts.lock().unwrap().clone();
+                assert_eq!(c.trusted_device_push, 1, "device push tried once");
+                assert_eq!(c.sms_send, 1, "device push failure must not fall back to SMS");
+                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 3);
+
+                *mock.behavior.lock().unwrap() = MockBehavior {
+                    srp_status: 429,
+                    apptokens_status: 429,
+                    ..MockBehavior::default()
+                };
+                let mut s4 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                s4.account.session = Some(Session {
+                    apple_id: "person@example.com".into(),
+                    adsid: "000123-abc".into(),
+                    gs_idms_token: "idms-tok-1".into(),
+                    first_name: "Test".into(),
+                    last_name: "Person".into(),
+                    sk: vec![7u8; 32],
+                    c: b"cookie-bytes".to_vec(),
+                });
+                s4.account.password = Some("correct-horse-battery".into());
+                store::save(&s4.account).unwrap();
+                let before_429 = mock.counts.lock().unwrap().clone();
+                let e429 = s4.token().await.unwrap_err();
+                assert!(is_rate_limit(&e429));
+                let after_429 = mock.counts.lock().unwrap().clone();
+                assert_eq!(after_429.apptokens, before_429.apptokens + 1);
+                assert_eq!(after_429.srp_init, before_429.srp_init);
+                assert!(s4.token().await.is_err(), "background token renewal must stop during cooldown");
+                let after_bg = mock.counts.lock().unwrap().clone();
+                assert_eq!(after_bg.apptokens, after_429.apptokens, "no HTTP requests during rate-limit cooldown");
+                assert_eq!(after_bg.srp_init, after_429.srp_init);
+                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 3);
+
+                s4.sign_out().unwrap();
+                *mock.behavior.lock().unwrap() = MockBehavior {
+                    au: Some("trustedDeviceSecondaryAuth".into()),
+                    include_session_keys_on_409: false,
+                    ..MockBehavior::default()
+                };
+                let mut s5 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let before_s5 = mock.counts.lock().unwrap().clone();
+                let p5 = s5.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("keyless 409");
+                let _ = s5.finish_sign_in(p5, "654321").await;
+                let after_s5 = mock.counts.lock().unwrap().clone();
+                assert_eq!(after_s5.trusted_device_push - before_s5.trusted_device_push, 1, "post-validation 409 must never request a second push");
+                assert_eq!(after_s5.sms_send - before_s5.sms_send, 0);
+
+                let code_logs: Vec<String> = logs
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|l| l.contains("2fa-code-request"))
+                    .cloned()
+                    .collect();
+                assert_eq!(code_logs.len(), 5, "expected 5 logged code events (including finish_resign_in 409), got: {code_logs:?}");
+                for line in &code_logs {
+                    for secret in ["person@example.com", "correct-horse-battery", "654321", "000123-abc", "idms-tok-1", "xcode-auth-token-ok"] {
+                        assert!(!line.contains(secret), "2fa-code-request leaked {secret}: {line}");
+                    }
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn apptokens_503_with_ec_22411_enters_cooldown_without_sign_in() {
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior {
+                apptokens_status: 503,
+                apptokens_ec: -22411,
+                apptokens_em: "This action cannot be completed at this time".into(),
+                ..MockBehavior::default()
+            })
+            .await;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            signer.account.session = Some(Session {
+                apple_id: "person@example.com".into(),
+                adsid: "000123-abc".into(),
+                gs_idms_token: "valid-tok".into(),
+                first_name: "Test".into(),
+                last_name: "Person".into(),
+                sk: vec![7u8; 32],
+                c: b"cookie-bytes".to_vec(),
+            });
+            signer.account.password = Some("correct-horse-battery".into());
+            store::save(&signer.account).unwrap();
+
+            let err = signer.token().await.unwrap_err();
+            assert!(is_rate_limit(&err), "HTTP 503 with ec=-22411 must be classified as rate limit, got: {err}");
+            assert!(err.to_string().contains("Wait about an hour"), "UI error must tell user to wait: {err}");
+            assert!(signer.is_rate_limited(), "Signer must record rate-limit cooldown");
+
+            let c = mock.counts.lock().unwrap().clone();
+            assert_eq!(c.apptokens, 1);
+            assert_eq!(c.srp_init + c.srp_complete + c.trusted_device_push + c.sms_send, 0, "must not call sign_in or request a code");
+
+            let err_again = signer.token().await.unwrap_err();
+            assert!(is_rate_limit(&err_again));
+            assert_eq!(mock.counts.lock().unwrap().apptokens, 1, "cooldown must block subsequent apptokens requests");
+        });
+    }
+
+    #[test]
+    fn distinguishes_wrong_code_from_expired_code() {
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior::default()).await;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let pending = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+
+            let wrong_err = signer.finish_sign_in(pending.clone(), "000000").await.unwrap_err().to_string();
+            assert!(wrong_err.to_lowercase().contains("incorrect"), "wrong code must say incorrect, got: {wrong_err}");
+            assert!(!wrong_err.to_lowercase().contains("expired"), "wrong code must not claim expired, got: {wrong_err}");
+
+            let exp_err = signer.finish_sign_in(pending, "999999").await.unwrap_err().to_string();
+            assert!(exp_err.to_lowercase().contains("expired"), "expired code must say expired, got: {exp_err}");
+            assert!(exp_err.to_lowercase().contains("newest"), "expired code must ask for newest code, got: {exp_err}");
         });
     }
 }
