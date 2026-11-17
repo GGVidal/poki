@@ -312,16 +312,42 @@ fn read_password(from_stdin: bool) -> Result<String> {
 }
 
 fn cli_env_filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
-    match rust_log {
+    match rust_log.map(str::trim).filter(|s| !s.is_empty()) {
         Some(v) => tracing_subscriber::EnvFilter::new(v),
-        None => tracing_subscriber::EnvFilter::default(),
+        None => tracing_subscriber::EnvFilter::new(format!(
+            "error,{}=info",
+            poki_setup_core::apple::gsa::CODE_REQUEST_LOG_TARGET
+        )),
+    }
+}
+
+struct FileOrSink(Option<std::fs::File>);
+
+impl std::io::Write for FileOrSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match &mut self.0 {
+            Some(f) => f.write(buf),
+            None => Ok(buf.len()),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match &mut self.0 {
+            Some(f) => f.flush(),
+            None => Ok(()),
+        }
     }
 }
 
 async fn run() -> Result<()> {
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+    let file = poki_setup_core::paths::log_dir()
+        .ok()
+        .and_then(|d| std::fs::OpenOptions::new().create(true).append(true).open(d.join("poki-setup.log")).ok());
+    let writer = std::io::stderr.and(std::sync::Mutex::new(FileOrSink(file)));
     tracing_subscriber::fmt()
         .with_env_filter(cli_env_filter(std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).ok().as_deref()))
-        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_writer(writer)
         .init();
     let cli = Cli::parse();
     let reporter = if cli.json { json_reporter() } else { Reporter::stderr() };
@@ -399,6 +425,7 @@ async fn run() -> Result<()> {
             if let Some(code) = code {
                 let mut pending = signer.pending().cloned().or_else(poki_setup_core::apple::store::load_pending).ok_or_else(|| anyhow!("No sign-in is waiting for a code. Run `poki-setup login <email>` first."))?;
                 if keep_password {
+                    signer.set_pending_keep_password(true);
                     pending.keep_password = true;
                 }
                 signer.finish_sign_in(pending, &code).await?;
@@ -425,7 +452,6 @@ async fn run() -> Result<()> {
                             Err(e) if poki_setup_core::apple::gsa::is_rate_limit(&e) => return Err(e.into()),
                             Err(e) => {
                                 current = signer.pending().cloned().unwrap_or(current);
-                    signer.set_pending_keep_password(true);
                                 if current.failed_attempts >= 2 {
                                     return Err(e.into());
                                 }

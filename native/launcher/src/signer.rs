@@ -28,23 +28,17 @@ use std::{
 };
 
 type EmitFn = Arc<dyn Fn(Value) + Send + Sync>;
-static LOG_EMIT: Mutex<Option<EmitFn>> = Mutex::new(None);
 
-struct LogEmitGuard;
-impl Drop for LogEmitGuard {
-    fn drop(&mut self) {
-        *LOG_EMIT.lock().unwrap() = None;
-    }
+tokio::task_local! {
+    static LOG_EMIT: EmitFn;
 }
 
-fn install_log_hook(emit: EmitFn) -> LogEmitGuard {
+fn ensure_log_hook() {
     core::apple::gsa::set_code_request_hook(|line| {
-        if let Some(cb) = LOG_EMIT.lock().unwrap().clone() {
+        let _ = LOG_EMIT.try_with(|cb| {
             cb(json!({"event": "log", "line": line}));
-        }
+        });
     });
-    *LOG_EMIT.lock().unwrap() = Some(emit);
-    LogEmitGuard
 }
 
 /// Signed in and pending state, shared by the calls.
@@ -137,8 +131,12 @@ fn channels() -> Value {
 
 /// Runs one request. `emit` gets progress events while it runs.
 pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static) -> Out {
+    ensure_log_hook();
     let emit_arc: EmitFn = Arc::new(emit);
-    let _log_guard = install_log_hook(emit_arc.clone());
+    LOG_EMIT.scope(emit_arc.clone(), handle_inner(request, emit_arc)).await
+}
+
+async fn handle_inner(request: Value, emit_arc: EmitFn) -> Out {
     let op = request["op"].as_str().unwrap_or("");
     let reporter = Reporter::new(move |p: Progress| emit_arc(json!({"event": "progress", "progress": p})));
     match op {

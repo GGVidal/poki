@@ -23,6 +23,8 @@ const PENDING_CODE_TTL_SECS: i64 = 600;
 const PENDING_SESSION_TTL_SECS: i64 = 3600;
 pub const RESEND_COOLDOWN_SECS: i64 = 60;
 
+pub const CODE_REQUEST_LOG_TARGET: &str = "poki_setup_core::apple::code_request";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeCaller {
     SignIn,
@@ -56,7 +58,7 @@ pub fn set_code_request_hook(hook: fn(&str)) {
 
 fn log_code_request(path: &'static str, caller: CodeCaller) {
     let line = format!("2fa-code-request path={path} caller={}", caller.as_str());
-    tracing::info!("{line}");
+    tracing::info!(target: CODE_REQUEST_LOG_TARGET, "{line}");
     if let Some(hook) = CODE_REQUEST_HOOK.get() {
         hook(&line);
     }
@@ -608,9 +610,9 @@ impl Client {
     }
 
     pub async fn resend(&mut self, pending: &mut Pending, now: i64) -> Result<()> {
+        pending.last_sent_at = now;
         if let Some(src) = &pending.anisette {
             self.anisette.pin_source(src.clone());
-        pending.last_sent_at = now;
         }
         match pending.via {
             Factor::TrustedDevice => self.start_trusted_device(pending, CodeCaller::ResendCode).await?,
@@ -720,19 +722,12 @@ enum Step<'a> {
     AskTrustedDevice,
     /// `secondaryAuth`: ask once for an SMS code, never a trusted-device push.
     AskSms,
-pub const INCOMPLETE_SESSION: &str = "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session.";
     /// `repair`: Apple wants the account fixed (often two-factor authentication turned on).
     Repair,
     Unsupported(&'a str),
 }
 
 fn next_step(hsc: i64, au: Option<&str>) -> Step<'_> {
-pub fn incomplete_session() -> Error { Error::NeedsPerson(INCOMPLETE_SESSION.into()) }
-
-pub fn is_incomplete_session(e: &Error) -> bool {
-    matches!(e, Error::NeedsPerson(m) if m == INCOMPLETE_SESSION)
-}
-
     match au {
         Some("trustedDeviceSecondaryAuth") => Step::AskTrustedDevice,
         Some("secondaryAuth") => Step::AskSms,
@@ -749,10 +744,17 @@ const WRONG_CODE_MARKER: &str = "That verification code is incorrect.";
 pub const WRONG_CODE_FIRST: &str = "That verification code is incorrect. Check the 6-digit code and enter the newest code you received.";
 pub const WRONG_CODE_WAIT: &str = "That verification code is incorrect. Stop and wait a few minutes before trying again so Apple does not lock this Apple Account, then enter the newest 6-digit code.";
 pub const EXPIRED_CODE: &str = "That verification code has expired. Enter the newest 6-digit code, or request a new code.";
+pub const INCOMPLETE_SESSION: &str = "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session.";
 
 pub fn rate_limited() -> Error { Error::NeedsPerson(RATE_LIMITED.into()) }
 
 pub fn expired_code() -> Error { Error::NeedsPerson(EXPIRED_CODE.into()) }
+
+pub fn incomplete_session() -> Error { Error::NeedsPerson(INCOMPLETE_SESSION.into()) }
+
+pub fn is_incomplete_session(e: &Error) -> bool {
+    matches!(e, Error::NeedsPerson(m) if m == INCOMPLETE_SESSION)
+}
 
 pub fn is_rate_limit(e: &Error) -> bool {
     match e {
