@@ -230,13 +230,17 @@ final class SelfSignerTests: XCTestCase {
 
         let wrong = "That verification code is incorrect. Check the 6-digit code and enter the newest code you received."
         let expired = "That verification code has expired. Enter the newest 6-digit code, or request a new code."
+        let incomplete = "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session."
 
         AppLocalization.shared.preference = "zh-Hans"
         let zhWrong = SelfSigner.localizedErrorText(wrong)
         let zhExpired = SelfSigner.localizedErrorText(expired)
+        let zhIncomplete = SelfSigner.localizedErrorText(incomplete)
         XCTAssertTrue(zhWrong.contains("验证码不对"), zhWrong)
         XCTAssertFalse(zhWrong.contains("已过期"), zhWrong)
         XCTAssertTrue(zhExpired.contains("已过期") && zhExpired.contains("最新"), zhExpired)
+        XCTAssertTrue(zhIncomplete.contains("重新登录"), zhIncomplete)
         XCTAssertNotEqual(zhWrong, zhExpired)
+        XCTAssertNotEqual(zhWrong, zhIncomplete)
     }
 }

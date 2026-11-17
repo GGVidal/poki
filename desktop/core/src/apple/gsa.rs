@@ -28,7 +28,6 @@ pub enum CodeCaller {
     SignIn,
     IosSignIn,
     ResendCode,
-    FinishResignIn,
     TokenRefresh,
     KeeperRenew,
     IosMaintain,
@@ -41,7 +40,6 @@ impl CodeCaller {
             Self::SignIn => "sign_in",
             Self::IosSignIn => "ios_sign_in",
             Self::ResendCode => "resend_code",
-            Self::FinishResignIn => "finish_resign_in",
             Self::TokenRefresh => "token_refresh",
             Self::KeeperRenew => "keeper_renew",
             Self::IosMaintain => "ios_maintain",
@@ -373,27 +371,21 @@ impl Client {
 
     pub async fn sign_in_with_caller(&mut self, apple_id: &str, password: &str, caller: CodeCaller) -> Result<Outcome> {
         loop {
-            match self.sign_in_once_inner(apple_id, password, true, caller, &[]).await {
+            match self.sign_in_once(apple_id, password, caller).await {
                 Err(Error::Apple { code: -80045, .. }) | Err(Error::Apple { code: -80046, .. }) if self.anisette.rotate() => continue,
                 other => return other,
             }
         }
     }
 
-    async fn sign_in_once_inner(
+    async fn sign_in_once(
         &mut self,
         apple_id: &str,
         password: &str,
-        allow_code_request: bool,
         caller: CodeCaller,
-        cookies: &[(String, String)],
     ) -> Result<Outcome> {
         let apple_id_clean = apple_id.trim().to_lowercase();
-        let anisette = if allow_code_request {
-            self.anisette.headers().await?
-        } else {
-            self.anisette.headers_pinned().await?
-        };
+        let anisette = self.anisette.headers().await?;
         let mut client = srp::Client::new();
 
         let mut init = plist::Dictionary::new();
@@ -402,7 +394,7 @@ impl Client {
         init.insert("o".into(), "init".into());
         init.insert("ps".into(), plist::Value::Array(vec!["s2k".into(), "s2k_fo".into()]));
         init.insert("u".into(), apple_id_clean.clone().into());
-        let r1 = self.gs_request_with_cookies(&anisette, init, cookies).await?;
+        let r1 = self.gs_request(&anisette, init).await?;
         let st = status(&r1);
         if st.ec != 0 {
             return Err(apple_error(&st));
@@ -422,7 +414,7 @@ impl Client {
         complete.insert("cpd".into(), plist::Value::Dictionary(anisette.cpd()));
         complete.insert("o".into(), "complete".into());
         complete.insert("u".into(), apple_id_clean.clone().into());
-        let r2 = self.gs_request_with_cookies(&anisette, complete, cookies).await?;
+        let r2 = self.gs_request(&anisette, complete).await?;
         let st = status(&r2);
         if st.ec != 0 {
             return Err(apple_error(&st));
@@ -446,17 +438,6 @@ impl Client {
             return Err(Error::msg("Apple's sign-in answer had no account token."));
         }
         tracing::info!("sign-in answered hsc {} au {:?}", st.hsc, st.au);
-        if !allow_code_request {
-            if !session.sk.is_empty() && !session.c.is_empty() {
-                return Ok(Outcome::SignedIn(session));
-            }
-            if st.hsc == 409 {
-                log_code_request("finish_resign_in", CodeCaller::FinishResignIn);
-            }
-            return Err(Error::NeedsPerson(
-                "Apple verified the code, but did not finish opening the session. Wait a few minutes before signing in again so Apple does not rate-limit this account.".into(),
-            ));
-        }
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         let make_pending = |via: Factor, phone_id: u64, session: Session| Pending {
             apple_id: apple_id.trim().into(),
@@ -687,12 +668,7 @@ impl Client {
         if !pending.session.sk.is_empty() && !pending.session.c.is_empty() {
             return Ok(pending.session.clone());
         }
-        match self.sign_in_once_inner(&pending.apple_id, &pending.password, false, CodeCaller::FinishResignIn, &pending.cookies).await? {
-            Outcome::SignedIn(s) => Ok(s),
-            Outcome::NeedsCode(_) => Err(Error::NeedsPerson(
-                "Apple verified the code, but did not finish opening the session. Wait a few minutes before signing in again so Apple does not rate-limit this account.".into(),
-            )),
-        }
+        Err(incomplete_session())
     }
 
     /// The app token for Xcode's services, which the developer portal wants.
@@ -744,12 +720,19 @@ enum Step<'a> {
     AskTrustedDevice,
     /// `secondaryAuth`: ask once for an SMS code, never a trusted-device push.
     AskSms,
+pub const INCOMPLETE_SESSION: &str = "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session.";
     /// `repair`: Apple wants the account fixed (often two-factor authentication turned on).
     Repair,
     Unsupported(&'a str),
 }
 
 fn next_step(hsc: i64, au: Option<&str>) -> Step<'_> {
+pub fn incomplete_session() -> Error { Error::NeedsPerson(INCOMPLETE_SESSION.into()) }
+
+pub fn is_incomplete_session(e: &Error) -> bool {
+    matches!(e, Error::NeedsPerson(m) if m == INCOMPLETE_SESSION)
+}
+
     match au {
         Some("trustedDeviceSecondaryAuth") => Step::AskTrustedDevice,
         Some("secondaryAuth") => Step::AskSms,

@@ -165,8 +165,13 @@ impl Signer {
                     self.account.mark_rate_limited(now);
                     let _ = store::save(&self.account);
                 }
-                let _ = store::save_pending(&active);
-                self.pending = Some(active);
+                if gsa::is_incomplete_session(&e) {
+                    self.pending = None;
+                    let _ = store::clear_pending();
+                } else {
+                    let _ = store::save_pending(&active);
+                    self.pending = Some(active);
+                }
                 Err(e)
             }
         }

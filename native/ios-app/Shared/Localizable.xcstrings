@@ -35516,6 +35516,28 @@
           }
         }
       }
+    },
+    "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 已验证该验证码，但未完成会话建立。请重新登录以发起新会话。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 已驗證該驗證碼，但未完成工作階段建立。請重新登入以發起新工作階段。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
