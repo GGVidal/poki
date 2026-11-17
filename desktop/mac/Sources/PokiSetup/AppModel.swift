@@ -88,6 +88,8 @@ final class AppModel: ObservableObject {
         return phones.first
     }
 
+    var isRateLimited: Bool { account?.isRateLimited() == true }
+
     func start() {
         guard !started else { return }
         started = true
@@ -164,7 +166,7 @@ final class AppModel: ObservableObject {
                 codeVia = state.pendingFactor
                 needsCode = true
             }
-            if state.signedIn, teams.isEmpty {
+            if state.signedIn, state.pendingFactor == nil, !state.isRateLimited(), teams.isEmpty {
                 do {
                     teams = try await bridge.call("teams")
                 } catch let e as CoreError where e.kind == "needs_code" {
@@ -357,10 +359,21 @@ final class AppModel: ObservableObject {
     }
 
     func renewDue() async {
-        guard !demo, !needsCode, account?.passwordKept == true else { return }
+        guard !demo, !needsCode, !isRateLimited, account?.passwordKept == true else { return }
+        if let state: AccountState = try? await bridge.call("account") {
+            account = state
+            if state.pendingFactor != nil {
+                codeVia = state.pendingFactor
+                needsCode = true
+                return
+            }
+            if state.isRateLimited() || !state.passwordKept { return }
+        }
         let results = (try? await bridge.call("renew_due", as: [RenewResult].self)) ?? []
         if results.contains(where: { $0.kind == "needs_code" }) {
             await promptForCode()
+        } else if results.contains(where: { !$0.ok }), let state: AccountState = try? await bridge.call("account") {
+            account = state
         }
         await refreshRecords()
     }

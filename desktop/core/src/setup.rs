@@ -230,14 +230,22 @@ impl Signer {
         store::save(&self.account)
     }
 
+    async fn fetch_xcode_token(&mut self, session: &gsa::Session) -> Result<AppToken> {
+        match self.client.xcode_token(session).await {
+            Ok(t) => Ok(t),
+            Err(e) => {
+                if gsa::is_rate_limit(&e) {
+                    self.account.mark_rate_limited(now_unix());
+                    let _ = store::save(&self.account);
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// A token good for at least ten minutes, refreshed from the session or, when the
     /// session is expired and the password is kept, from a fresh sign-in.
     pub async fn token(&mut self) -> Result<AppToken> {
-        if let Some(t) = &self.account.xcode_token {
-            if t.valid_for(600) {
-                return Ok(t.clone());
-            }
-        }
         let now = now_unix();
         if self.account.is_rate_limited(now) {
             return Err(gsa::rate_limited());
@@ -249,21 +257,21 @@ impl Signer {
             self.pending = None;
             let _ = store::clear_pending();
         }
-        let session = self.account.session.clone().ok_or_else(|| Error::NeedsPerson("Sign in with your Apple ID first.".into()))?;
-        let fresh = match self.client.xcode_token(&session).await {
-            Ok(t) => t,
-            Err(e) if gsa::is_rate_limit(&e) => {
-                self.account.mark_rate_limited(now);
-                let _ = store::save(&self.account);
-                return Err(e);
+        if let Some(t) = &self.account.xcode_token {
+            if t.valid_for(600) {
+                return Ok(t.clone());
             }
+        }
+        let session = self.account.session.clone().ok_or_else(|| Error::NeedsPerson("Sign in with your Apple ID first.".into()))?;
+        let fresh = match self.fetch_xcode_token(&session).await {
+            Ok(t) => t,
             Err(e) if gsa::is_session_expired(&e) && self.account.password.is_some() => {
                 let (id, pw) = (session.apple_id.clone(), self.account.password.clone().unwrap());
                 let caller = self.caller;
                 match self.sign_in_as(&id, &pw, true, caller).await? {
                     None => {
                         let s = self.account.session.clone().unwrap();
-                        self.client.xcode_token(&s).await?
+                        self.fetch_xcode_token(&s).await?
                     }
                     Some(pending) => return Err(Error::NeedsCode(Box::new(pending))),
                 }
@@ -645,6 +653,9 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
 #[cfg(feature = "device")]
 /// Renews every phone that is due. Returns (udid, result) pairs.
 pub async fn renew_due(signer: &mut Signer, reporter: &Reporter) -> Vec<(String, Result<keeper::Record>)> {
+    if signer.is_rate_limited() || signer.pending().is_some() {
+        return vec![];
+    }
     let prev_caller = signer.caller;
     signer.set_caller(gsa::CodeCaller::KeeperRenew);
     let mut out = vec![];

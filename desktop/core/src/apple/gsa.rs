@@ -610,12 +610,12 @@ impl Client {
     pub async fn resend(&mut self, pending: &mut Pending, now: i64) -> Result<()> {
         if let Some(src) = &pending.anisette {
             self.anisette.pin_source(src.clone());
+        pending.last_sent_at = now;
         }
         match pending.via {
             Factor::TrustedDevice => self.start_trusted_device(pending, CodeCaller::ResendCode).await?,
             Factor::Sms => self.send_sms_to_phone(pending, pending.phone_id.max(1), CodeCaller::ResendCode).await?,
         }
-        pending.last_sent_at = now;
         pending.failed_attempts = 0;
         Ok(())
     }

@@ -34,6 +34,15 @@ struct AccountState: Decodable {
     var passwordKept: Bool
     var anisette: AnisetteSource
     var pendingFactor: String?
+    var rateLimited: Bool? = nil
+    var rateLimitedUntil: Int? = nil
+
+    func isRateLimited(at now: Date = .now) -> Bool {
+        if let until = rateLimitedUntil {
+            return now.timeIntervalSince1970 < TimeInterval(until)
+        }
+        return rateLimited == true
+    }
 }
 
 struct SignInAnswer: Decodable {
