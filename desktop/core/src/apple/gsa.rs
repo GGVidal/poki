@@ -1106,13 +1106,21 @@ mod rate_limit_regressions {
     struct Counts {
         srp_init: usize,
         srp_complete: usize,
+        complete_409_auto_push: usize,
         apptokens: usize,
         trusted_device_push: usize,
         sms_auth_info: usize,
+        sms_201_auto_send: usize,
         sms_send: usize,
         sms_send_with_slash: usize,
         device_validate: usize,
         sms_validate: usize,
+    }
+
+    impl Counts {
+        fn total_codes_sent(&self) -> usize {
+            self.complete_409_auto_push + self.trusted_device_push + self.sms_201_auto_send + self.sms_send
+        }
     }
 
     #[derive(Clone)]
@@ -1131,6 +1139,7 @@ mod rate_limit_regressions {
         apptokens_status: u16,
         apptokens_ec: i64,
         apptokens_em: String,
+        second_apptokens: Option<(u16, i64, String)>,
     }
 
     impl Default for MockBehavior {
@@ -1150,6 +1159,7 @@ mod rate_limit_regressions {
                 apptokens_status: 200,
                 apptokens_ec: 0,
                 apptokens_em: String::new(),
+                second_apptokens: None,
             }
         }
     }
@@ -1296,7 +1306,11 @@ mod rate_limit_regressions {
                                         }
                                     }
                                     "complete" => {
-                                        counts.lock().unwrap().srp_complete += 1;
+                                        let already_validated = {
+                                            let mut c = counts.lock().unwrap();
+                                            c.srp_complete += 1;
+                                            c.device_validate + c.sms_validate > 0
+                                        };
                                         let a_pub = last_a.lock().unwrap().clone();
                                         let m1 = data(req, "M1").unwrap();
                                         if let Some((key, m2)) = srp_srv.verify_and_m2(&a_pub, m1) {
@@ -1304,27 +1318,43 @@ mod rate_limit_regressions {
                                             r.insert("M2".into(), plist::Value::Data(m2));
                                             let include_keys = b.hsc != 409 || b.include_session_keys_on_409;
                                             r.insert("spd".into(), plist::Value::Data(encrypt_spd_for_test(&key, include_keys)));
-                                            (200, "text/x-xml-plist", gs_response(r, 0, b.hsc, b.au.as_deref()))
+                                            let eff_au = if b.hsc == 409 && already_validated && !b.include_session_keys_on_409 {
+                                                None
+                                            } else {
+                                                b.au.as_deref()
+                                            };
+                                            if b.hsc == 409 && eff_au.is_none() {
+                                                counts.lock().unwrap().complete_409_auto_push += 1;
+                                            }
+                                            (200, "text/x-xml-plist", gs_response(r, 0, b.hsc, eff_au))
                                         } else {
                                             (200, "text/x-xml-plist", gs_response(plist::Dictionary::new(), -22406, 200, None))
                                         }
                                     }
                                     "apptokens" => {
-                                        counts.lock().unwrap().apptokens += 1;
-                                        if b.apptokens_ec != 0 {
+                                        let call_num = {
+                                            let mut c = counts.lock().unwrap();
+                                            c.apptokens += 1;
+                                            c.apptokens
+                                        };
+                                        let (app_status, app_ec, app_em) = match (call_num, &b.second_apptokens) {
+                                            (n, Some((st, ec, em))) if n >= 2 => (*st, *ec, em.clone()),
+                                            _ => (b.apptokens_status, b.apptokens_ec, b.apptokens_em.clone()),
+                                        };
+                                        if app_ec != 0 {
                                             let mut st = plist::Dictionary::new();
-                                            st.insert("ec".into(), b.apptokens_ec.into());
-                                            st.insert("hsc".into(), (b.apptokens_status as i64).into());
-                                            if !b.apptokens_em.is_empty() {
-                                                st.insert("em".into(), b.apptokens_em.clone().into());
+                                            st.insert("ec".into(), app_ec.into());
+                                            st.insert("hsc".into(), (app_status as i64).into());
+                                            if !app_em.is_empty() {
+                                                st.insert("em".into(), app_em.into());
                                             }
                                             let mut r = plist::Dictionary::new();
                                             r.insert("Status".into(), plist::Value::Dictionary(st));
                                             let mut root = plist::Dictionary::new();
                                             root.insert("Response".into(), plist::Value::Dictionary(r));
-                                            (b.apptokens_status, "text/x-xml-plist", plist_xml(root))
-                                        } else if b.apptokens_status != 200 {
-                                            (b.apptokens_status, "text/plain", b"rate limited".to_vec())
+                                            (app_status, "text/x-xml-plist", plist_xml(root))
+                                        } else if app_status != 200 {
+                                            (app_status, "text/plain", b"rate limited".to_vec())
                                         } else {
                                             let mut r = plist::Dictionary::new();
                                             r.insert("et".into(), plist::Value::Data(encrypt_apptoken_for_test(&[7u8; 32])));
@@ -1341,7 +1371,12 @@ mod rate_limit_regressions {
                                 (b.trusted_device_status, "text/x-xml-plist", plist_xml(d))
                             }
                             ("GET", "/auth") => {
-                                counts.lock().unwrap().sms_auth_info += 1;
+                                let mut c = counts.lock().unwrap();
+                                c.sms_auth_info += 1;
+                                if b.sms_auth_status == 201 {
+                                    c.sms_201_auto_send += 1;
+                                }
+                                drop(c);
                                 let j = serde_json::json!({ "trustedPhoneNumbers": [{ "id": 1, "pushMode": "sms" }] });
                                 (b.sms_auth_status, "application/json", j.to_string().into_bytes())
                             }
@@ -1544,12 +1579,19 @@ mod rate_limit_regressions {
             .await;
             let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
             let pending = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
-            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1);
+            assert_eq!(mock.counts.lock().unwrap().total_codes_sent(), 1);
 
-            let _ = signer.finish_sign_in(pending, "654321").await;
+            let err = signer.finish_sign_in(pending, "654321").await.unwrap_err().to_string();
             let c = mock.counts.lock().unwrap().clone();
-            assert_eq!(c.trusted_device_push, 1, "must never ask for a second device push after code validation");
-            assert_eq!(c.sms_auth_info + c.sms_send, 0, "must never ask for an SMS code after code validation");
+            assert_eq!(c.total_codes_sent(), 1, "total codes sent (including second complete 409 auto-push) must be at most 1");
+            assert_eq!(c.complete_409_auto_push, 0, "must never trigger a 409 server auto-push after validation");
+            assert_eq!(c.srp_complete, 1, "must never run a second SRP complete exchange after validation");
+            assert!(
+                err.to_lowercase().contains("sign in again") || err.to_lowercase().contains("signing in again"),
+                "keyless 409 validation must explicitly ask user to sign in again, got: {err}"
+            );
+            assert!(signer.pending().is_none(), "consumed keyless Pending must be cleared in memory");
+            assert!(store::load_pending().is_none(), "consumed keyless Pending must be cleared in vault");
         });
     }
 
@@ -1725,10 +1767,10 @@ mod rate_limit_regressions {
                 let mut s5 = Signer::for_test(test_client(&mock.base_url)).unwrap();
                 let before_s5 = mock.counts.lock().unwrap().clone();
                 let p5 = s5.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("keyless 409");
-                let _ = s5.finish_sign_in(p5, "654321").await;
+                assert!(s5.finish_sign_in(p5, "654321").await.is_err());
                 let after_s5 = mock.counts.lock().unwrap().clone();
-                assert_eq!(after_s5.trusted_device_push - before_s5.trusted_device_push, 1, "post-validation 409 must never request a second push");
-                assert_eq!(after_s5.sms_send - before_s5.sms_send, 0);
+                assert_eq!(after_s5.srp_complete - before_s5.srp_complete, 1, "keyless 409 must not send a second SRP complete");
+                assert_eq!(after_s5.total_codes_sent() - before_s5.total_codes_sent(), 1, "keyless 409 must emit at most 1 code in total");
 
                 let code_logs: Vec<String> = logs
                     .lock()
@@ -1737,7 +1779,7 @@ mod rate_limit_regressions {
                     .filter(|l| l.contains("2fa-code-request"))
                     .cloned()
                     .collect();
-                assert_eq!(code_logs.len(), 5, "expected 5 logged code events (including finish_resign_in 409), got: {code_logs:?}");
+                assert_eq!(code_logs.len(), 4, "expected 4 logged code events (at most 1 per sign-in across s1, s2, s3, s5), got: {code_logs:?}");
                 for line in &code_logs {
                     for secret in ["person@example.com", "correct-horse-battery", "654321", "000123-abc", "idms-tok-1", "xcode-auth-token-ok"] {
                         assert!(!line.contains(secret), "2fa-code-request leaked {secret}: {line}");
@@ -1803,6 +1845,139 @@ mod rate_limit_regressions {
     }
 
     #[test]
+    fn finish_sign_in_applies_pending_keep_password_choice() {
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior::default()).await;
+
+            // Case 1: Existing saved password must be cleared when signing in with keep_password=false.
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            signer.account.password = Some("old-saved-password".into());
+            store::save(&signer.account).unwrap();
+
+            let p1 = signer.sign_in("person@example.com", "correct-horse-battery", false).await.unwrap().expect("needs code");
+            signer.finish_sign_in(p1, "654321").await.unwrap();
+            assert_eq!(signer.account.password, None, "keep_password=false must clear previously saved password in memory");
+            assert_eq!(store::load().unwrap().password, None, "keep_password=false must clear previously saved password in vault");
+
+            // Case 2: Toggling keep_password from true to false while waiting for code must clear old password across reload.
+            signer.account.password = Some("old-saved-password".into());
+            store::save(&signer.account).unwrap();
+            let _ = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            let _ = signer.sign_in("person@example.com", "correct-horse-battery", false).await.unwrap().expect("reused pending with keep=false");
+            let mut reloaded = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let p_reloaded = reloaded.pending().cloned().expect("pending persisted");
+            reloaded.finish_sign_in(p_reloaded, "654321").await.unwrap();
+            assert_eq!(reloaded.account.password, None, "toggled keep_password=false must clear saved password on completion");
+            assert_eq!(store::load().unwrap().password, None, "toggled keep_password=false must clear saved password in vault");
+
+            // Case 3: Existing old password must be replaced by the new password when keep_password=true across reload.
+            reloaded.account.password = Some("stale-old-password".into());
+            store::save(&reloaded.account).unwrap();
+            let _ = reloaded.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            let mut reloaded2 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let p_keep = reloaded2.pending().cloned().expect("pending persisted");
+            reloaded2.finish_sign_in(p_keep, "654321").await.unwrap();
+            assert_eq!(reloaded2.account.password.as_deref(), Some("correct-horse-battery"), "keep_password=true must replace stale password");
+            assert_eq!(store::load().unwrap().password.as_deref(), Some("correct-horse-battery"));
+        });
+    }
+
+    #[test]
+    fn cooldown_and_pending_guards_cover_relogin_cached_token_and_renew_due() {
+        let (_home_guard, _dir) = crate::paths::test_home();
+        run_in_vault(async {
+            // 1. Second xcode_token() after automatic session-expired re-login hitting 503 + -22411 must record cooldown.
+            let mock = start_mock_gsa(MockBehavior {
+                hsc: 200,
+                au: None,
+                apptokens_status: 200,
+                apptokens_ec: -22406,
+                second_apptokens: Some((503, -22411, "This action cannot be completed at this time".into())),
+                ..MockBehavior::default()
+            })
+            .await;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            signer.account.session = Some(Session {
+                apple_id: "person@example.com".into(),
+                adsid: "000123-abc".into(),
+                gs_idms_token: "expired-tok".into(),
+                first_name: "Test".into(),
+                last_name: "Person".into(),
+                sk: vec![7u8; 32],
+                c: b"cookie-bytes".to_vec(),
+            });
+            signer.account.password = Some("correct-horse-battery".into());
+            store::save(&signer.account).unwrap();
+
+            let err = signer.token().await.unwrap_err();
+            assert!(is_rate_limit(&err), "second xcode_token 503/-22411 must be classified as rate limit, got: {err}");
+            assert!(signer.is_rate_limited(), "second xcode_token 503/-22411 after re-login must record cooldown on Signer");
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            assert!(store::load().unwrap().is_rate_limited(now), "cooldown after re-login must persist to store");
+
+            // 2. token() must check rate-limit and Pending BEFORE returning a valid cached xcode_token.
+            signer.account.xcode_token = Some(AppToken {
+                app: crate::apple::XCODE_APP_ID.into(),
+                token: "cached-still-valid-token".into(),
+                expires_at: now + 7200,
+            });
+            store::save(&signer.account).unwrap();
+            let cached_rl_err = signer.token().await.unwrap_err();
+            assert!(is_rate_limit(&cached_rl_err), "token() must refuse cached token while rate-limited");
+
+            signer.account.clear_rate_limit();
+            store::save(&signer.account).unwrap();
+            *mock.behavior.lock().unwrap() = MockBehavior::default();
+            let _pending = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            signer.account.xcode_token = Some(AppToken {
+                app: crate::apple::XCODE_APP_ID.into(),
+                token: "cached-still-valid-token".into(),
+                expires_at: now + 7200,
+            });
+            let cached_pending_err = signer.token().await.unwrap_err();
+            assert!(matches!(cached_pending_err, Error::NeedsCode(_)), "token() must refuse cached token while Pending is active");
+
+            // 3. renew_due() must stop at its entry guard when Pending is active or account is rate-limited.
+            #[cfg(feature = "device")]
+            {
+                let due_rec = crate::keeper::Record {
+                    udid: "00008150-DUE-TEST-UDID".into(),
+                    phone_name: "Test iPhone".into(),
+                    ios: "27.0".into(),
+                    apple_id: "person@example.com".into(),
+                    team_id: "TEAM123".into(),
+                    team_name: "Test Team".into(),
+                    team_is_free: true,
+                    bundle_id: "nz.zheha.poki.TEAM123".into(),
+                    app_group: "group.nz.zheha.poki.TEAM123".into(),
+                    version: "0.4.5".into(),
+                    build: "1".into(),
+                    release_tag: "app-0.4.5".into(),
+                    signed_at: now - 6 * 86_400,
+                    profile_expires_at: now + 86_400,
+                    last_checked_at: None,
+                    last_error: None,
+                    wifi_address: None,
+                    pairing_handed_off: false,
+                };
+                crate::keeper::put(due_rec).unwrap();
+                assert_eq!(crate::keeper::due().unwrap().len(), 1);
+
+                let pending_runs = crate::setup::renew_due(&mut signer, &crate::Reporter::silent()).await;
+                assert!(pending_runs.is_empty(), "renew_due must not attempt renewal while Pending is waiting for a code");
+                assert_eq!(crate::keeper::get("00008150-DUE-TEST-UDID").unwrap().unwrap().last_error, None);
+
+                signer.cancel_sign_in().unwrap();
+                signer.account.mark_rate_limited(now);
+                store::save(&signer.account).unwrap();
+                let rl_runs = crate::setup::renew_due(&mut signer, &crate::Reporter::silent()).await;
+                assert!(rl_runs.is_empty(), "renew_due must not attempt renewal during rate-limit cooldown");
+                assert_eq!(crate::keeper::get("00008150-DUE-TEST-UDID").unwrap().unwrap().last_error, None);
+            }
+        });
+    }
+
+    #[test]
     fn cancel_sign_in_and_resend_code_respect_cooldown_and_rate_limits() {
         let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sub = LogLines(logs.clone());
@@ -1817,19 +1992,57 @@ mod rate_limit_regressions {
                 assert!(cooldown_err.contains("seconds"), "expected 60s cooldown refusal, got: {cooldown_err}");
                 assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1, "60s cooldown must prevent resend");
 
+                // Failed resend must also record timestamp BEFORE sending, persisting across Signer reload.
                 p.created_at -= 61;
                 p.last_sent_at -= 61;
                 store::save_pending(&p).unwrap();
+                mock.behavior.lock().unwrap().trusted_device_status = 500;
+                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                assert!(signer.resend_code().await.is_err(), "HTTP 500 resend must fail");
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "failed resend hit endpoint once");
+
+                let mut reopened = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let retry_after_fail = reopened.resend_code().await.unwrap_err().to_string();
+                assert!(retry_after_fail.contains("seconds"), "failed resend must still enforce 60s cooldown after reload, got: {retry_after_fail}");
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "cooldown after failed resend must block immediate retry");
+
+                // Successful resend after 61s sends 1 code on same channel and logs without secrets.
+                let mut p_after_fail = store::load_pending().unwrap();
+                p_after_fail.created_at -= 61;
+                p_after_fail.last_sent_at -= 61;
+                store::save_pending(&p_after_fail).unwrap();
+                mock.behavior.lock().unwrap().trusted_device_status = 200;
                 let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
                 let resent = signer.resend_code().await.unwrap();
                 assert!(resent.resend_wait_secs(time::OffsetDateTime::now_utc().unix_timestamp()) > 0);
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "one manual resend sends exactly 1 code");
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 3, "one manual resend sends exactly 1 code");
                 assert_eq!(mock.counts.lock().unwrap().sms_send, 0, "resend must never cross channels");
                 assert!(logs.lock().unwrap().iter().any(|l| l.contains("2fa-code-request path=ask_trusted_device caller=resend_code")));
 
+                // Rate-limited resend enters 1h cooldown and blocks further resends even after 61s, while cancel_sign_in still clears Pending.
+                let mut p_for_rl = store::load_pending().unwrap();
+                p_for_rl.created_at -= 61;
+                p_for_rl.last_sent_at -= 61;
+                store::save_pending(&p_for_rl).unwrap();
+                mock.behavior.lock().unwrap().trusted_device_status = 429;
+                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let rl_err = signer.resend_code().await.unwrap_err();
+                assert!(is_rate_limit(&rl_err), "429 on resend must return rate limit, got: {rl_err}");
+                assert!(signer.is_rate_limited(), "429 on resend must mark account rate-limited");
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 4);
+
+                let mut p_aged = store::load_pending().unwrap();
+                p_aged.created_at -= 61;
+                p_aged.last_sent_at -= 61;
+                store::save_pending(&p_aged).unwrap();
+                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let blocked_err = signer.resend_code().await.unwrap_err();
+                assert!(is_rate_limit(&blocked_err), "account rate-limit cooldown must block resend even after 60s");
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 4, "no HTTP request when account is rate-limited");
+
                 signer.cancel_sign_in().unwrap();
-                assert!(signer.pending().is_none(), "cancel_sign_in must clear Pending in memory");
-                assert!(store::load_pending().is_none(), "cancel_sign_in must clear Pending in vault");
+                assert!(signer.pending().is_none(), "cancel_sign_in must clear Pending in memory even during rate limit");
+                assert!(store::load_pending().is_none(), "cancel_sign_in must clear Pending in vault even during rate limit");
             });
         });
     }

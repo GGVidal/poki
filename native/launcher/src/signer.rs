@@ -466,3 +466,153 @@ async fn install(request: &Value, reporter: &Reporter) -> Out {
     reporter.done("install", None);
     Ok(json!({"installed": true}))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[derive(Default)]
+    struct TestVault(Mutex<HashMap<String, Vec<u8>>>);
+
+    impl core::vault::Vault for TestVault {
+        fn get(&self, name: &str) -> core::Result<Option<Vec<u8>>> {
+            Ok(self.0.lock().unwrap().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &[u8]) -> core::Result<()> {
+            self.0.lock().unwrap().insert(name.to_string(), value.to_vec());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> core::Result<()> {
+            self.0.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn concurrent_request_completion_does_not_drop_in_flight_code_request_log() {
+        crate::pin_crypto_provider();
+        let _ = core::vault::install(Box::new(TestVault::default()));
+        let vault = core::vault::installed().expect("vault installed");
+
+        let dir = std::env::temp_dir().join(format!("poki-signer-log-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        rt.block_on(async {
+            handle(json!({"op": "configure", "home": dir.to_string_lossy()}), |_| {}).await.unwrap();
+
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let entered_srv = entered.clone();
+            let release_srv = release.clone();
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let entered_srv = entered_srv.clone();
+                    let release_srv = release_srv.clone();
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 2048];
+                        let n = stream.read(&mut buf).await.unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        let body = if req.starts_with("GET /v3/client_info") {
+                            entered_srv.notify_waiters();
+                            release_srv.notified().await;
+                            r#"{"client_info":"<Mac15,7>","user_agent":"akd/1.0"}"#
+                        } else {
+                            "{\"result\":\"Headers\",\"X-Apple-I-MD-M\":\"mid-1\",\"X-Apple-I-MD\":\"otp\\nbreak\",\"X-Apple-I-MD-RINFO\":\"17106176\"}"
+                        };
+                        let reply = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(reply.as_bytes()).await;
+                    });
+                }
+            });
+
+            use sha2::{Digest, Sha256};
+            let mut hash = [0u8; 6];
+            hash.copy_from_slice(&Sha256::digest(url.as_bytes())[..6]);
+            let tag: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+            let client_info = core::apple::anisette::CLIENT_INFO_OVERRIDE.map(|(c, _)| c.to_string());
+            let ani_state = core::apple::anisette::remote::State {
+                keychain_identifier: vec![3u8; 16],
+                adi_pb: Some(b"provisioned-adi".to_vec()),
+                client_info,
+            };
+            vault.set(&format!("anisette-{tag}"), &serde_json::to_vec(&ani_state).unwrap()).unwrap();
+
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            let pending_json = serde_json::json!({
+                "apple_id": "person@example.com",
+                "password": "synthetic-secret-password",
+                "keep_password": false,
+                "session": {
+                    "apple_id": "person@example.com",
+                    "adsid": "000123-abc",
+                    "gs_idms_token": "idms-tok-1",
+                    "first_name": "Test",
+                    "last_name": "Person",
+                    "sk": "Bw==",
+                    "c": "Yw=="
+                },
+                "via": "trusted_device",
+                "phone_id": 0,
+                "anisette": { "kind": "remote", "url": url },
+                "created_at": now - 120,
+                "last_sent_at": now - 120
+            });
+            vault.set("pending-sign-in", &serde_json::to_vec(&pending_json).unwrap()).unwrap();
+            {
+                let mut st = STATE.lock().await;
+                st.signer = None;
+                st.pending = None;
+            }
+
+            let resend_events: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+            let resend_events_cb = resend_events.clone();
+            let resend_task = tokio::spawn(async move {
+                handle(json!({"op": "resend_code"}), move |ev| {
+                    resend_events_cb.lock().unwrap().push(ev);
+                })
+                .await
+            });
+
+            // Wait until resend_code is mid-flight, then finish an unrelated concurrent request so its guard drops.
+            entered.notified().await;
+            let other_events: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+            let other_events_cb = other_events.clone();
+            handle(json!({"op": "set_channel", "channel": "beta"}), move |ev| {
+                other_events_cb.lock().unwrap().push(ev);
+            })
+            .await
+            .unwrap();
+
+            release.notify_waiters();
+            let _ = resend_task.await.unwrap();
+
+            let _ = std::fs::remove_dir_all(&dir);
+            let logs: Vec<String> = resend_events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|v| v["event"] == "log")
+                .filter_map(|v| v["line"].as_str().map(String::from))
+                .collect();
+            assert_eq!(
+                logs,
+                vec!["2fa-code-request path=ask_trusted_device caller=resend_code".to_string()],
+                "finishing a concurrent request must not clear the in-flight request's log emitter"
+            );
+            assert!(
+                other_events.lock().unwrap().iter().all(|v| v["event"] != "log"),
+                "unrelated concurrent request must not receive another request's 2fa-code-request log"
+            );
+        });
+    }
+}
