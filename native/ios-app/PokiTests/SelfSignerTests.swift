@@ -6,6 +6,7 @@ private final class FakeSignerTransport {
     var statusValue: [String: Any]
     var latestValue: [String: Any]
     var prepareError: SignerError?
+    var finishError: SignerError?
     var holdTeams = false
     private var heldTeams: [CheckedContinuation<Void, Never>] = []
     private(set) var ops: [String] = []
@@ -74,6 +75,18 @@ private final class FakeSignerTransport {
                     "prepared_at": 1_700_000_000,
                 ],
             ])
+        case "finish_sign_in":
+            if let finishError { throw finishError }
+            statusValue["needs_code"] = false
+            statusValue["signed_in"] = true
+            return try JSONSerialization.data(withJSONObject: ["v": [:]])
+        case "cancel_sign_in":
+            statusValue["needs_code"] = false
+            return try JSONSerialization.data(withJSONObject: ["v": [:]])
+        case "resend_code":
+            let next = Int64(Date().timeIntervalSince1970) + 60
+            statusValue["resend_available_at"] = next
+            return try JSONSerialization.data(withJSONObject: ["v": ["resend_available_at": next]])
         default:
             return try JSONSerialization.data(withJSONObject: ["v": NSNull()])
         }
@@ -159,5 +172,71 @@ final class SelfSignerTests: XCTestCase {
         await second.value
 
         XCTAssertEqual(fake.ops.filter { $0 == "teams" }.count, 1)
+    }
+
+    func testCancelSignInClearsPendingAndAllowsSwitchingAppleAccount() async {
+        let fake = FakeSignerTransport(signedIn: false, needsCode: true)
+        fake.finishError = SignerError(
+            message: "That verification code is incorrect. Check the 6-digit code and enter the newest code you received.",
+            code: "needs_person"
+        )
+        let signer = SelfSigner(transport: { req, prog in try await fake.send(req, prog) })
+        await signer.reload()
+        signer.presentCodeSheet()
+
+        await signer.finishSignIn(code: "000000")
+        XCTAssertTrue(signer.needsCode)
+        XCTAssertNotNil(signer.lastError)
+
+        await signer.cancelSignIn()
+        XCTAssertTrue(fake.ops.contains("cancel_sign_in"))
+        XCTAssertFalse(signer.needsCode, "cancelling sign-in must clear needsCode so user can switch Apple Accounts")
+        XCTAssertFalse(signer.signedIn)
+        XCTAssertFalse(signer.needsCodeSheet)
+        XCTAssertNil(signer.lastError)
+    }
+
+    func testResendCodeEnforcesSixtySecondCooldownAndRateLimitWaitDisplay() async {
+        let fake = FakeSignerTransport(signedIn: false, needsCode: true)
+        let signer = SelfSigner(transport: { req, prog in try await fake.send(req, prog) })
+        await signer.reload()
+
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertTrue(signer.canResendCode(at: start))
+
+        await signer.resendCode(now: start)
+        XCTAssertEqual(fake.ops.filter { $0 == "resend_code" }.count, 1)
+
+        fake.statusValue["resend_available_at"] = Int64(start.timeIntervalSince1970) + 60
+        await signer.reload()
+
+        let tenSecondsLater = start.addingTimeInterval(10)
+        XCTAssertFalse(signer.canResendCode(at: tenSecondsLater))
+        XCTAssertEqual(signer.resendCooldownSeconds(at: tenSecondsLater), 50)
+        await signer.resendCode(now: tenSecondsLater)
+        XCTAssertEqual(fake.ops.filter { $0 == "resend_code" }.count, 1, "must not resend during 60s cooldown")
+
+        fake.statusValue["rate_limited"] = true
+        fake.statusValue["rate_limited_until"] = Int64(start.timeIntervalSince1970) + 2700
+        await signer.reload()
+        XCTAssertFalse(signer.canResendCode(at: start.addingTimeInterval(120)))
+        let label = signer.resendButtonTitle(at: start)
+        XCTAssertTrue(label.contains("45"), "rate-limited resend button must display remaining wait minutes, got: \(label)")
+    }
+
+    func testLocalizedWrongAndExpiredCodeMessagesAreDistinct() {
+        let previous = AppLocalization.shared.preference
+        defer { AppLocalization.shared.preference = previous }
+
+        let wrong = "That verification code is incorrect. Check the 6-digit code and enter the newest code you received."
+        let expired = "That verification code has expired. Enter the newest 6-digit code, or request a new code."
+
+        AppLocalization.shared.preference = "zh-Hans"
+        let zhWrong = SelfSigner.localizedErrorText(wrong)
+        let zhExpired = SelfSigner.localizedErrorText(expired)
+        XCTAssertTrue(zhWrong.contains("验证码不对"), zhWrong)
+        XCTAssertFalse(zhWrong.contains("已过期"), zhWrong)
+        XCTAssertTrue(zhExpired.contains("已过期") && zhExpired.contains("最新"), zhExpired)
+        XCTAssertNotEqual(zhWrong, zhExpired)
     }
 }

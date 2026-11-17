@@ -9,7 +9,11 @@ use crate::device::{Device, Pairing};
 use idevice::{lockdown::LockdownClient, misagent::MisagentClient, utils::installation};
 use poki_setup_core::{
     self as core, Progress, Reporter,
-    apple::{anisette::Source, gsa::Pending, identity},
+    apple::{
+        anisette::Source,
+        gsa::{CodeCaller, Pending},
+        identity,
+    },
     release::{self, Channel},
     setup::{self, Signer},
     sign,
@@ -19,9 +23,29 @@ use serde_json::{Value, json};
 use std::{
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
+
+type EmitFn = Arc<dyn Fn(Value) + Send + Sync>;
+static LOG_EMIT: Mutex<Option<EmitFn>> = Mutex::new(None);
+
+struct LogEmitGuard;
+impl Drop for LogEmitGuard {
+    fn drop(&mut self) {
+        *LOG_EMIT.lock().unwrap() = None;
+    }
+}
+
+fn install_log_hook(emit: EmitFn) -> LogEmitGuard {
+    core::apple::gsa::set_code_request_hook(|line| {
+        if let Some(cb) = LOG_EMIT.lock().unwrap().clone() {
+            cb(json!({"event": "log", "line": line}));
+        }
+    });
+    *LOG_EMIT.lock().unwrap() = Some(emit);
+    LogEmitGuard
+}
 
 /// Signed in and pending state, shared by the calls.
 struct State {
@@ -113,8 +137,10 @@ fn channels() -> Value {
 
 /// Runs one request. `emit` gets progress events while it runs.
 pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static) -> Out {
+    let emit_arc: EmitFn = Arc::new(emit);
+    let _log_guard = install_log_hook(emit_arc.clone());
     let op = request["op"].as_str().unwrap_or("");
-    let reporter = Reporter::new(move |p: Progress| emit(json!({"event": "progress", "progress": p})));
+    let reporter = Reporter::new(move |p: Progress| emit_arc(json!({"event": "progress", "progress": p})));
     match op {
         "configure" => {
             // Where the core keeps its non-secret files (release cache, channel, machine id).
@@ -132,10 +158,13 @@ pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static
         }
         "status" => {
             let mut state = STATE.lock().await;
-            let mem_pending = state.pending.is_some();
+            let mem_pending = state.pending.clone();
             let s = signer(&mut state).await?;
-            let pending = mem_pending || s.pending().is_some();
+            let active_pending = mem_pending.or_else(|| s.pending().cloned());
+            let pending = active_pending.is_some();
+            let resend_available_at = active_pending.as_ref().map(|p| p.resend_available_at());
             let rate_limited = s.is_rate_limited();
+            let rate_limited_until = s.rate_limited_until();
             let source = match s.account.anisette.clone().unwrap_or_else(Source::default_for_platform) {
                 Source::Remote { url } => url,
                 Source::System => "system".into(),
@@ -144,6 +173,8 @@ pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static
                 "signed_in": s.signed_in(),
                 "needs_code": pending,
                 "rate_limited": rate_limited,
+                "rate_limited_until": rate_limited_until,
+                "resend_available_at": resend_available_at,
                 "apple_id": s.account.apple_id(),
                 "name": s.account.display_name(),
                 "team_id": s.account.team_id,
@@ -157,7 +188,7 @@ pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static
             let mut state = STATE.lock().await;
             let (id, pw) = (str_of(&request, "apple_id")?.to_string(), str_of(&request, "password")?.to_string());
             let keep = request["keep_password"].as_bool().unwrap_or(true);
-            let pending = signer(&mut state).await?.sign_in(&id, &pw, keep).await?;
+            let pending = signer(&mut state).await?.sign_in_as(&id, &pw, keep, CodeCaller::IosSignIn).await?;
             let needs_code = pending.is_some();
             state.pending = pending;
             Ok(json!({"needs_code": needs_code}))
@@ -174,6 +205,27 @@ pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static
                 return Err(e.into());
             }
             Ok(json!({}))
+        }
+        "cancel_sign_in" => {
+            let mut state = STATE.lock().await;
+            state.pending = None;
+            signer(&mut state).await?.cancel_sign_in()?;
+            Ok(json!({}))
+        }
+        "resend_code" => {
+            let mut state = STATE.lock().await;
+            let s = signer(&mut state).await?;
+            match s.resend_code().await {
+                Ok(pending) => {
+                    let available_at = pending.resend_available_at();
+                    state.pending = Some(pending);
+                    Ok(json!({"resend_available_at": available_at}))
+                }
+                Err(e) => {
+                    state.pending = s.pending().cloned();
+                    Err(e.into())
+                }
+            }
         }
         "sign_out" => {
             let mut state = STATE.lock().await;
@@ -316,11 +368,13 @@ async fn prepare(request: &Value, reporter: &Reporter) -> Out {
         other => return Err(fail(format!("unknown kind {other:?}"), "config")),
     };
 
+    let automatic = request["automatic"].as_bool() == Some(true);
     let mut state = STATE.lock().await;
     let s = signer(&mut state).await?;
     if !s.signed_in() {
         return Err(fail("Sign in with your Apple Account in Setup first.", "needs_person"));
     }
+    s.set_caller(if automatic { CodeCaller::IosMaintain } else { CodeCaller::IosPrepare });
     let team = match s.team().await {
         Ok(team) => team,
         Err(core::Error::NeedsCode(pending)) => {

@@ -19,7 +19,50 @@ const AUTH_INFO: &str = "https://gsa.apple.com/auth";
 const SMS_START: &str = "https://gsa.apple.com/auth/verify/phone";
 const SMS_CODE: &str = "https://gsa.apple.com/auth/verify/phone/securitycode";
 const GSA_AGENT: &str = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0";
-const PENDING_TTL_SECS: i64 = 600;
+const PENDING_CODE_TTL_SECS: i64 = 600;
+const PENDING_SESSION_TTL_SECS: i64 = 3600;
+pub const RESEND_COOLDOWN_SECS: i64 = 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeCaller {
+    SignIn,
+    IosSignIn,
+    ResendCode,
+    FinishResignIn,
+    TokenRefresh,
+    KeeperRenew,
+    IosMaintain,
+    IosPrepare,
+}
+
+impl CodeCaller {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SignIn => "sign_in",
+            Self::IosSignIn => "ios_sign_in",
+            Self::ResendCode => "resend_code",
+            Self::FinishResignIn => "finish_resign_in",
+            Self::TokenRefresh => "token_refresh",
+            Self::KeeperRenew => "keeper_renew",
+            Self::IosMaintain => "ios_maintain",
+            Self::IosPrepare => "ios_prepare",
+        }
+    }
+}
+
+static CODE_REQUEST_HOOK: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+pub fn set_code_request_hook(hook: fn(&str)) {
+    let _ = CODE_REQUEST_HOOK.set(hook);
+}
+
+fn log_code_request(path: &'static str, caller: CodeCaller) {
+    let line = format!("2fa-code-request path={path} caller={}", caller.as_str());
+    tracing::info!("{line}");
+    if let Some(hook) = CODE_REQUEST_HOOK.get() {
+        hook(&line);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct Endpoints {
@@ -121,6 +164,8 @@ pub struct Pending {
     #[serde(default)]
     pub created_at: i64,
     #[serde(default)]
+    pub last_sent_at: i64,
+    #[serde(default)]
     pub failed_attempts: u32,
     #[serde(default)]
     cookies: Vec<(String, String)>,
@@ -132,11 +177,25 @@ pub struct Pending {
 
 impl Pending {
     pub fn is_fresh(&self, now: i64) -> bool {
-        self.created_at == 0 || (now >= self.created_at && now - self.created_at < PENDING_TTL_SECS)
+        self.created_at == 0 || (now >= self.created_at && now - self.created_at < PENDING_SESSION_TTL_SECS)
+    }
+
+    pub fn is_code_fresh(&self, now: i64) -> bool {
+        let sent = self.last_sent_at.max(self.created_at);
+        sent == 0 || (now >= sent && now - sent < PENDING_CODE_TTL_SECS)
     }
 
     pub fn is_fresh_for(&self, apple_id: &str, now: i64) -> bool {
-        self.is_fresh(now) && self.apple_id.eq_ignore_ascii_case(apple_id.trim())
+        self.is_code_fresh(now) && self.apple_id.eq_ignore_ascii_case(apple_id.trim())
+    }
+
+    pub fn resend_available_at(&self) -> i64 {
+        let sent = self.last_sent_at.max(self.created_at);
+        if sent == 0 { 0 } else { sent + RESEND_COOLDOWN_SECS }
+    }
+
+    pub fn resend_wait_secs(&self, now: i64) -> i64 {
+        (self.resend_available_at() - now).max(0)
     }
 
     pub(crate) fn password_str(&self) -> &str {
@@ -281,11 +340,26 @@ impl Client {
             req = req.header(reqwest::header::COOKIE, cookie);
         }
         let res = req.body(body).send().await?;
-        if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let http_status = res.status();
+        if http_status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(rate_limited());
         }
-        let res = res.error_for_status()?.bytes().await?;
-        let v: plist::Value = plist::from_bytes(&res)?;
+        let bytes = res.bytes().await?;
+        if let Ok(v) = plist::from_bytes::<plist::Value>(&bytes) {
+            if let Some(resp) = dict(&v, "Response").cloned() {
+                if http_status.is_success() || status(&resp).ec != 0 {
+                    return Ok(resp);
+                }
+            }
+            let root_st = status(&v);
+            if root_st.ec != 0 {
+                return Err(apple_error(&root_st));
+            }
+        }
+        if !http_status.is_success() {
+            return Err(Error::msg(format!("Apple's sign-in service answered HTTP {http_status}.")));
+        }
+        let v: plist::Value = plist::from_bytes(&bytes)?;
         dict(&v, "Response").cloned().ok_or_else(|| Error::msg("Apple's sign-in service gave an answer without a Response"))
     }
 
@@ -294,15 +368,26 @@ impl Client {
     /// When Apple refuses the anisette identity (-80045/-80046) the next fallback server is tried.
     /// That is a different "Mac" to Apple, so it is only done here, before any code was asked for.
     pub async fn sign_in(&mut self, apple_id: &str, password: &str) -> Result<Outcome> {
+        self.sign_in_with_caller(apple_id, password, CodeCaller::SignIn).await
+    }
+
+    pub async fn sign_in_with_caller(&mut self, apple_id: &str, password: &str, caller: CodeCaller) -> Result<Outcome> {
         loop {
-            match self.sign_in_once_inner(apple_id, password, true, &[]).await {
+            match self.sign_in_once_inner(apple_id, password, true, caller, &[]).await {
                 Err(Error::Apple { code: -80045, .. }) | Err(Error::Apple { code: -80046, .. }) if self.anisette.rotate() => continue,
                 other => return other,
             }
         }
     }
 
-    async fn sign_in_once_inner(&mut self, apple_id: &str, password: &str, allow_code_request: bool, cookies: &[(String, String)]) -> Result<Outcome> {
+    async fn sign_in_once_inner(
+        &mut self,
+        apple_id: &str,
+        password: &str,
+        allow_code_request: bool,
+        caller: CodeCaller,
+        cookies: &[(String, String)],
+    ) -> Result<Outcome> {
         let apple_id_clean = apple_id.trim().to_lowercase();
         let anisette = if allow_code_request {
             self.anisette.headers().await?
@@ -365,6 +450,9 @@ impl Client {
             if !session.sk.is_empty() && !session.c.is_empty() {
                 return Ok(Outcome::SignedIn(session));
             }
+            if st.hsc == 409 {
+                log_code_request("finish_resign_in", CodeCaller::FinishResignIn);
+            }
             return Err(Error::NeedsPerson(
                 "Apple verified the code, but did not finish opening the session. Wait a few minutes before signing in again so Apple does not rate-limit this account.".into(),
             ));
@@ -379,6 +467,7 @@ impl Client {
             phone_id,
             anisette: Some(self.anisette.source().clone()),
             created_at: now,
+            last_sent_at: now,
             failed_attempts: 0,
             cookies: Vec::new(),
             idms_session_id: None,
@@ -387,17 +476,18 @@ impl Client {
         match next_step(st.hsc, st.au.as_deref()) {
             Step::SignedIn => Ok(Outcome::SignedIn(session)),
             Step::CodeAlreadySent => {
+                log_code_request("auto_push_409", caller);
                 tracing::info!("Apple sent the code to the trusted devices by itself (hsc 409, no au)");
                 Ok(Outcome::NeedsCode(make_pending(Factor::TrustedDevice, 0, session)))
             }
             Step::AskTrustedDevice => {
                 let mut pending = make_pending(Factor::TrustedDevice, 0, session);
-                self.start_trusted_device(&mut pending).await?;
+                self.start_trusted_device(&mut pending, caller).await?;
                 Ok(Outcome::NeedsCode(pending))
             }
             Step::AskSms => {
                 let mut pending = make_pending(Factor::Sms, 1, session);
-                let phone_id = self.start_sms(&mut pending).await?;
+                let phone_id = self.start_sms(&mut pending, caller).await?;
                 pending.phone_id = phone_id;
                 Ok(Outcome::NeedsCode(pending))
             }
@@ -448,17 +538,15 @@ impl Client {
         rb
     }
 
-    async fn start_trusted_device(&mut self, pending: &mut Pending) -> Result<()> {
+    async fn start_trusted_device(&mut self, pending: &mut Pending, caller: CodeCaller) -> Result<()> {
         let anisette = self.anisette.headers_pinned().await?;
+        log_code_request("ask_trusted_device", caller);
         let res = self.twofa_request(self.http.get(&self.endpoints.trusted_device), pending, &anisette).send().await?;
         pending.record_headers(res.headers());
         let status = res.status();
         let bytes = res.bytes().await.unwrap_or_default();
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(rate_limited());
-        }
-        if !status.is_success() {
-            return Err(Error::msg(format!("Apple could not send a code to your devices (HTTP {status}). Wait a moment before trying again, or get a code on a device: Settings > [your name] > Sign-In & Security > Two-Factor Authentication > Get Verification Code.")));
         }
         if let Ok(v) = plist::from_bytes::<plist::Value>(&bytes) {
             let ec = dict(&v, "ec").and_then(|e| e.as_signed_integer()).unwrap_or(0);
@@ -470,11 +558,14 @@ impl Client {
                 return Err(Error::apple(ec, format!("Apple could not send a code to your devices: {} ({ec}).", if em.is_empty() { "no reason given" } else { em })));
             }
         }
+        if !status.is_success() {
+            return Err(Error::msg(format!("Apple could not send a code to your devices (HTTP {status}). Wait a moment before trying again, or get a code on a device: Settings > [your name] > Sign-In & Security > Two-Factor Authentication > Get Verification Code.")));
+        }
         tracing::info!("trusted-device code requested (HTTP {status}, {} bytes)", bytes.len());
         Ok(())
     }
 
-    async fn start_sms(&mut self, pending: &mut Pending) -> Result<u64> {
+    async fn start_sms(&mut self, pending: &mut Pending, caller: CodeCaller) -> Result<u64> {
         let anisette = self.anisette.headers_pinned().await?;
         let mut phone_id = 1u64;
         let info_res = self.twofa_request_as(self.http.get(&self.endpoints.auth_info), pending, &anisette, "application/json").send().await?;
@@ -494,8 +585,16 @@ impl Client {
             }
         }
         if already_sent {
+            log_code_request("ask_sms", caller);
             return Ok(phone_id);
         }
+        self.send_sms_to_phone(pending, phone_id, caller).await?;
+        Ok(phone_id)
+    }
+
+    async fn send_sms_to_phone(&mut self, pending: &mut Pending, phone_id: u64, caller: CodeCaller) -> Result<()> {
+        let anisette = self.anisette.headers_pinned().await?;
+        log_code_request("ask_sms", caller);
         let body = serde_json::json!({ "phoneNumber": { "id": phone_id }, "mode": "sms" });
         let res = self
             .twofa_request_as(self.http.put(&self.endpoints.sms_start), pending, &anisette, "application/json")
@@ -506,7 +605,7 @@ impl Client {
         let status = res.status();
         if status.is_success() {
             tracing::info!("SMS code requested (PUT, HTTP {status})");
-            return Ok(phone_id);
+            return Ok(());
         }
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(rate_limited());
@@ -518,13 +617,26 @@ impl Client {
             }
             if status.as_u16() == 412 || json_service_error_code(&v).is_some_and(|c| matches!(c, "-22979" | "-22981")) {
                 tracing::info!("SMS challenge already active on Apple's side; waiting for the code already sent");
-                return Ok(phone_id);
+                return Ok(());
             }
         }
         tracing::warn!("SMS request PUT answered {status}");
         Err(Error::msg(format!(
             "Apple could not text a code to your phone number (HTTP {status}). Use a code from one of your Apple devices instead: on an iPhone, iPad or Mac signed in to this Apple Account, open Settings > [your name] > Sign-In & Security > Two-Factor Authentication > Get Verification Code."
         )))
+    }
+
+    pub async fn resend(&mut self, pending: &mut Pending, now: i64) -> Result<()> {
+        if let Some(src) = &pending.anisette {
+            self.anisette.pin_source(src.clone());
+        }
+        match pending.via {
+            Factor::TrustedDevice => self.start_trusted_device(pending, CodeCaller::ResendCode).await?,
+            Factor::Sms => self.send_sms_to_phone(pending, pending.phone_id.max(1), CodeCaller::ResendCode).await?,
+        }
+        pending.last_sent_at = now;
+        pending.failed_attempts = 0;
+        Ok(())
     }
 
     async fn check_device_code(&self, pending: &mut Pending, anisette: &Anisette, code: &str) -> Result<()> {
@@ -554,6 +666,10 @@ impl Client {
         if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
             return Err(Error::NeedsPerson("The code is six digits.".into()));
         }
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        if !pending.is_code_fresh(now) {
+            return Err(expired_code());
+        }
         if let Some(src) = &pending.anisette {
             self.anisette.pin_source(src.clone());
         }
@@ -571,7 +687,7 @@ impl Client {
         if !pending.session.sk.is_empty() && !pending.session.c.is_empty() {
             return Ok(pending.session.clone());
         }
-        match self.sign_in_once_inner(&pending.apple_id, &pending.password, false, &pending.cookies).await? {
+        match self.sign_in_once_inner(&pending.apple_id, &pending.password, false, CodeCaller::FinishResignIn, &pending.cookies).await? {
             Outcome::SignedIn(s) => Ok(s),
             Outcome::NeedsCode(_) => Err(Error::NeedsPerson(
                 "Apple verified the code, but did not finish opening the session. Wait a few minutes before signing in again so Apple does not rate-limit this account.".into(),
@@ -646,9 +762,14 @@ fn next_step(hsc: i64, au: Option<&str>) -> Step<'_> {
 
 pub const RATE_LIMITED: &str = "Apple has had too many sign-in attempts or codes for this Apple Account. Wait about an hour before you sign in again, because each new try asks Apple for another code.";
 const SESSION_EXPIRED: &str = "Your Apple session has expired. Sign in again.";
-const WRONG_CODE_MARKER: &str = "That verification code was not right.";
+const WRONG_CODE_MARKER: &str = "That verification code is incorrect.";
+pub const WRONG_CODE_FIRST: &str = "That verification code is incorrect. Check the 6-digit code and enter the newest code you received.";
+pub const WRONG_CODE_WAIT: &str = "That verification code is incorrect. Stop and wait a few minutes before trying again so Apple does not lock this Apple Account, then enter the newest 6-digit code.";
+pub const EXPIRED_CODE: &str = "That verification code has expired. Enter the newest 6-digit code, or request a new code.";
 
 pub fn rate_limited() -> Error { Error::NeedsPerson(RATE_LIMITED.into()) }
+
+pub fn expired_code() -> Error { Error::NeedsPerson(EXPIRED_CODE.into()) }
 
 pub fn is_rate_limit(e: &Error) -> bool {
     match e {
@@ -669,12 +790,15 @@ fn is_wrong_code(e: &Error) -> bool {
 
 fn wrong_code_message(failed_attempts: u32) -> Error {
     if failed_attempts >= 2 {
-        Error::NeedsPerson(
-            "That verification code was not right. Stop and wait a few minutes before trying again so Apple does not lock this Apple Account, then enter only the newest 6-digit code you received.".into(),
-        )
+        Error::NeedsPerson(WRONG_CODE_WAIT.into())
     } else {
-        Error::NeedsPerson("That verification code was not right. Enter the newest 6-digit code you received.".into())
+        Error::NeedsPerson(WRONG_CODE_FIRST.into())
     }
+}
+
+fn is_expired_code_or_text(ec: i64, em: &str) -> bool {
+    let lower = em.to_ascii_lowercase();
+    matches!(ec, -21670 | -22980 | -20554) || lower.contains("expired") || lower.contains("timed out")
 }
 
 fn is_rate_limit_code_or_text(ec: i64, em: &str) -> bool {
@@ -686,6 +810,21 @@ fn is_rate_limit_code_or_text(ec: i64, em: &str) -> bool {
 
 fn json_service_error_code(v: &serde_json::Value) -> Option<&str> {
     v.get("serviceErrors")?.as_array()?.first()?.get("code")?.as_str()
+}
+
+fn json_indicates_expired_code(v: &serde_json::Value) -> bool {
+    if v.get("securityCode").and_then(|sc| sc.get("codeExpired")).and_then(|b| b.as_bool()) == Some(true) {
+        return true;
+    }
+    if let Some(err) = v.get("serviceErrors").and_then(|a| a.as_array()).and_then(|a| a.first()) {
+        let code = err.get("code").and_then(|c| c.as_str()).unwrap_or("");
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        let code_num = code.parse::<i64>().unwrap_or(0);
+        if is_expired_code_or_text(code_num, msg) {
+            return true;
+        }
+    }
+    false
 }
 
 fn json_indicates_rate_limit(v: &serde_json::Value) -> bool {
@@ -712,6 +851,9 @@ fn device_code_answer(status: u16, bytes: &[u8]) -> Result<()> {
     if status == 429 {
         return Err(rate_limited());
     }
+    if status == 410 {
+        return Err(expired_code());
+    }
     let v = plist::from_bytes::<plist::Value>(bytes).ok();
     let ec_of = |d: &plist::Value| dict(d, "ec").and_then(|e| e.as_signed_integer());
     let ec = v.as_ref().and_then(|v| ec_of(v).or_else(|| dict(v, "Status").and_then(ec_of)));
@@ -719,6 +861,9 @@ fn device_code_answer(status: u16, bytes: &[u8]) -> Result<()> {
     if let Some(ec) = ec {
         if is_rate_limit_code_or_text(ec, em) {
             return Err(rate_limited());
+        }
+        if is_expired_code_or_text(ec, em) {
+            return Err(expired_code());
         }
     }
     match ec {
@@ -734,9 +879,15 @@ fn sms_code_answer(status: u16, bytes: &[u8]) -> Result<()> {
     if status == 429 {
         return Err(rate_limited());
     }
+    if status == 410 {
+        return Err(expired_code());
+    }
     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
         if json_indicates_rate_limit(&v) {
             return Err(rate_limited());
+        }
+        if json_indicates_expired_code(&v) {
+            return Err(expired_code());
         }
         if let Some(code) = json_service_error_code(&v) {
             if code == "-21669" {
@@ -935,7 +1086,7 @@ mod step_tests {
         assert!(sms_code_answer(200, b"{}").is_ok());
         assert!(is_rate_limit(&sms_code_answer(429, b"").unwrap_err()));
         assert!(sms_code_answer(403, b"").unwrap_err().to_string().contains("Get Verification Code"));
-        assert!(sms_code_answer(400, b"").unwrap_err().to_string().contains("not right"));
+        assert!(sms_code_answer(400, b"").unwrap_err().to_string().contains("incorrect"));
         let rate_json = br#"{"securityCode":{"tooManyCodesValidated":true}}"#;
         assert!(is_rate_limit(&sms_code_answer(400, rate_json).unwrap_err()));
     }
@@ -1648,6 +1799,38 @@ mod rate_limit_regressions {
             let exp_err = signer.finish_sign_in(pending, "999999").await.unwrap_err().to_string();
             assert!(exp_err.to_lowercase().contains("expired"), "expired code must say expired, got: {exp_err}");
             assert!(exp_err.to_lowercase().contains("newest"), "expired code must ask for newest code, got: {exp_err}");
+        });
+    }
+
+    #[test]
+    fn cancel_sign_in_and_resend_code_respect_cooldown_and_rate_limits() {
+        let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sub = LogLines(logs.clone());
+        tracing::subscriber::with_default(sub, || {
+            run_in_vault(async {
+                let mock = start_mock_gsa(MockBehavior::default()).await;
+                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let mut p = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1);
+
+                let cooldown_err = signer.resend_code().await.unwrap_err().to_string();
+                assert!(cooldown_err.contains("seconds"), "expected 60s cooldown refusal, got: {cooldown_err}");
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1, "60s cooldown must prevent resend");
+
+                p.created_at -= 61;
+                p.last_sent_at -= 61;
+                store::save_pending(&p).unwrap();
+                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+                let resent = signer.resend_code().await.unwrap();
+                assert!(resent.resend_wait_secs(time::OffsetDateTime::now_utc().unix_timestamp()) > 0);
+                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "one manual resend sends exactly 1 code");
+                assert_eq!(mock.counts.lock().unwrap().sms_send, 0, "resend must never cross channels");
+                assert!(logs.lock().unwrap().iter().any(|l| l.contains("2fa-code-request path=ask_trusted_device caller=resend_code")));
+
+                signer.cancel_sign_in().unwrap();
+                assert!(signer.pending().is_none(), "cancel_sign_in must clear Pending in memory");
+                assert!(store::load_pending().is_none(), "cancel_sign_in must clear Pending in vault");
+            });
         });
     }
 }

@@ -233,9 +233,9 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
             ok(true)
         }
         "account" => {
-            let mem_pending = state.pending.lock().await.as_ref().map(|p| p.via);
+            let mem_pending = state.pending.lock().await.clone();
             with_signer(state, async |s| {
-                let pending = mem_pending.or_else(|| s.pending().map(|p| p.via));
+                let active_pending = mem_pending.or_else(|| s.pending().cloned());
                 Ok(json!({
                     "signed_in": s.signed_in(),
                     "apple_id": s.account.apple_id(),
@@ -243,8 +243,10 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
                     "team_id": s.account.team_id,
                     "password_kept": s.account.password.is_some(),
                     "anisette": s.account.anisette.clone().unwrap_or_else(Source::default_for_platform),
-                    "pending_factor": pending,
+                    "pending_factor": active_pending.as_ref().map(|p| p.via),
+                    "resend_available_at": active_pending.as_ref().map(|p| p.resend_available_at()),
                     "rate_limited": s.is_rate_limited(),
+                    "rate_limited_until": s.rate_limited_until(),
                 }))
             })
             .await
@@ -278,6 +280,23 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
                     Err(f)
                 }
             }
+        }
+        "cancel_sign_in" => {
+            *state.pending.lock().await = None;
+            with_signer(state, async |s| s.cancel_sign_in()).await?;
+            ok(true)
+        }
+        "resend_code" => {
+            let mut updated_pending = None;
+            let res = with_signer(state, async |s| {
+                let r = s.resend_code().await;
+                updated_pending = s.pending().cloned();
+                r
+            })
+            .await;
+            *state.pending.lock().await = updated_pending;
+            let pending = res?;
+            ok(json!({ "resend_available_at": pending.resend_available_at() }))
         }
         "sign_out" => {
             *state.pending.lock().await = None;

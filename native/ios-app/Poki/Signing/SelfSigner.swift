@@ -22,6 +22,8 @@ final class SelfSigner {
         var signed_in: Bool
         var needs_code: Bool
         var rate_limited: Bool?
+        var rate_limited_until: Int64?
+        var resend_available_at: Int64?
         var apple_id: String?
         var name: String?
         var team_id: String?
@@ -130,8 +132,10 @@ final class SelfSigner {
 
     var signedIn: Bool { status?.signed_in == true || Self.screenshotSignedIn }
     var needsCode: Bool { status?.needs_code == true }
-    var rateLimited: Bool { status?.rate_limited == true }
+    var rateLimited: Bool { rateLimitRemainingSeconds() > 0 }
     var needsCodeSheet = false
+    static let resendCooldown: TimeInterval = 60
+    private var localResendAvailableAt: Date?
     private static let prepareRetryBackoff: TimeInterval = 15 * 60
     private var lastPrepareFailure: Date?
     private var teamsTask: Task<Void, Never>?
@@ -242,8 +246,64 @@ final class SelfSigner {
         needsCodeSheet = false
     }
 
+    func resendCooldownSeconds(at now: Date = .now) -> Int {
+        var until = status?.resend_available_at.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        if let localResendAvailableAt, until == nil || localResendAvailableAt > until! {
+            until = localResendAvailableAt
+        }
+        guard let until else { return 0 }
+        return max(0, Int(ceil(until.timeIntervalSince(now))))
+    }
+
+    func rateLimitRemainingSeconds(at now: Date = .now) -> Int {
+        if let until = status?.rate_limited_until {
+            return max(0, Int(ceil(TimeInterval(until) - now.timeIntervalSince1970)))
+        }
+        return status?.rate_limited == true ? 3600 : 0
+    }
+
+    func canResendCode(at now: Date = .now) -> Bool {
+        needsCode && working == nil && rateLimitRemainingSeconds(at: now) == 0 && resendCooldownSeconds(at: now) == 0
+    }
+
+    func resendButtonTitle(at now: Date = .now) -> String {
+        let rateWait = rateLimitRemainingSeconds(at: now)
+        if rateWait >= 60 {
+            let minutes = (rateWait + 59) / 60
+            return AppLocalization.text(LocalizedStringResource("Resend Verification Code (wait \(minutes) min)"))
+        }
+        if rateWait > 0 {
+            return AppLocalization.text(LocalizedStringResource("Resend Verification Code (wait \(rateWait) s)"))
+        }
+        let cooldown = resendCooldownSeconds(at: now)
+        if cooldown > 0 {
+            return AppLocalization.text(LocalizedStringResource("Resend Verification Code (\(cooldown) s)"))
+        }
+        return AppLocalization.text(LocalizedStringResource("Resend Verification Code"))
+    }
+
+    static func localizedErrorText(_ error: String) -> String {
+        AppLocalization.bundle.localizedString(forKey: error, value: error, table: nil)
+    }
+
+    func resendCode(now: Date = .now) async {
+        guard needsCode, working == nil, rateLimitRemainingSeconds(at: now) == 0, resendCooldownSeconds(at: now) == 0 else { return }
+        localResendAvailableAt = now.addingTimeInterval(Self.resendCooldown)
+        await run("Sending a new code") { _ = try await self.call(["op": "resend_code"]) }
+        await reload()
+    }
+
+    func cancelSignIn() async {
+        needsCodeSheet = false
+        localResendAvailableAt = nil
+        await run("Cancelling sign-in") { _ = try await self.call(["op": "cancel_sign_in"]) }
+        lastError = nil
+        await reload()
+    }
+
     func signOut() async {
         needsCodeSheet = false
+        localResendAvailableAt = nil
         await run("Signing out") { _ = try await self.call(["op": "sign_out"]) }
         teams = []
         await reload()
@@ -410,6 +470,7 @@ final class SelfSigner {
         }
         request["op"] = "prepare"
         request["kind"] = kind
+        request["automatic"] = automatic
         request["app_path"] = Bundle.main.bundlePath
         request["device_name"] = UIDevice.current.name
         await run(kind == "update" ? "Preparing the update" : "Preparing a refresh") {
@@ -747,6 +808,8 @@ enum SignerBridge {
                         }
                         box.continuation = nil
                         unmanaged.release()
+                    } else if object["event"] as? String == "log", let line = object["line"] as? String {
+                        Task { @MainActor in AppLog.shared.add("signing", line) }
                     } else if let p = object["progress"] as? [String: Any] {
                         box.progress?(p)
                     }
