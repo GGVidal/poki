@@ -117,6 +117,11 @@ impl Provider {
 
     pub fn source(&self) -> &Source { &self.source }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(source: Source, headers: Headers) -> Self {
+        Provider { source, remote: None, last: Some(headers), fallbacks: Vec::new() }
+    }
+
     /// A fresh header set, provisioning the remote identity on first use.
     pub async fn headers(&mut self) -> Result<Headers> {
         if let Some(h) = &self.last {

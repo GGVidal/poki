@@ -172,9 +172,37 @@ impl Account {
 /// The host's vault (Poki on the iPhone) holds the account under this name.
 const VAULT_NAME: &str = "apple-account";
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_VAULT: std::cell::RefCell<Option<std::sync::Arc<crate::vault::memory::Memory>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_vault<T>(vault: std::sync::Arc<crate::vault::memory::Memory>, f: impl FnOnce() -> T) -> T {
+    struct Guard(Option<std::sync::Arc<crate::vault::memory::Memory>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            TEST_VAULT.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+    let prev = TEST_VAULT.with(|cell| cell.borrow_mut().replace(vault));
+    let _guard = Guard(prev);
+    f()
+}
+
+#[cfg(test)]
+fn test_vault() -> Option<std::sync::Arc<crate::vault::memory::Memory>> {
+    TEST_VAULT.with(|cell| cell.borrow().clone())
+}
+
 /// A secret of Poki Setup's own: the host's vault when one is installed, else the system keychain
 /// (macOS Keychain, Windows Credential Manager), or a 0600 file in file mode.
 pub fn secret_get(name: &str) -> Option<String> {
+    #[cfg(test)]
+    if let Some(v) = test_vault() {
+        use crate::vault::Vault;
+        return v.get(name).ok().flatten().and_then(|b| String::from_utf8(b).ok()).filter(|s| !s.is_empty());
+    }
     if let Some(v) = crate::vault::installed() {
         return v.get(name).ok().flatten().and_then(|b| String::from_utf8(b).ok()).filter(|s| !s.is_empty());
     }
@@ -188,6 +216,11 @@ pub fn secret_get(name: &str) -> Option<String> {
 }
 
 pub fn secret_set(name: &str, value: &str) -> Result<()> {
+    #[cfg(test)]
+    if let Some(v) = test_vault() {
+        use crate::vault::Vault;
+        return v.set(name, value.as_bytes());
+    }
     if let Some(v) = crate::vault::installed() {
         return v.set(name, value.as_bytes());
     }
@@ -208,6 +241,11 @@ pub fn secret_set(name: &str, value: &str) -> Result<()> {
 }
 
 pub fn secret_delete(name: &str) -> Result<()> {
+    #[cfg(test)]
+    if let Some(v) = test_vault() {
+        use crate::vault::Vault;
+        return v.delete(name);
+    }
     if let Some(v) = crate::vault::installed() {
         return v.delete(name);
     }
@@ -227,6 +265,11 @@ fn file_mode() -> bool { !cfg!(feature = "os-keychain") || std::env::var("POKI_S
 fn file_path() -> Result<std::path::PathBuf> { Ok(paths::state_dir()?.join("account.json")) }
 
 pub fn load() -> Result<Account> {
+    #[cfg(test)]
+    if let Some(v) = test_vault() {
+        use crate::vault::Vault;
+        return Ok(v.get(VAULT_NAME)?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default());
+    }
     if let Some(v) = crate::vault::installed() {
         return Ok(v.get(VAULT_NAME)?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default());
     }
@@ -241,6 +284,11 @@ pub fn load() -> Result<Account> {
 
 pub fn save(account: &Account) -> Result<()> {
     let json = serde_json::to_string(account)?;
+    #[cfg(test)]
+    if let Some(v) = test_vault() {
+        use crate::vault::Vault;
+        return v.set(VAULT_NAME, json.as_bytes());
+    }
     if let Some(v) = crate::vault::installed() {
         return v.set(VAULT_NAME, json.as_bytes());
     }
@@ -261,6 +309,11 @@ pub fn save(account: &Account) -> Result<()> {
 }
 
 pub fn clear() -> Result<()> {
+    #[cfg(test)]
+    if let Some(v) = test_vault() {
+        use crate::vault::Vault;
+        return v.delete(VAULT_NAME);
+    }
     if let Some(v) = crate::vault::installed() {
         return v.delete(VAULT_NAME);
     }

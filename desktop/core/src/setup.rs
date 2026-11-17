@@ -26,6 +26,12 @@ impl Signer {
         Ok(Signer { account, client: gsa::Client::new(Provider::new(source))? })
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(client: gsa::Client) -> Result<Signer> {
+        let account = store::load()?;
+        Ok(Signer { account, client })
+    }
+
     pub fn set_anisette(&mut self, source: Source) -> Result<()> {
         self.account.anisette = Some(source.clone());
         self.client = gsa::Client::new(Provider::new(source))?;
