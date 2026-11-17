@@ -13,7 +13,11 @@ export default function Account({ info }: { info: AppInfo | null }) {
   const [factor, setFactor] = useState<"trusted_device" | "sms" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const load = () => api.account().then((a) => { setAcct(a); if (a.signed_in) api.teams().then(setTeams).catch((e) => setError(failureText(e))); }).catch((e) => setError(failureText(e)));
+  const load = () => api.account().then((a) => {
+    setAcct(a);
+    setFactor(a.pending_factor);
+    if (a.signed_in && !a.pending_factor) api.teams().then(setTeams).catch((e) => setError(failureText(e)));
+  }).catch((e) => setError(failureText(e)));
   useEffect(() => { load(); }, []);
 
   const signIn = async () => {
@@ -37,7 +41,17 @@ export default function Account({ info }: { info: AppInfo | null }) {
       <h1 className="page-title">{t("Apple ID")}</h1>
       <p className="page-sub">{info?.os === "macos" ? "" : ""}</p>
       <ErrorBox error={error} />
-      {acct?.signed_in ? (
+      {factor ? (
+        <Card>
+          <h2>{t("Enter the code")}</h2>
+          <p className="muted">{factor === "sms" ? t("Apple sent a code by text message.") : t("Apple sent a code to your devices.")}</p>
+          <form className="row" onSubmit={(e) => { e.preventDefault(); finish(); }}>
+            <input className="input mono" style={{ width: 160, letterSpacing: "0.2em" }} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoFocus placeholder="000000" />
+            <Capsule type="submit" disabled={busy || code.length !== 6}>{t("Continue")}</Capsule>
+            <Capsule kind="ghost" onClick={() => setFactor(null)}>{t("Stop")}</Capsule>
+          </form>
+        </Card>
+      ) : acct?.signed_in ? (
         <Card>
           <div className="row between">
             <div className="grow"><h2 style={{ margin: 0 }}>{acct.name}</h2><div className="muted small">{acct.apple_id}{acct.password_kept ? ` · ${t("Keep me signed in for weekly renewal")}` : ""}</div></div>
@@ -51,16 +65,6 @@ export default function Account({ info }: { info: AppInfo | null }) {
               <span className="grow">{tm.name} <span className="muted small">{tm.team_id} · {tm.is_free ? t("free, Poki is signed 7 days at a time") : t("paid")}</span></span>
             </label>
           ))}
-        </Card>
-      ) : factor ? (
-        <Card>
-          <h2>{t("Enter the code")}</h2>
-          <p className="muted">{factor === "sms" ? t("Apple sent a code by text message.") : t("Apple sent a code to your devices.")}</p>
-          <form className="row" onSubmit={(e) => { e.preventDefault(); finish(); }}>
-            <input className="input mono" style={{ width: 160, letterSpacing: "0.2em" }} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoFocus placeholder="000000" />
-            <Capsule type="submit" disabled={busy || code.length !== 6}>{t("Continue")}</Capsule>
-            <Capsule kind="ghost" onClick={() => setFactor(null)}>{t("Stop")}</Capsule>
-          </form>
         </Card>
       ) : (
         <Card>

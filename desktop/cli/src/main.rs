@@ -292,8 +292,6 @@ fn finish(json: bool, value: serde_json::Value, text: impl AsRef<str>) -> Result
     Ok(())
 }
 
-const PENDING: &str = "pending-sign-in";
-
 fn read_password(from_stdin: bool) -> Result<String> {
     if let Ok(p) = std::env::var("POKI_SETUP_PASSWORD") {
         if !p.is_empty() {
@@ -389,10 +387,11 @@ async fn run() -> Result<()> {
         Cmd::Login { apple_id, password_stdin, code, keep_password, anisette } => {
             let mut signer = setup::Signer::open()?;
             if let Some(code) = code {
-                let saved = poki_setup_core::apple::store::secret_get(PENDING).ok_or_else(|| anyhow!("No sign-in is waiting for a code. Run `poki-setup login <email>` first."))?;
-                let pending: poki_setup_core::apple::gsa::Pending = serde_json::from_str(&saved)?;
+                let mut pending = signer.pending().cloned().or_else(poki_setup_core::apple::store::load_pending).ok_or_else(|| anyhow!("No sign-in is waiting for a code. Run `poki-setup login <email>` first."))?;
+                if keep_password {
+                    pending.keep_password = true;
+                }
                 signer.finish_sign_in(pending, &code).await?;
-                let _ = poki_setup_core::apple::store::secret_delete(PENDING);
             } else {
                 let apple_id = apple_id.ok_or_else(|| anyhow!("Give the Apple Account email: poki-setup login you@example.com"))?;
                 if let Some(a) = anisette {
@@ -406,11 +405,23 @@ async fn run() -> Result<()> {
                     };
                     use std::io::IsTerminal;
                     if cli.json || password_stdin || !std::io::stdin().is_terminal() {
-                        poki_setup_core::apple::store::secret_set(PENDING, &serde_json::to_string(&pending)?)?;
                         return Err(NeedsCode(format!("Apple sent a six-digit code to {via}. Ask the person for it, then run: poki-setup login --code <code>")).into());
                     }
-                    let code = rpassword::prompt_password(format!("Apple sent a code to {via}. Code: "))?;
-                    signer.finish_sign_in(pending, &code).await?;
+                    let mut current = pending;
+                    loop {
+                        let code = rpassword::prompt_password(format!("Apple sent a code to {via}. Code: "))?;
+                        match signer.finish_sign_in(current.clone(), &code).await {
+                            Ok(()) => break,
+                            Err(e) if poki_setup_core::apple::gsa::is_rate_limit(&e) => return Err(e.into()),
+                            Err(e) => {
+                                current = signer.pending().cloned().unwrap_or(current);
+                                if current.failed_attempts >= 2 {
+                                    return Err(e.into());
+                                }
+                                eprintln!("{e}");
+                            }
+                        }
+                    }
                 }
             }
             let team = signer.team().await?;

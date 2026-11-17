@@ -157,7 +157,13 @@ pub struct Account {
     pub password: Option<String>,
     pub team_id: Option<String>,
     pub anisette: Option<Source>,
+    #[serde(default)]
+    pub rate_limited_until: Option<i64>,
 }
+
+/// Cooldown window after Apple rate-limits sign-in or code requests ("Wait about an hour").
+pub const RATE_LIMIT_COOLDOWN_SECS: i64 = 3600;
+const PENDING_SECRET: &str = "pending-sign-in";
 
 impl Account {
     pub fn apple_id(&self) -> Option<&str> { self.session.as_ref().map(|s| s.apple_id.as_str()) }
@@ -167,6 +173,28 @@ impl Account {
             if n.is_empty() { s.apple_id.clone() } else { n }
         })
     }
+    pub fn is_rate_limited(&self, now: i64) -> bool {
+        self.rate_limited_until.is_some_and(|until| now < until)
+    }
+    pub fn mark_rate_limited(&mut self, now: i64) {
+        self.rate_limited_until = Some(now + RATE_LIMIT_COOLDOWN_SECS);
+    }
+    pub fn clear_rate_limit(&mut self) {
+        self.rate_limited_until = None;
+    }
+}
+
+pub fn load_pending() -> Option<super::gsa::Pending> {
+    let raw = secret_get(PENDING_SECRET)?;
+    serde_json::from_str(&raw).ok()
+}
+
+pub fn save_pending(pending: &super::gsa::Pending) -> Result<()> {
+    secret_set(PENDING_SECRET, &serde_json::to_string(pending)?)
+}
+
+pub fn clear_pending() -> Result<()> {
+    secret_delete(PENDING_SECRET)
 }
 
 /// The host's vault (Poki on the iPhone) holds the account under this name.
@@ -309,6 +337,7 @@ pub fn save(account: &Account) -> Result<()> {
 }
 
 pub fn clear() -> Result<()> {
+    let _ = clear_pending();
     #[cfg(test)]
     if let Some(v) = test_vault() {
         use crate::vault::Vault;

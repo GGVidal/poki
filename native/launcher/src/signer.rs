@@ -132,8 +132,10 @@ pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static
         }
         "status" => {
             let mut state = STATE.lock().await;
-            let pending = state.pending.is_some();
+            let mem_pending = state.pending.is_some();
             let s = signer(&mut state).await?;
+            let pending = mem_pending || s.pending().is_some();
+            let rate_limited = s.is_rate_limited();
             let source = match s.account.anisette.clone().unwrap_or_else(Source::default_for_platform) {
                 Source::Remote { url } => url,
                 Source::System => "system".into(),
@@ -141,6 +143,7 @@ pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static
             Ok(json!({
                 "signed_in": s.signed_in(),
                 "needs_code": pending,
+                "rate_limited": rate_limited,
                 "apple_id": s.account.apple_id(),
                 "name": s.account.display_name(),
                 "team_id": s.account.team_id,
@@ -162,13 +165,12 @@ pub async fn handle(request: Value, emit: impl Fn(Value) + Send + Sync + 'static
         "finish_sign_in" => {
             let mut state = STATE.lock().await;
             let code = str_of(&request, "code")?.to_string();
-            let pending = state.pending.take().ok_or_else(|| fail("Sign in again. The verification step has expired.", "needs_person"))?;
-            let keep = pending.clone();
-            let result = signer(&mut state).await?.finish_sign_in(pending, &code).await;
+            let mem_pending = state.pending.take();
+            let s = signer(&mut state).await?;
+            let pending = mem_pending.or_else(|| s.pending().cloned()).ok_or_else(|| fail("Sign in again. The verification step has expired.", "needs_person"))?;
+            let result = s.finish_sign_in(pending, &code).await;
             if let Err(e) = result {
-                // A wrong code: keep the waiting sign-in so the code can be typed again. Starting
-                // over would ask Apple for another code, which replaces this one.
-                state.pending = Some(keep);
+                state.pending = s.pending().cloned();
                 return Err(e.into());
             }
             Ok(json!({}))
@@ -262,6 +264,22 @@ async fn import_identity(request: &Value) -> Out {
 /// (`app_path`, Bundle.main); kind "update" takes the newest release on the chosen channel.
 /// The result lands in `<home>/ready/<kind>/` with a manifest; nothing is installed.
 async fn prepare(request: &Value, reporter: &Reporter) -> Out {
+    {
+        let mut state = STATE.lock().await;
+        let mem_pending = state.pending.clone();
+        let s = signer(&mut state).await?;
+        if !s.signed_in() {
+            return Err(fail("Sign in with your Apple Account in Setup first.", "needs_person"));
+        }
+        if s.is_rate_limited() {
+            return Err(core::apple::gsa::rate_limited().into());
+        }
+        if let Some(pending) = mem_pending.or_else(|| s.pending().cloned()) {
+            let msg = core::Error::NeedsCode(Box::new(pending.clone())).to_string();
+            state.pending = Some(pending);
+            return Err(fail(msg, "needs_code"));
+        }
+    }
     let kind = request["kind"].as_str().unwrap_or("refresh");
     let phone: Phone = serde_json::from_value(request.clone()).map_err(|e| fail(e.to_string(), "config"))?;
     let out_dir = home()?.join("ready").join(kind);

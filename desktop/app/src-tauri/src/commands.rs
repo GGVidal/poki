@@ -147,7 +147,7 @@ pub struct AccountView {
 
 #[tauri::command]
 pub async fn account(state: State<'_, Shared>) -> R<AccountView> {
-    let pending = state.pending.lock().await.as_ref().map(|p| p.via);
+    let mem_pending = state.pending.lock().await.as_ref().map(|p| p.via);
     with_signer(&state, async |s| {
         Ok(AccountView {
             signed_in: s.signed_in(),
@@ -156,7 +156,7 @@ pub async fn account(state: State<'_, Shared>) -> R<AccountView> {
             team_id: s.account.team_id.clone(),
             password_kept: s.account.password.is_some(),
             anisette: s.account.anisette.clone().unwrap_or_else(Source::default_for_platform),
-            pending_factor: pending,
+            pending_factor: mem_pending.or_else(|| s.pending().map(|p| p.via)),
         })
     })
     .await
@@ -173,13 +173,19 @@ pub async fn sign_in(state: State<'_, Shared>, apple_id: String, password: Strin
 
 #[tauri::command]
 pub async fn finish_sign_in(state: State<'_, Shared>, code: String) -> R<()> {
-    let pending = state.pending.lock().await.take().ok_or_else(|| poki_setup_core::Error::msg("Start the sign-in again."))?;
-    let keep = pending.clone();
-    let result = with_signer(&state, async |s| s.finish_sign_in(pending, &code).await).await;
+    let mem_pending = state.pending.lock().await.take();
+    let mut updated_pending = None;
+    let result = with_signer(&state, async |s| {
+        let pending = mem_pending.or_else(|| s.pending().cloned()).ok_or_else(|| poki_setup_core::Error::msg("Start the sign-in again."))?;
+        let r = s.finish_sign_in(pending, &code).await;
+        if r.is_err() {
+            updated_pending = s.pending().cloned();
+        }
+        r
+    })
+    .await;
     if result.is_err() {
-        // A wrong code: keep the waiting sign-in so the person can type the code again. Starting
-        // over would ask Apple for another code, which replaces this one and counts toward its limit.
-        *state.pending.lock().await = Some(keep);
+        *state.pending.lock().await = updated_pending;
     }
     result
 }

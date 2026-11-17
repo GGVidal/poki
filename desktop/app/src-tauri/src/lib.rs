@@ -152,9 +152,12 @@ fn keeper_loop(app: tauri::AppHandle, state: Shared) {
                         *guard = poki_setup_core::setup::Signer::open().ok();
                     }
                     if let Some(signer) = guard.as_mut() {
-                        if signer.account.password.is_some() {
+                        if signer.account.password.is_some() && signer.pending().is_none() && !signer.is_rate_limited() {
                             let reporter = commands::reporter(&app, "keeper");
                             for (udid, res) in poki_setup_core::setup::renew_due(signer, &reporter).await {
+                                if let Err(poki_setup_core::Error::NeedsCode(ref p)) = res {
+                                    *state.pending.lock().await = Some((**p).clone());
+                                }
                                 let _ = app.emit("keeper-result", serde_json::json!({ "udid": udid, "ok": res.is_ok(), "error": res.err().map(|e| e.to_string()) }));
                             }
                         }

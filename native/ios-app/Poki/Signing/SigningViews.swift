@@ -40,7 +40,7 @@ struct AccountPage: View {
                      ? "Poki keeps the password in this iPhone’s Keychain to sign itself again every week."
                      : "Poki signs in again when its signing is due, and asks you for the password then.")
             }
-            .task { if signer.teams.isEmpty { await signer.loadTeams() } }
+            .task { if signer.teams.isEmpty, signer.working == nil, !signer.needsCode, !signer.rateLimited { await signer.loadTeams() } }
             Section { Button("Sign Out", role: .destructive) { Task { await signer.signOut() } } }
         } else {
             Section {

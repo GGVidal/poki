@@ -62,6 +62,7 @@ final class AppModel: ObservableObject {
     @Published var banner: String?
 
     let bridge = Bridge.shared
+    private var started = false
     private var pollTask: Task<Void, Never>?
     private var keeperTask: Task<Void, Never>?
     let demo = ProcessInfo.processInfo.environment["POKI_SETUP_DEMO"] == "1"
@@ -88,6 +89,8 @@ final class AppModel: ObservableObject {
     }
 
     func start() {
+        guard !started else { return }
+        started = true
         if demo {
             loadDemo()
             return
@@ -354,7 +357,7 @@ final class AppModel: ObservableObject {
     }
 
     func renewDue() async {
-        guard !demo, account?.passwordKept == true else { return }
+        guard !demo, !needsCode, account?.passwordKept == true else { return }
         let results = (try? await bridge.call("renew_due", as: [RenewResult].self)) ?? []
         if results.contains(where: { $0.kind == "needs_code" }) {
             await promptForCode()

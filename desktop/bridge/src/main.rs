@@ -233,8 +233,9 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
             ok(true)
         }
         "account" => {
-            let pending = state.pending.lock().await.as_ref().map(|p| p.via);
+            let mem_pending = state.pending.lock().await.as_ref().map(|p| p.via);
             with_signer(state, async |s| {
+                let pending = mem_pending.or_else(|| s.pending().map(|p| p.via));
                 Ok(json!({
                     "signed_in": s.signed_in(),
                     "apple_id": s.account.apple_id(),
@@ -243,6 +244,7 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
                     "password_kept": s.account.password.is_some(),
                     "anisette": s.account.anisette.clone().unwrap_or_else(Source::default_for_platform),
                     "pending_factor": pending,
+                    "rate_limited": s.is_rate_limited(),
                 }))
             })
             .await
@@ -258,13 +260,21 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
         }
         "finish_sign_in" => {
             let code: String = arg(a, "code")?;
-            let pending = state.pending.lock().await.take().ok_or_else(|| Error::msg("Start the sign-in again."))?;
-            let keep = pending.clone();
-            match with_signer(state, async |s| s.finish_sign_in(pending, &code).await).await {
+            let mem_pending = state.pending.lock().await.take();
+            let mut updated_pending = None;
+            let res = with_signer(state, async |s| {
+                let pending = mem_pending.or_else(|| s.pending().cloned()).ok_or_else(|| Error::msg("Start the sign-in again."))?;
+                let r = s.finish_sign_in(pending, &code).await;
+                if r.is_err() {
+                    updated_pending = s.pending().cloned();
+                }
+                r
+            })
+            .await;
+            match res {
                 Ok(()) => ok(true),
                 Err(f) => {
-                    // A wrong code: keep the pending sign-in so the person can type it again.
-                    *state.pending.lock().await = Some(keep);
+                    *state.pending.lock().await = updated_pending;
                     Err(f)
                 }
             }
