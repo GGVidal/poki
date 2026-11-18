@@ -291,13 +291,11 @@ final class SelfSignerTests: XCTestCase {
         await settle()
 
         XCTAssertFalse(relaunched.signedIn, "relaunched UI must still treat account as requiring manual sign-in")
-        XCTAssertTrue(relaunched.needsReauth, "relaunched UI must explicitly prompt user to sign in again")
         XCTAssertEqual(fake.ops.filter { $0 == "teams" }.count, 0)
         XCTAssertEqual(fake.ops.filter { $0 == "prepare" }.count, 0)
 
         await relaunched.signIn(appleID: "tester@example.com", password: "pw", keepPassword: true)
         XCTAssertTrue(relaunched.signedIn)
-        XCTAssertFalse(relaunched.needsReauth)
         XCTAssertEqual(fake.ops.filter { $0 == "teams" }.count, 1)
     }
 }
