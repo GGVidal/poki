@@ -280,8 +280,8 @@ final class SelfSigner {
         Task { await checkLatest() }
     }
 
-    /// Looks up the newest build, then prepares what is due. Works without an Apple Account, and
-    /// the Signing & Updates page calls it when it opens. False when the lookup failed.
+    /// Looks up the newest build, then prepares what is due. Works without an Apple Account.
+    /// False when the lookup failed.
     @discardableResult
     func checkLatest() async -> Bool {
         let found = await lookUp()
@@ -292,7 +292,9 @@ final class SelfSigner {
     /// One lookup at a time: a caller that comes while one runs gets its answer.
     private var lookup: Task<Bool, Never>?
 
-    private func lookUp() async -> Bool {
+    /// Asks what the newest build is and prepares nothing. False when the lookup failed.
+    @discardableResult
+    func lookUp() async -> Bool {
         if let lookup { return await lookup.value }
         let task = Task { () -> Bool in
             do {

@@ -121,12 +121,12 @@ struct SigningUpdatesPage: View {
         List { SigningSection() }
             .navigationTitle(AppLocalization.text("Signing & Updates"))
             .navigationBarTitleDisplayMode(.inline)
-            // The page says what the newest Poki is, so it looks when it opens (not on every return
-            // from a page under it).
+            // The page says what the newest Poki is, so it looks it up when it opens. It only looks:
+            // downloading starts from the button, or from the signer's own rounds.
             .task {
                 let signer = model.signer
                 if signer.latest != nil, let last = signer.lastCheck, Date().timeIntervalSince(last) < 60 { return }
-                await signer.checkLatest()
+                await signer.lookUp()
             }
     }
 }
@@ -221,11 +221,12 @@ struct SigningSection: View {
     }
 }
 
-/// When the installed Poki stops opening, as a row with what is left under its name: the date and its
-/// countdown take the row's width in every language, where a value on the right would not fit.
+/// When the installed Poki stops opening: the date under the row's name and the time left where the
+/// other rows have their value (under the date at the accessibility sizes, as in `SettingsRow`).
 private struct SignedUntilRow: View {
     var expiry: Date?
     var countdownColor: Color
+    @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var iconSpacing = SettingsRowMetrics.iconSpacing
 
     var body: some View {
@@ -234,19 +235,24 @@ private struct SignedUntilRow: View {
                 .padding(.vertical, SettingsRowMetrics.iconLineInset)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Signed Until").font(.body).foregroundStyle(Color(.label))
-                Group {
-                    if let expiry {
-                        Text(expiry, format: .dateTime.month(.abbreviated).day().year()) + Text(verbatim: " · ") + Text(expiry, style: .relative).foregroundStyle(countdownColor)
-                    } else {
-                        Text("Unknown")
-                    }
+                if let expiry {
+                    Text(expiry, format: .dateTime.month(.abbreviated).day().year())
+                        .font(.footnote).foregroundStyle(Color(.secondaryLabel))
                 }
-                .font(.footnote)
-                .foregroundStyle(Color(.secondaryLabel))
+                if typeSize.isAccessibilitySize { left }
             }
             Spacer(minLength: 8)
+            if !typeSize.isAccessibilitySize { left.lineLimit(1).layoutPriority(1) }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var left: some View {
+        if let expiry {
+            Text(expiry, style: .relative).font(.subheadline).monospacedDigit().foregroundStyle(countdownColor)
+        } else {
+            Text("Unknown").font(.subheadline).foregroundStyle(Color(.secondaryLabel))
+        }
     }
 }
 
