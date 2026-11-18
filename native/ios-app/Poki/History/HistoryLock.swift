@@ -1,6 +1,5 @@
 import CryptoKit
 import LocalAuthentication
-import SQLite3
 import Security
 import SwiftUI
 import UIKit
@@ -11,7 +10,7 @@ import notify
 /// Either one can be turned off, but never both.
 @MainActor
 final class HistoryLock: ObservableObject {
-    static let shared = HistoryLock()
+    static let shared = HistoryLock(boundary: .live)
 
     enum AuthMethods: Equatable {
         case biometricsOnly
@@ -44,22 +43,36 @@ final class HistoryLock: ObservableObject {
         case unlocked(methods: AuthMethods)
     }
 
-    private enum StoredPIN {
+    enum KeychainRead: Equatable {
         case present(Data)
         case absent
         case inaccessibleWhileDeviceLocked
     }
 
-    private struct BiometricsSnapshot {
-        let ready: Bool
-        let name: String
-        let blockedOrDeniedOnHardware: Bool
+    struct Biometrics: Equatable {
+        var ready: Bool
+        var name: String
+        var blockedOrDeniedOnHardware: Bool
+    }
+
+    /// What the lock reads from and writes to outside Poki's memory: the iPhone's Face ID or Touch ID,
+    /// the keychain, Poki's settings, Screen History's store and the clock.
+    struct Boundary {
+        var biometrics: @MainActor () -> Biometrics
+        var evaluateBiometrics: @MainActor (_ reason: String) async -> Bool
+        var readKeychain: @MainActor (_ account: String) -> KeychainRead
+        var writeKeychain: @MainActor (_ account: String, _ value: Data, _ accessible: CFString) -> Bool
+        var deleteKeychain: @MainActor (_ account: String) -> Void
+        var defaults: UserDefaults
+        /// Nil while the store cannot be read.
+        var historyHoldsAnything: @MainActor () -> Bool?
+        var now: @MainActor () -> Date
     }
 
     private struct Environment {
         let biometricsOn: Bool
-        let biometrics: BiometricsSnapshot
-        let storedPIN: StoredPIN
+        let biometrics: Biometrics
+        let storedPIN: KeychainRead
         let armed: Bool
     }
 
@@ -74,46 +87,49 @@ final class HistoryLock: ObservableObject {
         case setBiometrics(Bool)
     }
 
+    /// Changes only on events (a lock action, the app coming back, the phone unlocking, a Face ID
+    /// change), so the pages read it without asking the keychain or the iPhone each time they draw.
     @Published private(set) var state: State = .unconfigured
     /// The owner's choice. Whether it can be used also depends on the iPhone (`biometricsReady`).
     @Published private(set) var biometricsOn: Bool
+    @Published private(set) var biometrics: Biometrics
 
-    private static let service = "nz.zheha.poki.history-lock"
+    private let boundary: Boundary
     private static let pinAccount = "pin"
     private static let armedAccount = "armed"
     private static let biometricsKey = "history.lock.biometrics"
-    private static let armedKey = "history.lock.armed"
+    /// This install of Poki. The keychain outlives a deleted app, Poki's settings and Screen History do
+    /// not, so the mark that the lock was set up counts only for the install that wrote it.
+    private static let installKey = "history.lock.install"
     private var enrollmentToken: Int32 = NOTIFY_TOKEN_INVALID
 
-    private init() {
-        biometricsOn = UserDefaults.standard.object(forKey: Self.biometricsKey) as? Bool ?? true
+    init(boundary: Boundary) {
+        self.boundary = boundary
+        biometricsOn = boundary.defaults.object(forKey: Self.biometricsKey) as? Bool ?? true
+        biometrics = boundary.biometrics()
         _ = transition(.refresh)
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.lock() }
         }
         center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in _ = self?.transition(.refresh) }
+            Task { @MainActor in self?.refresh() }
         }
         center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in _ = self?.transition(.refresh) }
+            Task { @MainActor in self?.refresh() }
         }
         notify_register_dispatch("com.apple.BiometricKit.enrollmentChanged", &enrollmentToken, DispatchQueue.main) { [weak self] _ in
-            Task { @MainActor in _ = self?.transition(.refresh) }
+            Task { @MainActor in self?.refresh() }
         }
-    }
-
-    private var effectiveState: State {
-        Self.reconcile(state, env: currentEnvironment(), now: Date())
     }
 
     var unlocked: Bool {
-        if case .unlocked = effectiveState { return true }
+        if case .unlocked = state { return true }
         return false
     }
 
     var hasPIN: Bool {
-        switch effectiveState {
+        switch state {
         case .locked(let methods, _, _), .unlocked(let methods): return methods.hasPIN
         case .unconfigured, .biometricsUnavailable, .deviceLocked: return false
         }
@@ -122,53 +138,47 @@ final class HistoryLock: ObservableObject {
     // MARK: Biometrics
 
     /// Face ID or Touch ID is set up on this iPhone and allowed for Poki.
-    var biometricsReady: Bool { Self.biometricsSnapshot().ready }
+    var biometricsReady: Bool { biometrics.ready }
 
     var usesBiometrics: Bool {
-        switch effectiveState {
+        switch state {
         case .locked(let methods, _, _), .unlocked(let methods): return methods.usesBiometrics
         case .unconfigured, .biometricsUnavailable, .deviceLocked: return false
         }
     }
 
     /// "Face ID", "Touch ID" or "Optic ID", as this iPhone has it.
-    var biometricsName: String { Self.biometricsSnapshot().name }
+    var biometricsName: String { biometrics.name }
 
     /// The same name in Poki's language.
     var biometricsLabel: String { AppLocalization.bundle.localizedString(forKey: biometricsName, value: nil, table: nil) }
 
     /// Nothing can unlock history yet: a PIN has to be made first.
-    var needsSetup: Bool { effectiveState == .unconfigured }
+    var needsSetup: Bool { state == .unconfigured }
 
-    var biometricsUnavailable: Bool { effectiveState == .biometricsUnavailable }
+    var biometricsUnavailable: Bool { state == .biometricsUnavailable }
 
     var failures: Int {
-        if case .locked(_, _, let cooldown) = effectiveState { return cooldown.failures }
+        if case .locked(_, _, let cooldown) = state { return cooldown.failures }
         return 0
     }
 
     var blockedUntil: Date? {
-        if case .locked(_, _, let cooldown) = effectiveState { return cooldown.blockedUntil }
+        if case .locked(_, _, let cooldown) = state { return cooldown.blockedUntil }
         return nil
     }
 
     func unlockWithBiometrics() async {
         let attempt = UUID()
         guard transition(.beginBiometrics(attempt)) else { return }
-        let context = LAContext()
-        // No "Enter Passcode" button: the iPhone's passcode does not open history.
-        context.localizedFallbackTitle = ""
-        let reason = AppLocalization.text("Unlock Screen History")
-        let passed = (try? await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)) ?? false
+        let passed = await boundary.evaluateBiometrics(AppLocalization.text("Unlock Screen History"))
         _ = transition(.finishBiometrics(attempt: attempt, passed: passed))
     }
 
     /// Asks for Face ID or Touch ID again, for something that cannot be undone. The page stays as it is.
     func confirm(_ reason: String) async -> Bool {
         guard usesBiometrics else { return false }
-        let context = LAContext()
-        context.localizedFallbackTitle = ""
-        return (try? await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)) ?? false
+        return await boundary.evaluateBiometrics(reason)
     }
 
     // MARK: PIN
@@ -191,14 +201,16 @@ final class HistoryLock: ObservableObject {
 
     func lock() { _ = transition(.enteredBackground) }
 
+    /// Reads the iPhone and the keychain again, as when Poki comes back from Settings.
+    func refresh() { _ = transition(.refresh) }
+
     // MARK: State machine
 
     @discardableResult
-    private func transition(_ event: Event, now: Date = Date()) -> Bool {
-        var env = currentEnvironment()
-        if biometricsOn != env.biometricsOn { biometricsOn = env.biometricsOn }
+    private func transition(_ event: Event) -> Bool {
+        let now = boundary.now()
+        var env = readEnvironment()
         let current = Self.reconcile(state, env: env, now: now)
-        if env.armed { Self.persistArmed() }
 
         let next: State
         let accepted: Bool
@@ -234,7 +246,7 @@ final class HistoryLock: ObservableObject {
                 return false
             }
             if passed, methods.usesBiometrics {
-                Self.persistArmed()
+                markArmed()
                 next = .unlocked(methods: methods)
                 accepted = true
             } else {
@@ -247,12 +259,13 @@ final class HistoryLock: ObservableObject {
             case .unconfigured, .unlocked: true
             case .locked, .biometricsUnavailable, .deviceLocked: false
             }
-            guard Self.valid(pin), allowed, Self.writeStoredPIN(pin) else {
+            guard Self.valid(pin), allowed, let sealed = Self.seal(pin),
+                  boundary.writeKeychain(Self.pinAccount, sealed, kSecAttrAccessibleWhenUnlockedThisDeviceOnly) else {
                 if state != current { state = current }
                 return false
             }
-            Self.persistArmed()
-            env = currentEnvironment()
+            markArmed()
+            env = readEnvironment()
             guard let methods = AuthMethods(biometrics: env.biometricsOn && env.biometrics.ready, pin: true) else {
                 return false
             }
@@ -271,7 +284,7 @@ final class HistoryLock: ObservableObject {
                     return false
                 }
                 if Self.matchesPIN(pin, stored: value) {
-                    Self.persistArmed()
+                    markArmed()
                     next = .unlocked(methods: methods)
                     accepted = true
                 } else {
@@ -297,7 +310,7 @@ final class HistoryLock: ObservableObject {
                 if state != current { state = current }
                 return false
             }
-            Self.deleteStoredPIN()
+            boundary.deleteKeychain(Self.pinAccount)
             next = .unlocked(methods: .biometricsOnly)
             accepted = true
 
@@ -308,8 +321,8 @@ final class HistoryLock: ObservableObject {
                 return false
             }
             biometricsOn = on
-            UserDefaults.standard.set(on, forKey: Self.biometricsKey)
-            if on, env.biometrics.ready { Self.persistArmed() }
+            boundary.defaults.set(on, forKey: Self.biometricsKey)
+            if on, env.biometrics.ready { markArmed() }
             next = .unlocked(methods: updated)
             accepted = true
         }
@@ -318,19 +331,14 @@ final class HistoryLock: ObservableObject {
         return accepted
     }
 
-    private func currentEnvironment() -> Environment {
-        let on = UserDefaults.standard.object(forKey: Self.biometricsKey) as? Bool ?? true
-        let bio = Self.biometricsSnapshot()
-        let pin = Self.storedPIN()
-        let pinExists: Bool = switch pin {
-        case .present, .inaccessibleWhileDeviceLocked: true
-        case .absent: false
-        }
-        let armed = Self.isArmedPersisted()
-            || pinExists
-            || (on && bio.ready)
-            || (on && bio.blockedOrDeniedOnHardware && Self.storeHasProtectedEntries())
-        return Environment(biometricsOn: on, biometrics: bio, storedPIN: pin, armed: armed)
+    private func readEnvironment() -> Environment {
+        let on = boundary.defaults.object(forKey: Self.biometricsKey) as? Bool ?? true
+        let bio = boundary.biometrics()
+        if biometricsOn != on { biometricsOn = on }
+        if biometrics != bio { biometrics = bio }
+        adoptEarlierHistory(biometricsOn: on, biometrics: bio)
+        let pin = boundary.readKeychain(Self.pinAccount)
+        return Environment(biometricsOn: on, biometrics: bio, storedPIN: pin, armed: pin != .absent || armedOnThisInstall())
     }
 
     private static func reconcile(_ state: State, env: Environment, now: Date) -> State {
@@ -362,40 +370,43 @@ final class HistoryLock: ObservableObject {
         }
     }
 
-    // MARK: Boundaries
+    // MARK: Set-up mark
 
-    private static func biometricsSnapshot() -> BiometricsSnapshot {
-        let context = LAContext()
-        var error: NSError?
-        let ready = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
-        let name: String = switch context.biometryType {
-        case .touchID: "Touch ID"
-        case .opticID: "Optic ID"
-        default: "Face ID"
-        }
-        let code = error?.code
-        let blockedOrDenied = code == LAError.biometryLockout.rawValue
-            || (context.biometryType != .none && code == LAError.biometryNotAvailable.rawValue)
-        return BiometricsSnapshot(ready: ready, name: name, blockedOrDeniedOnHardware: blockedOrDenied)
-    }
-
-    private static func storedPIN() -> StoredPIN {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: pinAccount,
-            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess:
-            guard let data = item as? Data, data.count > 16 else { return .absent }
-            return .present(data)
-        case errSecInteractionNotAllowed:
-            return .inaccessibleWhileDeviceLocked
-        default:
-            return .absent
+    /// The lock was set up on this install: Face ID or Touch ID opened history, or a PIN was made or used.
+    /// From then on, losing Face ID or Touch ID leads to Settings and never to making a first PIN.
+    private func armedOnThisInstall() -> Bool {
+        switch boundary.readKeychain(Self.armedAccount) {
+        case .inaccessibleWhileDeviceLocked: return true
+        case .absent: return false
+        case .present(let mark): return boundary.defaults.string(forKey: Self.installKey).map { Data($0.utf8) == mark } ?? false
         }
     }
+
+    private func markArmed() {
+        let install: String
+        if let known = boundary.defaults.string(forKey: Self.installKey) {
+            install = known
+        } else {
+            install = UUID().uuidString
+            boundary.defaults.set(install, forKey: Self.installKey)
+        }
+        let mark = Data(install.utf8)
+        guard boundary.readKeychain(Self.armedAccount) != .present(mark) else { return }
+        _ = boundary.writeKeychain(Self.armedAccount, mark, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+    }
+
+    /// Once per install: history kept by an earlier Poki, which had no set-up mark, stays behind the
+    /// Face ID or Touch ID that guarded it then. A new install finds its history empty and starts unset.
+    private func adoptEarlierHistory(biometricsOn on: Bool, biometrics bio: Biometrics) {
+        guard boundary.defaults.string(forKey: Self.installKey) == nil, let holds = boundary.historyHoldsAnything() else { return }
+        if holds, on, bio.ready || bio.blockedOrDeniedOnHardware {
+            markArmed()
+        } else {
+            boundary.defaults.set(UUID().uuidString, forKey: Self.installKey)
+        }
+    }
+
+    // MARK: PIN storage
 
     private static func digest(_ pin: String, salt: Data) -> Data {
         var hash = Data(SHA256.hash(data: salt + Data(pin.utf8)))
@@ -404,67 +415,72 @@ final class HistoryLock: ObservableObject {
         return hash
     }
 
+    private static func seal(_ pin: String) -> Data? {
+        var salt = Data(count: 16)
+        guard salt.withUnsafeMutableBytes({ SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }) == errSecSuccess else { return nil }
+        return salt + digest(pin, salt: salt)
+    }
+
     private static func matchesPIN(_ pin: String, stored value: Data) -> Bool {
         guard value.count > 16 else { return false }
         let salt = Data(value.prefix(16))
         return digest(pin, salt: salt) == value.dropFirst(16)
     }
+}
 
-    private static func writeStoredPIN(_ pin: String) -> Bool {
-        var salt = Data(count: 16)
-        guard salt.withUnsafeMutableBytes({ SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }) == errSecSuccess else { return false }
-        let value = salt + digest(pin, salt: salt)
-        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: pinAccount]
-        SecItemDelete(match as CFDictionary)
-        var add = match
-        add[kSecValueData as String] = value
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
-    }
+extension HistoryLock.Boundary {
+    private static let service = "nz.zheha.poki.history-lock"
 
-    private static func deleteStoredPIN() {
-        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: pinAccount]
-        SecItemDelete(match as CFDictionary)
-    }
-
-    private static func isArmedPersisted() -> Bool {
-        if UserDefaults.standard.bool(forKey: armedKey) { return true }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: armedAccount,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
-    }
-
-    private static func persistArmed() {
-        UserDefaults.standard.set(true, forKey: armedKey)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: armedAccount,
-        ]
-        guard SecItemCopyMatching(query as CFDictionary, nil) == errSecItemNotFound else { return }
-        var add = query
-        add[kSecValueData as String] = Data([1])
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(add as CFDictionary, nil)
-    }
-
-    private static func storeHasProtectedEntries() -> Bool {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let file = base.appendingPathComponent("History/history.sqlite")
-        guard FileManager.default.fileExists(atPath: file.path) else { return false }
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2(file.path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK, let handle else {
-            if let handle { sqlite3_close(handle) }
-            return false
-        }
-        defer { sqlite3_close(handle) }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, "SELECT 1 FROM entries LIMIT 1", -1, &statement, nil) == SQLITE_OK, let statement else {
-            return false
-        }
-        defer { sqlite3_finalize(statement) }
-        return sqlite3_step(statement) == SQLITE_ROW
+    static var live: Self {
+        Self(
+            biometrics: {
+                let context = LAContext()
+                var error: NSError?
+                let ready = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+                let name: String = switch context.biometryType {
+                case .touchID: "Touch ID"
+                case .opticID: "Optic ID"
+                default: "Face ID"
+                }
+                let code = error?.code
+                let blockedOrDenied = code == LAError.biometryLockout.rawValue
+                    || (context.biometryType != .none && code == LAError.biometryNotAvailable.rawValue)
+                return HistoryLock.Biometrics(ready: ready, name: name, blockedOrDeniedOnHardware: blockedOrDenied)
+            },
+            evaluateBiometrics: { reason in
+                let context = LAContext()
+                // No "Enter Passcode" button: the iPhone's passcode does not open history.
+                context.localizedFallbackTitle = ""
+                return (try? await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)) ?? false
+            },
+            readKeychain: { account in
+                let query: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+                    kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
+                ]
+                var item: CFTypeRef?
+                switch SecItemCopyMatching(query as CFDictionary, &item) {
+                case errSecSuccess: return (item as? Data).map { .present($0) } ?? .absent
+                case errSecInteractionNotAllowed: return .inaccessibleWhileDeviceLocked
+                default: return .absent
+                }
+            },
+            writeKeychain: { account, value, accessible in
+                let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+                SecItemDelete(match as CFDictionary)
+                var add = match
+                add[kSecValueData as String] = value
+                add[kSecAttrAccessible as String] = accessible
+                return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+            },
+            deleteKeychain: { account in
+                let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+                SecItemDelete(match as CFDictionary)
+            },
+            defaults: .standard,
+            historyHoldsAnything: { HistoryStore.shared.holdsAnything() },
+            now: { Date() }
+        )
     }
 }
 
