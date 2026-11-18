@@ -83,7 +83,6 @@ Poki は、あなたの代わりに iPhone 全体を操作するオープンソ�
 - **バグ報告や機能リクエスト：** [GitHub Issues](https://github.com/JosssphZhou/poki/issues) からお寄せください。
 - **コントリビュート：** [CONTRIBUTING.md](CONTRIBUTING.md) をご覧ください。
 
-
-すべてのコントリビューターは [CONTRIBUTING.md](CONTRIBUTING.md) をご覧ください。
+すべてのコントリビューターは [CONTRIBUTING.md](CONTRIBUTING.md#contributors) をご覧ください。
 
 Copyright (c) 2026 Joseph Zhou (周瑟夫) and contributors. [AGPL-3.0-only](LICENSE) ライセンスで公開しています。ブランド素材の扱いは [BRAND.md](BRAND.md) をご覧ください。詳細は [Poki iPhone アプリガイド](docs/iphone-guide.ja.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、[免責事項](docs/iphone-guide.ja.md#免責事項) にあります。

@@ -83,6 +83,6 @@ Poki 是开源的 iPhone agent，能替你操作整台 iPhone。Poki 应用直�
 - **缺陷反馈与建议：** 请在 [GitHub Issues](https://github.com/JosssphZhou/poki/issues) 提交问题。
 - **参与贡献：** 请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-查看所有贡献者：[CONTRIBUTING.md](CONTRIBUTING.md)。
+查看所有贡献者：[CONTRIBUTING.md](CONTRIBUTING.md#contributors)。
 
 Copyright (c) 2026 Joseph Zhou (周瑟夫) and contributors. 基于 [AGPL-3.0-only](LICENSE) 开源。品牌素材受 [BRAND.md](BRAND.md) 约束。详见 [Poki iPhone 使用指南](docs/iphone-guide.zh-CN.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 [免责声明](docs/iphone-guide.zh-CN.md#免责声明)。
