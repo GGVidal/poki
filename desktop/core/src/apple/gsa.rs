@@ -1125,6 +1125,8 @@ mod rate_limit_regressions {
         apptokens_ec: i64,
         apptokens_em: String,
         second_apptokens: Option<(u16, i64, String)>,
+        /// Runs while an apptokens request is in flight, before the answer goes back.
+        on_apptokens: Option<fn()>,
     }
 
     impl Default for MockBehavior {
@@ -1145,6 +1147,7 @@ mod rate_limit_regressions {
                 apptokens_ec: 0,
                 apptokens_em: String::new(),
                 second_apptokens: None,
+                on_apptokens: None,
             }
         }
     }
@@ -1322,6 +1325,9 @@ mod rate_limit_regressions {
                                             c.apptokens += 1;
                                             c.apptokens
                                         };
+                                        if let Some(hook) = b.on_apptokens {
+                                            hook();
+                                        }
                                         let (app_status, app_ec, app_em) = match (call_num, &b.second_apptokens) {
                                             (n, Some((st, ec, em))) if n >= 2 => (*st, *ec, em.clone()),
                                             _ => (b.apptokens_status, b.apptokens_ec, b.apptokens_em.clone()),
@@ -2203,6 +2209,89 @@ mod rate_limit_regressions {
             idle.choose_team("TEAM123").unwrap();
             assert!(store::load().unwrap().needs_reauth, "a save from the open client must keep the sign-in-again state");
             assert!(!idle.signed_in());
+        });
+    }
+
+    fn seed_expired_session_with_kept_password() {
+        let mut seeded = store::Account::default();
+        seeded.session = Some(Session {
+            apple_id: "person@example.com".into(),
+            adsid: "000123-abc".into(),
+            gs_idms_token: "expired-tok".into(),
+            first_name: "Test".into(),
+            last_name: "Person".into(),
+            sk: vec![7u8; 32],
+            c: b"cookie-bytes".to_vec(),
+        });
+        seeded.password = Some("correct-horse-battery".into());
+        store::save(&seeded).unwrap();
+    }
+
+    /// What the CLI leaves behind after Apple took a code without opening the session.
+    fn another_client_stores_sign_in_again() {
+        let mut stored = store::load().unwrap();
+        stored.needs_reauth = true;
+        stored.xcode_token = None;
+        store::save(&stored).unwrap();
+        store::clear_pending().unwrap();
+    }
+
+    #[test]
+    fn renewal_waiting_on_apple_gives_up_when_another_client_stores_sign_in_again() {
+        let (_home_guard, _dir) = crate::paths::test_home();
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior {
+                apptokens_ec: -22406,
+                on_apptokens: Some(another_client_stores_sign_in_again),
+                ..MockBehavior::default()
+            })
+            .await;
+            seed_expired_session_with_kept_password();
+            let mut renewing = Signer::for_test(test_client(&mock.base_url)).unwrap();
+
+            let expired = renewing.token().await;
+            let after = mock.counts.lock().unwrap().clone();
+            assert_eq!(after.apptokens, 1);
+            assert_eq!(after.srp_init, 0, "a renewal must not sign in with the kept password once the sign-in-again state is stored");
+            assert_eq!(after.total_codes_sent(), 0);
+            assert!(super::is_incomplete_session(&expired.unwrap_err()));
+            assert!(store::load().unwrap().needs_reauth);
+
+            // The same race when Apple still answers with a token: it is not saved over the stored state.
+            seed_expired_session_with_kept_password();
+            mock.behavior.lock().unwrap().apptokens_ec = 0;
+            let mut refreshing = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let fresh = refreshing.token().await;
+            assert!(super::is_incomplete_session(&fresh.unwrap_err()));
+            assert!(store::load().unwrap().needs_reauth, "a token that came back late must not write the sign-in-again state away");
+            assert_eq!(mock.counts.lock().unwrap().srp_init, 0);
+        });
+    }
+
+    #[test]
+    fn person_signing_in_again_can_resend_the_code() {
+        let (_home_guard, _dir) = crate::paths::test_home();
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior::default()).await;
+            seed_expired_session_with_kept_password();
+            another_client_stores_sign_in_again();
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+
+            signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1);
+            let mut waiting = store::load_pending().unwrap();
+            waiting.created_at -= 61;
+            waiting.last_sent_at -= 61;
+            store::save_pending(&waiting).unwrap();
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+
+            let resent = signer.resend_code().await;
+            assert!(resent.is_ok(), "the person's own sign-in must be able to resend its code, got {:?}", resent.err().map(|e| e.to_string()));
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2);
+
+            signer.finish_sign_in(resent.unwrap(), "654321").await.unwrap();
+            assert!(signer.signed_in());
+            assert!(!store::load().unwrap().needs_reauth, "finishing the person's sign-in lifts the sign-in-again state");
         });
     }
 }
