@@ -19,6 +19,7 @@ struct PokiDetailsView: View {
     /// Opens a run in the chat (from the Activity Log).
     var openSession: (String) -> Void = { _ in }
     @Binding var path: NavigationPath
+    @ObservedObject private var historyCapture = HistoryCapture.shared
     /// Bumped when the chosen model changes, so the Models row's value redraws (ModelKeys is not observable).
     @State private var modelVersion = 0
 
@@ -59,7 +60,7 @@ struct PokiDetailsView: View {
                 Section {
                     NavigationLink(value: DetailsRoute.connection) {
                         SettingsRow(title: "Connection", symbol: "iphone.gen3", value: connectionValue,
-                                    valueIsAction: !isSample && !model.setupComplete)
+                                    valueIsAction: !isSample && !model.setupReadyForUse)
                     }
                     .accessibilityIdentifier("details.hands")
                     NavigationLink(value: DetailsRoute.model) {
@@ -90,6 +91,10 @@ struct PokiDetailsView: View {
                         SettingsRow(title: "Memory", symbol: "bookmark", value: "\(isSample ? 10 : RoutineStore.shared.routines.count)")
                     }
                     .accessibilityIdentifier("moreSettings.memory")
+                    NavigationLink(value: DetailsRoute.screenHistory) {
+                        SettingsRow(title: "Screen History", symbol: "rectangle.stack", value: screenHistoryValue)
+                    }
+                    .accessibilityIdentifier("details.screenHistory")
                     NavigationLink(value: DetailsRoute.conversations) {
                         SettingsRow(title: "Archived Conversations", symbol: "archivebox", value: isSample ? "3" : archivedValue)
                     }
@@ -162,6 +167,8 @@ struct PokiDetailsView: View {
                     ActionLogView(openSession: { id in dismiss(); openSession(id) })
                 case .conversations:
                     ConversationsSettingsView(openSession: { id in dismiss(); openSession(id) })
+                case .screenHistory:
+                    ScreenHistorySettingsView()
                 case .voice:
                     VoiceView(embedded: true)
                 case .connection:
@@ -191,6 +198,7 @@ struct PokiDetailsView: View {
                     .settingsPage()
             }
             .onReceive(NotificationCenter.default.publisher(for: ModelKeys.changed)) { _ in modelVersion += 1 }
+            .sheet(isPresented: Bindable(model.signer).needsCodeSheet) { VerificationCodeSheet() }
         }
     }
 
@@ -203,7 +211,7 @@ struct PokiDetailsView: View {
     /// Setup first, then whether Poki is on.
     private var connectionValue: String {
         if isSample { return AppLocalization.text(LocalizedStringResource("On")) }
-        if !model.setupComplete {
+        if !model.setupReadyForUse {
             return AppLocalization.text(LocalizedStringResource("Finish Setup"))
         }
         if !model.sessionOn { return AppLocalization.text(LocalizedStringResource("Off")) }
@@ -223,6 +231,11 @@ struct PokiDetailsView: View {
         return count == 0 ? nil : "\(count)"
     }
 
+    private var screenHistoryValue: String {
+        let on = !isSample && historyCapture.enabled
+        return AppLocalization.text(LocalizedStringResource(on ? "On" : "Off"))
+    }
+
     private var updateWaits: Bool { !isSample && (model.signer.updateNotReady || model.signer.next?.kind == "update") }
     /// The version is the page's last line, so the row only speaks up when an update waits.
     private var updatesValue: String? { updateWaits ? AppLocalization.text(LocalizedStringResource("Update Available")) : nil }
@@ -232,7 +245,7 @@ struct PokiDetailsView: View {
 }
 
 enum DetailsRoute: Hashable {
-    case model, history, conversations, voice, connection, advanced, agents, updates, approvals, appearance, language, interfaceSize
+    case model, history, conversations, screenHistory, voice, connection, advanced, agents, updates, approvals, appearance, language, interfaceSize
     /// Models, with the OpenAI key's form open (or Live Voice, when the key is there but turned off):
     /// where Talk with Poki without a key leads.
     case voiceKey
@@ -397,14 +410,14 @@ struct ConnectionView: View {
 
             Section {
                 ForEach(SetupStep.shown) { step in
-                    let done = model.isDone(step)
+                    let done = model.stepReadyForUse(step)
                     NavigationLink(value: step) {
                         SettingsRow(title: step.rowTitle, symbol: step.symbol, value: done ? nil : AppLocalization.text(LocalizedStringResource("Turn On")),
                                     warns: !done, accessory: done ? .done : nil)
                     }
                 }
                 Button { guiding = true } label: {
-                    SettingsRow(title: model.setupComplete ? "Set Up Again" : "Continue Setup", symbol: "checklist")
+                    SettingsRow(title: model.setupReadyForUse ? "Set Up Again" : "Continue Setup", symbol: "checklist")
                 }
                 .accessibilityIdentifier("moreSettings.setup")
                 FirstRunAgain(row: true)
@@ -418,7 +431,7 @@ struct ConnectionView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { model.loopback.resume(); model.diskImage.notice() }
         .sheet(isPresented: $guiding) {
-            SetupGuide(start: SetupStep.shown.first { !model.isDone($0) })
+            SetupGuide(start: SetupStep.shown.first { !model.stepReadyForUse($0) })
         }
     }
 
@@ -675,8 +688,8 @@ private struct LanguageSettingsView: View {
 }
 
 /// Approvals (ESP-469 board "03 审批"): what always needs you, how Poki asks before a sensitive step, and
-/// how much your chat model may approve by itself. The way of asking is chosen on Poki's card only (the
-/// owner: one setting in one place); this page says which is in use and what it does. The sensitivity's
+/// how much your chat model may approve by itself. The way of asking is chosen here and on Poki's card (the
+/// same setting); the chat's Approvals are off line links here to turn them back on. The sensitivity's
 /// four levels are segments in their own order, least asking first.
 struct ApprovalsSettingsView: View {
     @Environment(AppModel.self) private var model
@@ -697,11 +710,12 @@ struct ApprovalsSettingsView: View {
             }
 
             Section {
-                LabeledContent("Approval Method", value: model.approvalMode.title)
-                    .accessibilityIdentifier("approvals.mode.current")
+                Picker("Approval Method", selection: $model.approvalMode) {
+                    ForEach(ApprovalClassifier.Mode.allCases) { Text($0.title).tag($0) }
+                }
+                .accessibilityIdentifier("approvals.mode.picker")
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Change it on Poki’s card: tap Poki’s picture at the top of the chat.")
                     switch model.approvalMode {
                     case .reply: Text("Poki asks in the chat and proceeds after you reply.")
                     case .confirm: Text("Tap Allow or Don’t Allow in the Live Activity, a notification, or Poki.")

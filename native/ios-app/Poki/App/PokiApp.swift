@@ -6,6 +6,11 @@ struct PokiApp: App {
     @State private var model: AppModel
     @State private var chat: ChatModel
 
+    @discardableResult
+    static func scheduleStartupWork(routines: RoutineStore = .shared) -> Task<String?, Never> {
+        Task.detached(priority: .utility) { routines.importRestoredBackup() }
+    }
+
     init() {
         // PokiLauncher (Rust) and the relay write to sockets the other side may have closed. In an app,
         // unlike a Rust executable, nothing ignores SIGPIPE, and it would end the whole app.
@@ -31,8 +36,8 @@ struct PokiApp: App {
         #if DEBUG && targetEnvironment(simulator)
         TestCredential.importIfGiven()
         #endif
-        // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in before any agent asks.
-        _ = RoutineStore.shared.importRestoredBackup()
+        // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in off the main thread.
+        Self.scheduleStartupWork()
         // The three-dimensional bear loads while the app starts, to be there when Poki's picture first shows.
         BearModel.shared.load()
         let model = AppModel()
@@ -63,6 +68,8 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(ChatModel.self) private var chat
     @Environment(\.scenePhase) private var scenePhase
+    var sessionStore: SessionStore = .shared
+    var shortcutStore: HomeShortcutStore = .shared
     @State private var showsSidebar = false
     // Both navigation layouts share the composer while the window changes size.
     @State private var draft = UserDefaults.standard.string(forKey: "pokiDraft") ?? ""
@@ -76,10 +83,6 @@ struct RootView: View {
     @State private var wide: HomeRoute = .chat
     @State private var threadsOpen = false
     @State private var detailsOpen = false
-    /// Poki's card under its picture: the model, the way of asking, Pause or Resume.
-    @State private var statusOpen = false
-    /// Where the card opens: under Poki's picture on the home page (global points), or under the top bar.
-    @State private var cardUnder: CGFloat?
     @State private var detailsPath = NavigationPath()
     /// The first run is up, over everything (`FirstRunGuide`).
     @State private var welcoming = false
@@ -108,7 +111,8 @@ struct RootView: View {
     private var sessions: some View {
         SessionsView(
             openChat: { show(.chat) },
-            openSession: { show(.session($0)) }
+            openSession: { show(.session($0)) },
+            sessionStore: sessionStore
         )
     }
 
@@ -134,10 +138,7 @@ struct RootView: View {
     private func chatPage(split: Bool) -> some View {
         ChatView(
             sharedDraft: $draft,
-            openDetails: { under in
-                cardUnder = under
-                statusOpen = true
-            },
+            openDetails: { _ in },
             openVoice: openLiveVoice,
             openSetup: { fix(.setup, split: split) },
             openSetupStep: { fix(.step($0), split: split) },
@@ -145,7 +146,9 @@ struct RootView: View {
             openVoiceKey: { openDetails([DetailsRoute.voiceKey]) },
             openThreads: split ? nil : { withAnimation(ThreadsDrawerMotion.settle) { threadsOpen = true } },
             openAgents: { fix(.agents, split: split) },
-            openUpdates: { fix(.updates, split: split) }
+            openUpdates: { fix(.updates, split: split) },
+            sessionStore: sessionStore,
+            shortcutStore: shortcutStore
         )
         // The bear stops drawing where it is out of sight: behind the open drawer or the profile over the
         // chat. Poki's card opens beside the picture and leaves it in sight.
@@ -160,10 +163,7 @@ struct RootView: View {
             // The voice page keeps its own header and blue ground (not redrawn in ESP-340's first batch).
             VoicePage(
                 back: split ? nil : { show(.chat) },
-                openDetails: {
-                    cardUnder = nil
-                    statusOpen = true
-                },
+                openDetails: {},
                 openModel: { openDetails([DetailsRoute.model]) },
                 select: { target in if target == .chat { show(.chat) } }
             )
@@ -208,7 +208,7 @@ struct RootView: View {
             .softTopEdge()
             // Settings opens from the bottom of the conversations.
             .environment(\.openPokiSettings, { openDetails() })
-            .pokiStatusCard(isPresented: $statusOpen, under: cardUnder, leading: showsSidebar ? Self.sidebarWidth + 1 : 0, openModel: { openDetails([DetailsRoute.model]) })
+            .environment(\.pokiDetailsOpen, detailsOpen)
             // Settings covers the whole screen on iPhone (ESP-469: nothing of the chat shows around it), with
             // its Close button; beside the list on iPad it stays a sheet at a page's width (ESP-376).
             .fullScreenCover(isPresented: Binding(get: { detailsOpen && !showsSidebar }, set: { detailsOpen = $0 })) {
@@ -331,6 +331,8 @@ struct RootView: View {
             openDetails([DetailsRoute.connection])
         } else if url.host() == "log" {
             openDetails([DetailsRoute.history])
+        } else if url.host() == "approvals" {
+            openDetails([DetailsRoute.approvals])
         } else if url.host() == "voice" {
             detailsOpen = false
             model.voice.open(url)
@@ -364,7 +366,6 @@ struct RootView: View {
     private func takeEntry() {
         guard scenePhase == .active, let request = PokiEntry.shared.take(), !model.pairingUnderWay, !FirstRun.isDue() else { return }
         detailsOpen = false
-        statusOpen = false
         if let handoff = AskPoki.liveSessionID { show(.session(handoff)); return }
         show(.chat)
         guard request == .talk, !chat.running, !model.voice.isOn else { return }
@@ -413,9 +414,6 @@ struct RootView: View {
         case "moreSettings", "details", "status":
             // More Settings is gone: its rows are on Poki's profile, by what they are about.
             openDetails()
-        case "statusCard":
-            cardUnder = nil
-            statusOpen = true
         case "hands", "connection":
             openDetails([DetailsRoute.connection])
         case "rules", "approvals":
@@ -448,6 +446,8 @@ struct RootView: View {
             openDetails([DetailsRoute.voice])
         case "conversations":
             openDetails([DetailsRoute.conversations])
+        case "screenHistory":
+            openDetails([DetailsRoute.screenHistory])
         case "updates":
             openDetails([DetailsRoute.updates])
         case "steps":
