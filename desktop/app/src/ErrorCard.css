@@ -1,0 +1,93 @@
+/* Copied from nab138/iloader src/ErrorContext.css at commit 96ed06124d7a859692a5ec2864e1b47998d4904c
+ * Repository: https://github.com/nab138/iloader
+ * License: MIT (Copyright (c) 2025 nab138). Full text in third_party/LICENSE.iloader.
+ * Adapted only to use Poki Setup's light/dark CSS tokens (--fill, --blue) inside inline Setup cards.
+ */
+.error-inner {
+  background-color: var(--fill);
+  overflow: auto;
+  padding: 0.65em;
+  border-radius: 12px;
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 0.85rem;
+  user-select: text;
+  -webkit-user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0.5rem 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error-inner {
+    background-color: rgba(0, 0, 0, 0.4);
+  }
+}
+
+.error-outer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 0.35rem;
+}
+
+.error-outer h2 {
+  margin: 0;
+}
+
+.error-outer h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0.35rem 0 0.25rem;
+}
+
+.error-outer p {
+  margin: 0;
+}
+
+.error-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.error-more-details {
+  cursor: pointer;
+  padding-top: 0.25rem;
+  padding-bottom: 0.5rem;
+  text-decoration: underline;
+}
+
+.error-details-measure {
+  visibility: hidden;
+  max-height: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.error-details {
+  margin-top: 0;
+}
+
+.error-link {
+  color: var(--blue);
+  cursor: pointer;
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.suggestions {
+  padding: 0 0 0.5rem 0;
+}
+
+.suggestions ul {
+  margin: 0 0 0.5rem 0;
+  padding-left: 1.4rem;
+}
+
+.suggestions li {
+  margin-bottom: 0.3rem;
+}

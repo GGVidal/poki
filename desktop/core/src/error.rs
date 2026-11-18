@@ -101,3 +101,19 @@ fn usbmuxd_missing() -> String {
         "Poki Setup cannot reach usbmuxd. Install and start usbmuxd, then plug the iPhone in.".into()
     }
 }
+
+#[cfg(all(test, feature = "device"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usbmuxd_errors_classify_as_usbmuxd_without_message_substring_sniffing() {
+        let from_mux = Error::from(idevice::IdeviceError::Usbmuxd(idevice::UsbmuxdError::ConnectionRefused));
+        assert_eq!(from_mux.kind(), "usbmuxd");
+
+        let from_socket = Error::from(idevice::IdeviceError::Socket(std::io::Error::from(
+            std::io::ErrorKind::ConnectionRefused,
+        )));
+        assert_eq!(from_socket.kind(), "usbmuxd");
+    }
+}

@@ -32,7 +32,8 @@ fi
 
 echo "== SwiftUI app"
 (cd "$HERE" && swift build -c release ${SWIFT_ARCHS[@]+"${SWIFT_ARCHS[@]}"})
-BIN="$(cd "$HERE" && swift build -c release ${SWIFT_ARCHS[@]+"${SWIFT_ARCHS[@]}"} --show-bin-path)/PokiSetup"
+BIN_DIR="$(cd "$HERE" && swift build -c release ${SWIFT_ARCHS[@]+"${SWIFT_ARCHS[@]}"} --show-bin-path)"
+BIN="$BIN_DIR/PokiSetup"
 
 APP="$OUT/Poki Setup.app"
 rm -rf "$APP"
@@ -41,6 +42,12 @@ cp "$BIN" "$APP/Contents/MacOS/PokiSetup"
 cp "$OUT/poki-setup-bridge" "$APP/Contents/MacOS/poki-setup-bridge"
 cp "$OUT/poki-setup" "$APP/Contents/MacOS/poki-setup"
 cp "$HERE/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+if [ -d "$BIN_DIR/PokiSetup_PokiSetup.bundle" ]; then
+  cp -R "$BIN_DIR/PokiSetup_PokiSetup.bundle" "$APP/Contents/Resources/"
+fi
+if [ -f "$HERE/Sources/PokiSetup/Resources/Localizable.xcstrings" ]; then
+  xcrun xcstringstool compile "$HERE/Sources/PokiSetup/Resources/Localizable.xcstrings" --output-directory "$APP/Contents/Resources"
+fi
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" "$HERE/Resources/Info.plist" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 

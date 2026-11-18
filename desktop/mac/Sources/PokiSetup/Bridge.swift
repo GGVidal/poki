@@ -50,10 +50,21 @@ final class Bridge {
         return nil
     }
 
+    func stop() {
+        if let p = process, p.isRunning {
+            p.terminate()
+        }
+        process = nil
+        input = nil
+    }
+
     private func ensureRunning() throws {
-        if let p = process, p.isRunning { return }
         guard let url = helperURL() else {
             throw CoreError(kind: "bridge", message: "Poki Setup is missing its helper (poki-setup-bridge). Reinstall the app.")
+        }
+        if let p = process, p.isRunning {
+            if p.executableURL?.standardizedFileURL == url.standardizedFileURL { return }
+            stop()
         }
         let p = Process()
         p.executableURL = url

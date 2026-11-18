@@ -20,26 +20,26 @@ struct RelayView: View {
                 PageHero(symbol: "point.3.connected.trianglepath.dotted", title: "Relay", subtitle: "Lets AI apps reach your iPhone from anywhere. A small Cloudflare Worker in your own account that passes messages along and stores nothing. The free plan is enough.")
             }
             if let d = model.relay {
-                Section("Your Relay") {
-                    LabeledContent("Address") { Text(d.address).foregroundStyle(.secondary).textSelection(.enabled) }
-                    LabeledContent("Cloudflare Account") { Text(d.accountName).foregroundStyle(.secondary) }
-                    LabeledContent("Status") {
+                Section(L10n.tr("Your Relay")) {
+                    LabeledContent(L10n.tr("Address")) { Text(d.address).foregroundStyle(.secondary).textSelection(.enabled) }
+                    LabeledContent(L10n.tr("Cloudflare Account")) { Text(d.accountName).foregroundStyle(.secondary) }
+                    LabeledContent(L10n.tr("Status")) {
                         HStack(spacing: 8) {
                             switch relayUp {
-                            case .some(true): Label("Answering", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                            case .some(false): Label("Not answering", systemImage: "xmark.circle.fill").foregroundStyle(.red)
+                            case .some(true): Label(L10n.tr("Answering"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                            case .some(false): Label(L10n.tr("Not answering"), systemImage: "xmark.circle.fill").foregroundStyle(.red)
                             case .none: EmptyView()
                             }
-                            Button("Check") { Task { await check(d.address) } }
+                            Button(L10n.tr("Check")) { Task { await check(d.address) } }
                         }
                     }
                     HStack(alignment: .top, spacing: 16) {
                         QRCode(text: d.phoneLink, size: 130)
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Give the address to Poki").font(.headline)
-                            Text("Scan this with the iPhone's Camera. Poki opens and starts using this relay.")
+                            Text(L10n.tr("Give the address to Poki")).font(.headline)
+                            Text(L10n.tr("Scan this with the iPhone's Camera. Poki opens and starts using this relay."))
                                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            Button("Copy Link") { copyToPasteboard(d.phoneLink) }
+                            Button(L10n.tr("Copy Link")) { copyToPasteboard(d.phoneLink) }
                         }
                     }
                     .padding(.vertical, 4)
@@ -47,57 +47,57 @@ struct RelayView: View {
             }
             if let w = worker {
                 Section {
-                    LabeledContent("Relay Code") {
-                        Text(w.source == "built in" ? "Built into Poki Setup" : "From release \(w.source)").foregroundStyle(.secondary)
+                    LabeledContent(L10n.tr("Relay Code")) {
+                        Text(w.source == "built in" ? L10n.tr("Built into Poki Setup") : L10n.fmt("From release %@", w.source)).foregroundStyle(.secondary)
                     }
                     if w.updateAvailable {
-                        Label("Relay update available. Update Relay below to match your Poki.", systemImage: "arrow.triangle.2.circlepath")
+                        Label(L10n.tr("Relay update available. Update Relay below to match your Poki."), systemImage: "arrow.triangle.2.circlepath")
                             .foregroundStyle(Color.pokiBlue)
                     }
                     HStack {
-                        if let u = URL(string: w.downloadUrl) { Link("Download worker.js", destination: u) }
+                        if let u = URL(string: w.downloadUrl) { Link(L10n.tr("Download worker.js"), destination: u) }
                         Spacer()
-                        if let u = URL(string: w.guideUrl) { Link("Deploy It Yourself…", destination: u) }
+                        if let u = URL(string: w.guideUrl) { Link(L10n.tr("Deploy It Yourself…"), destination: u) }
                     }
                 } footer: {
-                    Text("Poki Setup deploys the relay from the same release as the Poki on your iPhone, checked against that release's SHA256SUMS.")
+                    Text(L10n.tr("Poki Setup deploys the relay from the same release as the Poki on your iPhone, checked against that release's SHA256SUMS."))
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             Section {
                 if tokenSaved {
-                    LabeledContent("Cloudflare API Token") {
+                    LabeledContent(L10n.tr("Cloudflare API Token")) {
                         HStack {
-                            Text("Saved in Keychain").foregroundStyle(.secondary)
-                            Button("Forget") { Task { _ = try? await model.bridge.call("relay_forget_token", as: Bool?.self); tokenSaved = false; accounts = [] } }
+                            Text(L10n.tr("Saved in Keychain")).foregroundStyle(.secondary)
+                            Button(L10n.tr("Forget")) { Task { _ = try? await model.bridge.call("relay_forget_token", as: Bool?.self); tokenSaved = false; accounts = [] } }
                         }
                     }
                 } else {
-                    SecureField("Cloudflare API Token", text: $token, prompt: Text("Paste the token"))
+                    SecureField(L10n.tr("Cloudflare API Token"), text: $token, prompt: Text(L10n.tr("Paste the token")))
                 }
                 if !accounts.isEmpty {
-                    Picker("Account", selection: $accountID) {
+                    Picker(L10n.tr("Account"), selection: $accountID) {
                         ForEach(accounts) { Text($0.name).tag($0.id) }
                     }
                 }
                 if let s = model.steps["relay"], !s.isEmpty { StepsView(steps: s) }
                 HStack {
-                    Link("Create a token…", destination: URL(string: "https://dash.cloudflare.com/profile/api-tokens")!)
+                    Link(L10n.tr("Create a token…"), destination: URL(string: "https://dash.cloudflare.com/profile/api-tokens")!)
                     Spacer()
                     if working { ProgressView().controlSize(.small) }
                     if accounts.isEmpty {
-                        Button("Continue") { Task { await loadAccounts() } }.disabled((token.isEmpty && !tokenSaved) || working)
+                        Button(L10n.tr("Continue")) { Task { await loadAccounts() } }.disabled((token.isEmpty && !tokenSaved) || working)
                     } else {
-                        Button(model.relay == nil ? "Deploy Relay" : "Update Relay") { Task { await deploy() } }
+                        Button(L10n.tr(model.relay == nil ? "Deploy Relay" : "Update Relay")) { Task { await deploy() } }
                             .pokiProminentButton()
                             .disabled(accountID.isEmpty || working)
                     }
                 }
                 if let error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
             } header: {
-                Text(model.relay == nil ? "Deploy" : "Redeploy")
+                Text(L10n.tr(model.relay == nil ? "Deploy" : "Redeploy"))
             } footer: {
-                Text("Use the “Edit Cloudflare Workers” template. Poki Setup keeps the token in your Keychain, so you can update the relay later without pasting it again.")
+                Text(L10n.tr("Use the “Edit Cloudflare Workers” template. Poki Setup keeps the token in your Keychain, so you can update the relay later without pasting it again."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -162,26 +162,26 @@ struct DiagnosticsView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("iPhone Log") {
+                Section(L10n.tr("iPhone Log")) {
                     HStack {
-                        TextField("Filter", text: $filter, prompt: Text("Poki"))
+                        TextField(L10n.tr("Filter"), text: $filter, prompt: Text("Poki"))
                             .frame(maxWidth: 220)
                         Spacer()
-                        Button(streaming ? "Stop" : "Start") { Task { await toggle() } }
+                        Button(L10n.tr(streaming ? "Stop" : "Start")) { Task { await toggle() } }
                             .disabled(model.selectedPhone == nil && !streaming)
-                        Button("Clear") { model.logLines.removeAll() }
-                        Button("Copy") { copyToPasteboard(model.logLines.joined(separator: "\n")) }
+                        Button(L10n.tr("Clear")) { model.logLines.removeAll() }
+                        Button(L10n.tr("Copy")) { copyToPasteboard(model.logLines.joined(separator: "\n")) }
                     }
                 }
-                Section("Tools") {
-                    LabeledContent("Developer Disk Image") {
-                        Button("Mount") { Task { await mount() } }.disabled(model.selectedPhone == nil)
+                Section(L10n.tr("Tools")) {
+                    LabeledContent(L10n.tr("Developer Disk Image")) {
+                        Button(L10n.tr("Mount")) { Task { await mount() } }.disabled(model.selectedPhone == nil || model.busyJobs.contains("ddi"))
                     }
-                    LabeledContent("Support Bundle") {
-                        Button("Save…") { Task { await saveBundle() } }
+                    LabeledContent(L10n.tr("Support Bundle")) {
+                        Button(L10n.tr("Save…")) { Task { await saveBundle() } }
                     }
-                    LabeledContent("Helper Log") {
-                        Button(showHelperLog ? "Hide" : "Show") { showHelperLog.toggle() }
+                    LabeledContent(L10n.tr("Helper Log")) {
+                        Button(L10n.tr(showHelperLog ? "Hide" : "Show")) { showHelperLog.toggle() }
                     }
                     if let message { Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
                 }
@@ -204,7 +204,7 @@ struct DiagnosticsView: View {
                 .background(Color(nsColor: .textBackgroundColor))
                 .overlay {
                     if (showHelperLog ? model.bridge.helperLog : model.logLines).isEmpty {
-                        Text(showHelperLog ? "The helper has not logged anything yet." : (model.selectedPhone == nil ? "Connect an iPhone to see its log here." : "Press Start to see the iPhone's log here."))
+                        Text(L10n.tr(showHelperLog ? "The helper has not logged anything yet." : (model.selectedPhone == nil ? "Connect an iPhone to see its log here." : "Press Start to see the iPhone's log here.")))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -229,8 +229,8 @@ struct DiagnosticsView: View {
     private func mount() async {
         guard let p = model.selectedPhone else { return }
         do {
-            try await model.job("ddi") { try await model.bridge.run("mount_ddi", ["udid": p.id]) }
-            message = "The Developer Disk Image is mounted."
+            try await model.mountDDI(udid: p.id)
+            message = L10n.tr("The Developer Disk Image is mounted.")
         } catch { model.report(error) }
     }
 
@@ -238,12 +238,12 @@ struct DiagnosticsView: View {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.prompt = "Save Here"
-        panel.message = "Support bundles can contain device identifiers, local paths and raw logs. Review the archive before sharing."
+        panel.prompt = L10n.tr("Save Here")
+        panel.message = L10n.tr("Support bundles can contain device identifiers, local paths and raw logs. Review the archive before sharing.")
         guard panel.runModal() == .OK, let dir = panel.url else { return }
         do {
             let path: String = try await model.bridge.call("support_bundle", ["udid": model.selectedPhone?.id, "out_dir": dir.path])
-            message = "Saved \(path). Review the archive before sharing."
+            message = L10n.fmt("Saved %@. Review the archive before sharing.", path)
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         } catch { model.report(error) }
     }
@@ -263,33 +263,33 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Identity Server", selection: $choice) {
+                Picker(L10n.tr("Identity Server"), selection: $choice) {
                     ForEach(model.info?.anisetteServers ?? [], id: \.self) { u in
                         Text(URL(string: u)?.host ?? u).tag(u)
                     }
-                    if model.info?.canUseSystemAnisette == true { Text("This Mac (macOS 26 and earlier)").tag(systemTag) }
-                    Text("Other…").tag(customTag)
+                    if model.info?.canUseSystemAnisette == true { Text(L10n.tr("This Mac (macOS 26 and earlier)")).tag(systemTag) }
+                    Text(L10n.tr("Other…")).tag(customTag)
                 }
                 if choice == customTag {
-                    TextField("Server Address", text: $custom, prompt: Text("https://"))
+                    TextField(L10n.tr("Server Address"), text: $custom, prompt: Text("https://"))
                 }
                 HStack {
                     if let message { Text(message).font(.callout).foregroundStyle(.secondary) }
                     Spacer()
-                    Button("Apply") { Task { await apply() } }
+                    Button(L10n.tr("Apply")) { Task { await apply() } }
                 }
             } header: {
-                Text("Sign-In")
+                Text(L10n.tr("Sign-In"))
             } footer: {
-                Text("Apple's sign-in wants proof that it talks to a Mac or PC (“anisette”). A server provides it; it never sees your Apple Account or password. If sign-in fails, try another one.")
+                Text(L10n.tr("Apple's sign-in wants proof that it talks to a Mac or PC (“anisette”). A server provides it; it never sees your Apple Account or password. If sign-in fails, try another one."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("About") {
-                LabeledContent("Version") { Text(displayVersion(model.info?.version ?? "")).foregroundStyle(.secondary) }
+            Section(L10n.tr("About")) {
+                LabeledContent(L10n.tr("Version")) { Text(displayVersion(model.info?.version ?? "")).foregroundStyle(.secondary) }
             }
-            Section("Data") {
-                LabeledContent("Folder") {
-                    Button("Show in Finder") {
+            Section(L10n.tr("Data")) {
+                LabeledContent(L10n.tr("Folder")) {
+                    Button(L10n.tr("Show in Finder")) {
                         if let d = model.info?.dataDir { NSWorkspace.shared.open(URL(fileURLWithPath: d)) }
                     }
                 }
@@ -316,7 +316,7 @@ struct SettingsView: View {
         let src: AnisetteSource = choice == systemTag ? .system : .remote(choice == customTag ? custom : choice)
         do {
             try await model.setAnisette(src)
-            message = "Saved."
+            message = L10n.tr("Saved.")
         } catch { message = error.localizedDescription }
     }
 }

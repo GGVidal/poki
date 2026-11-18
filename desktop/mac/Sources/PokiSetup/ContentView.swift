@@ -11,7 +11,7 @@ struct ContentView: View {
                         Label(p.title, systemImage: p.symbol).tag(p)
                     }
                 }
-                Section("Advanced") {
+                Section(L10n.tr("Advanced")) {
                     ForEach([Page.relay, .debug]) { p in
                         Label(p.title, systemImage: p.symbol).tag(p)
                     }
@@ -42,16 +42,16 @@ struct ContentView: View {
         }
         .animation(.snappy, value: model.banner)
         .sheet(isPresented: $model.needsCode) { VerificationCodeSheet() }
-        .alert("Poki Setup \(displayVersion(model.updatePrompt ?? "")) is available", isPresented: Binding(get: { model.updatePrompt != nil }, set: { if !$0 { model.updatePrompt = nil } })) {
-            Button("Restart to Update") {
+        .alert(L10n.fmt("Poki Setup %@ is available", displayVersion(model.updatePrompt ?? "")), isPresented: Binding(get: { model.updatePrompt != nil }, set: { if !$0 { model.updatePrompt = nil } })) {
+            Button(L10n.tr("Restart to Update")) {
                 Task {
                     do { try await model.installUpdate() } catch { model.banner = error.localizedDescription }
                 }
             }
             .keyboardShortcut(.defaultAction)
-            Button("Later", role: .cancel) {}
+            Button(L10n.tr("Later"), role: .cancel) {}
         } message: {
-            Text("Poki Setup downloads the update, checks its signature and restarts.")
+            Text(L10n.tr("Poki Setup downloads the update, checks its signature and restarts."))
         }
     }
 }
@@ -66,10 +66,10 @@ private struct SidebarFooter: View {
         HStack(spacing: 10) {
             AccountBadge(name: model.account?.name, appleID: model.account?.appleId, signedIn: signedIn)
             VStack(alignment: .leading, spacing: 1) {
-                Text(signedIn ? (model.account?.name ?? "Signed In") : hasKeychainError ? "Keychain Locked" : "Not Signed In")
+                Text(signedIn ? (model.account?.name ?? L10n.tr("Signed In")) : hasKeychainError ? L10n.tr("Keychain Locked") : L10n.tr("Not Signed In"))
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
-                Text(signedIn ? (model.account?.appleId ?? "") : hasKeychainError ? "Choose “Always Allow” and retry" : "Sign in to set up Poki")
+                Text(signedIn ? (model.account?.appleId ?? "") : hasKeychainError ? L10n.tr("Choose “Always Allow” and retry") : L10n.tr("Sign in to set up Poki"))
                     .font(.caption)
                     .foregroundStyle(hasKeychainError ? Color.orange : Color.secondary)
                     .lineLimit(1)
@@ -92,12 +92,12 @@ private struct VerificationCodeSheet: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "lock.shield").font(.system(size: 40)).foregroundStyle(Color.pokiBlue)
-            Text("Two-Factor Authentication").font(.title2.weight(.semibold))
-            Text(model.codeVia == "sms" ? "Enter the code Apple sent to your phone number." : "Enter the verification code shown on your other Apple devices.")
+            Text(L10n.tr("Two-Factor Authentication")).font(.title2.weight(.semibold))
+            Text(L10n.tr(model.codeVia == "sms" ? "Enter the code Apple sent to your phone number." : "Enter the verification code shown on your other Apple devices."))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField("6-digit code", text: $code)
+            TextField(L10n.tr("6-digit code"), text: $code)
                 .font(.system(size: 24, weight: .medium, design: .monospaced))
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
@@ -110,7 +110,7 @@ private struct VerificationCodeSheet: View {
                 }
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
             HStack {
-                Button("Cancel") {
+                Button(L10n.tr("Cancel")) {
                     model.needsCode = false
                     code = ""
                     error = nil
@@ -118,7 +118,7 @@ private struct VerificationCodeSheet: View {
                 .keyboardShortcut(.cancelAction)
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
-                Button("Verify") { Task { await verify() } }
+                Button(L10n.tr("Verify")) { Task { await verify() } }
                     .pokiProminentButton()
                     .keyboardShortcut(.defaultAction)
                     .disabled(code.count != 6 || working)
@@ -184,14 +184,14 @@ private struct Banner: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
-            Button("Copy") {
+            Button(L10n.tr("Copy")) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             }
             .buttonStyle(.borderless)
             Button(action: close) { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("Dismiss")
+                .accessibilityLabel(L10n.tr("Dismiss"))
         }
         .padding(12)
         .frame(maxWidth: 560)

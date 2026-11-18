@@ -623,45 +623,9 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
     let upgrade = existing.iter().any(|a| a.bundle_id == built.bundle_id);
     device::install::install_ipa(&phone, &built.ipa, upgrade, reporter).await?;
 
-    reporter.step("pairing_file", "Giving Poki its pairing file");
-    let mut handed = false;
-    match &record {
-        None => reporter.done("pairing_file", Some("Poki pairs on the iPhone itself".into())),
-        Some(record) => {
-            // Right after an install the phone sometimes drops the first container connection; try again.
-            let mut placed = device::container::place_pairing_file(&phone, &built.bundle_id, record).await;
-            for _ in 0..2 {
-                if placed.is_ok() { break; }
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                placed = device::container::place_pairing_file(&phone, &built.bundle_id, record).await;
-            }
-            match placed {
-                Ok(true) => {
-                    handed = true;
-                    reporter.done("pairing_file", Some("placed in Poki's container".into()));
-                }
-                Ok(false) => {
-                    handed = true;
-                    reporter.done("pairing_file", Some("Poki already has its own pairing; kept it".into()));
-                }
-                Err(e) => reporter.note("pairing_file", format!("Could not write into Poki's container ({e}); the QR hand-off below does it instead.")),
-            }
-        }
-    }
     let apple_id = signer.account.apple_id().unwrap_or("").to_string();
-    hand_signing_identity(&phone, &built, &apple_id, reporter).await;
-    if opts.seed_ddi {
-        if let Err(e) = device::ddi::seed_container(&phone, &built.bundle_id, reporter).await {
-            reporter.note("pairing_file", format!("Developer disk image not pre-seeded ({e}); Poki downloads it itself."));
-        }
-    }
-    let handoff = if let (true, Some(record)) = (opts.hand_off || !handed, &record) {
-        let server = pairshare::serve(record.clone()).await?;
-        reporter.waiting("pairing_file", format!("Scan the code with the iPhone's Camera, or open {} on the iPhone", server.handoff.link));
-        Some(server)
-    } else {
-        None
-    };
+    let mut post = RealPostInstall { phone: &phone, built: &built, apple_id: &apple_id };
+    let (handed, handoff) = finish_device_install(&mut post, record.as_deref(), &opts, reporter).await?;
 
     let rec = keeper::Record {
         udid: phone.udid.clone(),
@@ -745,4 +709,126 @@ pub async fn renew_due(signer: &mut Signer, reporter: &Reporter) -> Vec<(String,
     }
     signer.set_caller(prev_caller);
     out
+}
+
+#[cfg(feature = "device")]
+pub(crate) trait PostInstallOps {
+    async fn place_pairing(&mut self, record: &[u8]) -> Result<bool>;
+    async fn hand_identity(&mut self, reporter: &Reporter);
+    async fn seed_ddi(&mut self, reporter: &Reporter) -> Result<()>;
+    async fn mount_ddi(&mut self, reporter: &Reporter) -> Result<()>;
+    async fn serve_handoff(&mut self, record: Vec<u8>) -> Result<pairshare::Server>;
+}
+
+#[cfg(feature = "device")]
+struct RealPostInstall<'a> {
+    phone: &'a Phone,
+    built: &'a SignedBuild,
+    apple_id: &'a str,
+}
+
+#[cfg(feature = "device")]
+impl PostInstallOps for RealPostInstall<'_> {
+    async fn place_pairing(&mut self, record: &[u8]) -> Result<bool> {
+        let mut placed = device::container::place_pairing_file(self.phone, &self.built.bundle_id, record).await;
+        for _ in 0..2 {
+            if placed.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            placed = device::container::place_pairing_file(self.phone, &self.built.bundle_id, record).await;
+        }
+        placed
+    }
+    async fn hand_identity(&mut self, reporter: &Reporter) {
+        hand_signing_identity(self.phone, self.built, self.apple_id, reporter).await;
+    }
+    async fn seed_ddi(&mut self, reporter: &Reporter) -> Result<()> {
+        device::ddi::seed_container(self.phone, &self.built.bundle_id, reporter).await
+    }
+    async fn mount_ddi(&mut self, reporter: &Reporter) -> Result<()> {
+        device::ddi::mount(self.phone, reporter).await
+    }
+    async fn serve_handoff(&mut self, record: Vec<u8>) -> Result<pairshare::Server> {
+        pairshare::serve(record).await
+    }
+}
+
+#[cfg(feature = "device")]
+pub(crate) async fn finish_device_install(
+    ops: &mut impl PostInstallOps,
+    record: Option<&[u8]>,
+    opts: &Options,
+    reporter: &Reporter,
+) -> Result<(bool, Option<pairshare::Server>)> {
+    reporter.step("pairing_file", "Giving Poki its pairing file");
+    let mut handed = false;
+    match record {
+        None => reporter.done("pairing_file", Some("Poki pairs on the iPhone itself".into())),
+        Some(record) => match ops.place_pairing(record).await {
+            Ok(true) => {
+                handed = true;
+                reporter.done("pairing_file", Some("placed in Poki's container".into()));
+            }
+            Ok(false) => {
+                handed = true;
+                reporter.done("pairing_file", Some("Poki already has its own pairing; kept it".into()));
+            }
+            Err(e) => reporter.note("pairing_file", format!("Could not write into Poki's container ({e}); the QR hand-off below does it instead.")),
+        },
+    }
+    ops.hand_identity(reporter).await;
+    if opts.seed_ddi {
+        if let Err(e) = ops.seed_ddi(reporter).await {
+            reporter.note("pairing_file", format!("Developer disk image not pre-seeded ({e}); Poki downloads it itself."));
+        }
+    }
+    let handoff = if let (true, Some(record)) = (opts.hand_off || !handed, record) {
+        let server = ops.serve_handoff(record.to_vec()).await?;
+        reporter.waiting("pairing_file", format!("Scan the code with the iPhone's Camera, or open {} on the iPhone", server.handoff.link));
+        Some(server)
+    } else {
+        None
+    };
+    Ok((handed, handoff))
+}
+
+#[cfg(all(test, feature = "device"))]
+mod finish_tests {
+    use super::*;
+
+    struct FakePostInstall {
+        seeded: usize,
+        mounted: usize,
+    }
+
+    impl PostInstallOps for FakePostInstall {
+        async fn place_pairing(&mut self, _record: &[u8]) -> Result<bool> {
+            Ok(true)
+        }
+        async fn hand_identity(&mut self, _reporter: &Reporter) {}
+        async fn seed_ddi(&mut self, _reporter: &Reporter) -> Result<()> {
+            self.seeded += 1;
+            Ok(())
+        }
+        async fn mount_ddi(&mut self, _reporter: &Reporter) -> Result<()> {
+            self.mounted += 1;
+            Ok(())
+        }
+        async fn serve_handoff(&mut self, _record: Vec<u8>) -> Result<pairshare::Server> {
+            Err(Error::msg("unexpected handoff"))
+        }
+    }
+
+    #[tokio::test]
+    async fn setup_mounts_ddi_by_default() {
+        let mut fake = FakePostInstall { seeded: 0, mounted: 0 };
+        let opts = Options::default();
+        let (handed, handoff) = finish_device_install(&mut fake, Some(b"<plist/>"), &opts, &Reporter::noop())
+            .await
+            .unwrap();
+        assert!(handed);
+        assert!(handoff.is_none());
+        assert_eq!(fake.mounted, 1, "setup::run must mount DDI over USB by default");
+    }
 }

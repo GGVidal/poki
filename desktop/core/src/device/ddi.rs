@@ -195,3 +195,14 @@ pub async fn seed_container(phone: &Phone, bundle_id: &str, reporter: &Reporter)
     reporter.done("seed", None);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn primary_ddi_mirror_uses_r2_before_github() {
+        assert_eq!(Kind::Cryptex.mirror(), "https://releases.poki.bot/ddi/Xcode_iOS_DDI_Cryptex");
+        assert_eq!(Kind::Personalized.mirror(), "https://releases.poki.bot/ddi/Xcode_iOS_DDI_Personalized");
+    }
+}

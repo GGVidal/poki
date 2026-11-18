@@ -226,3 +226,64 @@ struct StepItem: Identifiable, Equatable {
     var detail: String?
     var notes: [String] = []
 }
+
+enum WizardStateId: String, Codable, Equatable, CaseIterable {
+    case deviceDisconnected = "device_disconnected"
+    case deviceUntrusted = "device_untrusted"
+    case developerModeOff = "developer_mode_off"
+    case accountSignedOut = "account_signed_out"
+    case readyToInstall = "ready_to_install"
+    case signingFailed = "signing_failed"
+    case installFailed = "install_failed"
+    case ddiUnmounted = "ddi_unmounted"
+    case appUntrusted = "app_untrusted"
+    case pokiNotStarted = "poki_not_started"
+    case completed = "completed"
+}
+
+struct WizardFailure: Decodable, Equatable {
+    var kind: String
+    var stage: String
+    var message: String
+}
+
+struct UsbPhoneView: Decodable, Identifiable, Equatable {
+    var udid: String
+    var name: String
+    var productType: String
+    var ios: String
+    var paired: Bool
+    var developerMode: Bool?
+    var id: String { udid }
+}
+
+struct InstalledPokiView: Decodable, Equatable {
+    var bundleId: String
+    var version: String
+    var build: String
+    var profileValidated: Bool?
+    var teamIsFree: Bool
+    var expiresAt: Int?
+    var expired: Bool
+}
+
+struct WizardSnapshot: Decodable, Equatable {
+    var state: WizardStateId
+    var usbmuxdUnavailable: Bool
+    var usbPhones: [UsbPhoneView]
+    var selectedUdid: String?
+    var accountSignedIn: Bool
+    var accountAppleId: String?
+    var installed: InstalledPokiView?
+    var ddiMounted: Bool
+    var pokiStarted: Bool
+    var pokiAcceptsModelKey: Bool
+    var modelKeyQueued: Bool
+    var modelKeyImportedProvider: String?
+    var failure: WizardFailure?
+}
+
+struct ModelKeyDelivery: Decodable, Equatable {
+    var sent: Bool
+    var queued: Bool
+}

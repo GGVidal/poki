@@ -7,11 +7,11 @@ enum Page: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .setup: "Set Up"
-        case .phones: "iPhones"
-        case .account: "Apple Account"
-        case .relay: "Relay"
-        case .debug: "Diagnostics"
+        case .setup: L10n.tr("Set Up")
+        case .phones: L10n.tr("iPhones")
+        case .account: L10n.tr("Apple Account")
+        case .relay: L10n.tr("Relay")
+        case .debug: L10n.tr("Diagnostics")
         }
     }
     var symbol: String {
@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
     @Published var phones: [PhoneRow] = []
     @Published var phonesError: CoreError?
     @Published var selectedUDID: String?
+    @Published var wizard: WizardSnapshot?
     @Published var records: [Record] = []
     @Published var relay: Deployed?
     @Published var latest: Release?
@@ -65,6 +66,8 @@ final class AppModel: ObservableObject {
     private var started = false
     private var pollTask: Task<Void, Never>?
     private var keeperTask: Task<Void, Never>?
+    private var autoPairedUDIDs: Set<String> = []
+    private var autoRevealedUDIDs: Set<String> = []
     let demo = ProcessInfo.processInfo.environment["POKI_SETUP_DEMO"] == "1"
 
     /// The one model, for the CI snapshot walk.
@@ -111,7 +114,8 @@ final class AppModel: ObservableObject {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshPhones()
-                try? await Task.sleep(for: .seconds(3))
+                await self?.refreshWizard()
+                try? await Task.sleep(for: .seconds(2))
             }
         }
         // Poki Setup's own updates: at launch and every six hours.
@@ -153,7 +157,7 @@ final class AppModel: ObservableObject {
         if done.relaunching {
             NSApp.terminate(nil)
         } else {
-            banner = "Poki Setup could not replace itself here, so its update is open in Finder. Quit Poki Setup, then drag the new one into Applications."
+            banner = L10n.tr("Poki Setup could not replace itself here, so its update is open in Finder. Quit Poki Setup, then drag the new one into Applications.")
         }
     }
 
@@ -207,7 +211,7 @@ final class AppModel: ObservableObject {
 
     func refreshPhones() async {
         if demo { return }
-        if busyJobs.contains("install") || busyJobs.contains("pair") || busyJobs.contains("devmode") { return }
+        if busyJobs.contains("install") || busyJobs.contains("pair") || busyJobs.contains("devmode") || busyJobs.contains("ddi") { return }
         do {
             let rows: [PhoneRow] = try await bridge.call("phones")
             if rows.map(\.id) != phones.map(\.id) || rows.map(\.facts) != phones.map(\.facts) {
@@ -219,6 +223,23 @@ final class AppModel: ObservableObject {
             phonesError = e
             phones = []
         } catch {}
+    }
+
+    func refreshWizard() async {
+        if demo { return }
+        if busyJobs.contains("install") || busyJobs.contains("pair") || busyJobs.contains("devmode") || busyJobs.contains("ddi") { return }
+        guard let snap: WizardSnapshot = try? await bridge.call("wizard_state", ["udid": selectedUDID]) else { return }
+        wizard = snap
+        let connected = Set(snap.usbPhones.map(\.udid))
+        autoPairedUDIDs.formIntersection(connected)
+        autoRevealedUDIDs.formIntersection(connected)
+        if snap.state == .deviceUntrusted, let udid = snap.selectedUdid, !autoPairedUDIDs.contains(udid) {
+            autoPairedUDIDs.insert(udid)
+            Task { try? await self.pair(udid: udid) }
+        } else if snap.state == .developerModeOff, let udid = snap.selectedUdid, !autoRevealedUDIDs.contains(udid) {
+            autoRevealedUDIDs.insert(udid)
+            Task { try? await self.enableDeveloperMode(udid: udid) }
+        }
     }
 
     func refreshRecords() async {
@@ -355,17 +376,37 @@ final class AppModel: ObservableObject {
         }
         await refreshRecords()
         await refreshPhones()
+        await refreshWizard()
         return answer
     }
 
     func pair(udid: String) async throws {
         try await job("pair") { try await bridge.run("pair", ["udid": udid]) }
         await refreshPhones()
+        await refreshWizard()
     }
 
     func enableDeveloperMode(udid: String) async throws {
         try await job("devmode") { try await bridge.run("devmode", ["udid": udid]) }
         await refreshPhones()
+        await refreshWizard()
+    }
+
+    func mountDDI(udid: String) async throws {
+        try await job("ddi") { try await bridge.run("mount_ddi", ["udid": udid]) }
+        await refreshPhones()
+        await refreshWizard()
+    }
+
+    func sendModelKey(udid: String?, apiKey: String) async throws -> ModelKeyDelivery {
+        let delivery: ModelKeyDelivery = try await bridge.call("send_model_key", ["udid": udid, "api_key": apiKey])
+        await refreshWizard()
+        return delivery
+    }
+
+    func clearWizardFailure() async {
+        try? await bridge.run("clear_wizard_failure")
+        await refreshWizard()
     }
 
     func renew(udid: String) async throws {
@@ -403,7 +444,7 @@ final class AppModel: ObservableObject {
         do {
             let p: AgentPrompt = try await bridge.call("agent_prompt")
             copyToPasteboard(p.prompt)
-            banner = "Copied. Paste it into your agent (Claude Code, Codex or another one that runs on this Mac)."
+            banner = L10n.tr("Copied. Paste it into your agent (Claude Code, Codex or another one that runs on this Mac).")
         } catch { report(error) }
     }
 
@@ -449,5 +490,61 @@ final class AppModel: ObservableObject {
             StepItem(id: "account", title: "Checking the Apple Account", state: .done, detail: "Personal Team"),
             StepItem(id: "sign", title: "Signing Poki for Jane Appleseed", state: .running, fraction: 0.62, detail: "Signing PokiWidgets.appex"),
         ]
+        if let raw = ProcessInfo.processInfo.environment["POKI_SETUP_DEMO_STATE"],
+           let state = WizardStateId(rawValue: raw) {
+            applyDemoWizardState(state)
+        } else {
+            applyDemoWizardState(.readyToInstall)
+        }
+    }
+
+    func applyDemoWizardState(_ state: WizardStateId) {
+        let now = Int(Date().timeIntervalSince1970)
+        let udid = "00008150-000829EA2183C01C"
+        let baseAccount = AccountState(signedIn: state != .accountSignedOut, appleId: state == .accountSignedOut ? nil : "jane.appleseed@icloud.com", name: state == .accountSignedOut ? nil : "Jane Appleseed", teamId: state == .accountSignedOut ? nil : "A1B2C3D4E5", passwordKept: true, anisette: .remote("https://new.ani.sidestore.io"), pendingFactor: nil)
+        account = baseAccount
+        steps["install"] = []
+
+        let paired = state != .deviceUntrusted
+        let devMode: Bool? = state == .deviceUntrusted ? nil : (state != .developerModeOff)
+        let facts = Facts(udid: udid, name: "Jane's iPhone", productType: "iPhone18,1", ios: "26.1", build: "23B85", developerMode: devMode, pairedWithThisComputer: paired, canPairOnDevice: false, wifiAddress: "192.168.1.23")
+        let rec = Record(udid: udid, phoneName: facts.name, ios: facts.ios, appleId: "jane.appleseed@icloud.com", teamId: "A1B2C3D4E5", teamName: "Jane Appleseed (Personal Team)", teamIsFree: true, bundleId: "nz.zheha.poki.A1B2C3D4E5", appGroup: "group.nz.zheha.poki.A1B2C3D4E5", version: "0.2.8", build: "64", releaseTag: "ios-v0.2.8", signedAt: now - 2 * 86_400, profileExpiresAt: now + 5 * 86_400, lastCheckedAt: now - 3600, lastError: nil, wifiAddress: "192.168.1.23", pairingHandedOff: false)
+
+        if state == .deviceDisconnected {
+            phones = []
+        } else {
+            let includeRec = [.ddiUnmounted, .appUntrusted, .pokiNotStarted, .completed].contains(state)
+            phones = [PhoneRow(phone: PhoneRef(udid: udid), facts: facts, error: nil, record: includeRec ? rec : nil)]
+        }
+        records = [rec]
+
+        let installedView: InstalledPokiView? = [.ddiUnmounted, .appUntrusted, .pokiNotStarted, .completed].contains(state)
+            ? InstalledPokiView(bundleId: rec.bundleId, version: rec.version, build: rec.build, profileValidated: state != .appUntrusted, teamIsFree: true, expiresAt: rec.profileExpiresAt, expired: false)
+            : nil
+
+        let failure: WizardFailure? = switch state {
+        case .signingFailed:
+            WizardFailure(kind: "not_enough_app_ids", stage: "sign", message: "Maximum App ID limit reached for this free Apple Account.")
+        case .installFailed:
+            WizardFailure(kind: "device", stage: "install", message: "The USB cable disconnected while copying Poki to the iPhone.")
+        default:
+            nil
+        }
+
+        wizard = WizardSnapshot(
+            state: state,
+            usbmuxdUnavailable: false,
+            usbPhones: state == .deviceDisconnected ? [] : [UsbPhoneView(udid: udid, name: facts.name, productType: facts.productType, ios: facts.ios, paired: paired, developerMode: devMode)],
+            selectedUdid: state == .deviceDisconnected ? nil : udid,
+            accountSignedIn: baseAccount.signedIn,
+            accountAppleId: baseAccount.appleId,
+            installed: installedView,
+            ddiMounted: state != .ddiUnmounted && installedView != nil,
+            pokiStarted: state == .completed,
+            pokiAcceptsModelKey: state == .completed,
+            modelKeyQueued: false,
+            modelKeyImportedProvider: nil,
+            failure: failure
+        )
     }
 }

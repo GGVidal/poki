@@ -30,9 +30,71 @@ export type UpdateInfo = { current: string; latest: string | null; url: string |
 export type Release = { tag: string; version: string; build: string; published_at: string; ipa_name: string; source: "r2" | "github"; source_notice: string | null; channel?: ChannelId };
 export type ChannelInfo = { id: ChannelId; title: string; selected: boolean; latest: Release | null };
 
+export type WizardStateId =
+  | "device_disconnected"
+  | "device_untrusted"
+  | "developer_mode_off"
+  | "account_signed_out"
+  | "ready_to_install"
+  | "signing_failed"
+  | "install_failed"
+  | "ddi_unmounted"
+  | "app_untrusted"
+  | "poki_not_started"
+  | "completed";
+
+export type WizardFailure = {
+  kind: string;
+  stage: "usbmuxd" | "sign" | "install" | "ddi";
+  message: string;
+};
+
+export type UsbPhoneView = {
+  udid: string;
+  name: string;
+  product_type: string;
+  ios: string;
+  paired: boolean;
+  developer_mode: boolean | null;
+};
+
+export type InstalledPokiView = {
+  bundle_id: string;
+  version: string;
+  build: string;
+  profile_validated: boolean | null;
+  team_is_free: boolean;
+  expires_at: number | null;
+  expired: boolean;
+};
+
+export type WizardSnapshot = {
+  state: WizardStateId;
+  usbmuxd_unavailable: boolean;
+  usb_phones: UsbPhoneView[];
+  selected_udid: string | null;
+  account_signed_in: boolean;
+  account_apple_id: string | null;
+  installed: InstalledPokiView | null;
+  ddi_mounted: boolean;
+  poki_started: boolean;
+  poki_accepts_model_key: boolean;
+  model_key_queued: boolean;
+  model_key_imported_provider: string | null;
+  failure: WizardFailure | null;
+};
+
+export type ModelKeyDelivery = {
+  sent: boolean;
+  queued: boolean;
+};
+
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   phones: () => invoke<PhoneRow[]>("phones"),
+  wizardState: (udid: string | null = null) => invoke<WizardSnapshot>("wizard_state", { udid }),
+  clearWizardFailure: (udid: string | null = null) => invoke<void>("clear_wizard_failure", { udid }),
+  sendModelKey: (udid: string, provider: string, secret: string) => invoke<ModelKeyDelivery>("send_model_key", { udid, provider, secret }),
   pair: (udid: string) => invoke<void>("pair", { udid }),
   sharePairing: (udid: string) => invoke<Handoff>("share_pairing", { udid }),
   stopSharing: () => invoke<void>("stop_sharing"),

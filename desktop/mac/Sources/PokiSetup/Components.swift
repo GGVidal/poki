@@ -1,7 +1,74 @@
 import AppKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Foundation
 import SwiftUI
+
+enum L10n {
+    private static let catalogZhHans: [String: String] = {
+        let bundles: [Bundle] = [Bundle.main, Bundle.module]
+        for b in bundles {
+            if let url = b.url(forResource: "Localizable", withExtension: "xcstrings"),
+               let data = try? Data(contentsOf: url),
+               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let strings = root["strings"] as? [String: Any] {
+                var out: [String: String] = [:]
+                out.reserveCapacity(strings.count)
+                for (key, rawEntry) in strings {
+                    if let entry = rawEntry as? [String: Any],
+                       let locs = entry["localizations"] as? [String: Any],
+                       let zh = locs["zh-Hans"] as? [String: Any],
+                       let unit = zh["stringUnit"] as? [String: Any],
+                       let val = unit["value"] as? String {
+                        out[key] = val
+                    }
+                }
+                return out
+            }
+        }
+        return [:]
+    }()
+
+    static var preferredLanguage: String? {
+        if let env = ProcessInfo.processInfo.environment["POKI_SETUP_LANG"], !env.isEmpty {
+            return env
+        }
+        return Locale.preferredLanguages.first
+    }
+
+    static var isSimplifiedChinese: Bool {
+        guard let lang = preferredLanguage?.lowercased() else { return false }
+        return lang.hasPrefix("zh-hans") || lang.hasPrefix("zh_cn") || lang == "zh"
+    }
+
+    static var resourceBundle: Bundle {
+        let candidates: [Bundle] = [Bundle.main, Bundle.module]
+        if isSimplifiedChinese {
+            for b in candidates {
+                if let path = b.path(forResource: "zh-Hans", ofType: "lproj"),
+                   let sub = Bundle(path: path) {
+                    return sub
+                }
+            }
+        }
+        for b in candidates where b.path(forResource: "en", ofType: "lproj") != nil {
+            return b
+        }
+        return Bundle.module
+    }
+
+    static func tr(_ key: String) -> String {
+        let bundle = resourceBundle
+        let value = bundle.localizedString(forKey: key, value: nil, table: "Localizable")
+        if value != key { return value }
+        if isSimplifiedChinese, let zh = catalogZhHans[key] { return zh }
+        return key
+    }
+
+    static func fmt(_ key: String, _ args: CVarArg...) -> String {
+        String(format: tr(key), locale: Locale(identifier: isSimplifiedChinese ? "zh-Hans" : "en"), arguments: args)
+    }
+}
 
 /// The steps of a long job, like Software Update's progress list.
 struct StepsView: View {
@@ -13,20 +80,20 @@ struct StepsView: View {
                 icon(s)
                     .frame(width: 18, height: 18)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(s.title)
+                    Text(L10n.tr(s.title))
                         .foregroundStyle(s.state == .done ? .secondary : .primary)
                     if let f = s.fraction, s.state == .running {
                         ProgressView(value: f).progressViewStyle(.linear).frame(maxWidth: 280)
                     }
                     if let d = s.detail, !d.isEmpty {
-                        Text(d)
+                        Text(L10n.tr(d))
                             .font(.callout)
                             .foregroundStyle(s.state == .failed ? .red : .secondary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     ForEach(Array(s.notes.enumerated()), id: \.offset) { _, n in
-                        Text(n).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Text(L10n.tr(n)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 Spacer(minLength: 0)
@@ -88,9 +155,9 @@ struct StatusRow: View {
     var tone: Tone = .neutral
 
     var body: some View {
-        LabeledContent(title) {
+        LabeledContent(L10n.tr(title)) {
             HStack(spacing: 6) {
-                Text(value).foregroundStyle(.secondary)
+                Text(L10n.tr(value)).foregroundStyle(.secondary)
                 switch tone {
                 case .good: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 case .warn: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
@@ -110,9 +177,9 @@ struct EmptyState: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label(title, systemImage: symbol)
+            Label(L10n.tr(title), systemImage: symbol)
         } description: {
-            Text(message)
+            Text(L10n.tr(message))
         }
     }
 }
@@ -132,11 +199,11 @@ func copyToPasteboard(_ s: String) {
 }
 
 func relativeDays(_ r: Record) -> String {
-    if r.isExpired { return "Expired" }
+    if r.isExpired { return L10n.tr("Expired") }
     let d = r.daysLeft
     switch d {
-    case ..<1: return "Expires today"
-    case 1: return "1 day left"
-    default: return "\(d) days left"
+    case ..<1: return L10n.tr("Expires today")
+    case 1: return L10n.tr("1 day left")
+    default: return L10n.fmt("%lld days left", d)
     }
 }
