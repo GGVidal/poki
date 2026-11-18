@@ -1680,6 +1680,9 @@ mod rate_limit_regressions {
         let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sub = LogLines(logs.clone());
         tracing::subscriber::with_default(sub, || {
+            // Another test thread may have cached "never" for the code-request callsite before
+            // this subscriber existed; recompute it with this one in place.
+            tracing::callsite::rebuild_interest_cache();
             run_in_vault(async {
                 let mock = start_mock_gsa(MockBehavior {
                     au: None,
@@ -1973,6 +1976,9 @@ mod rate_limit_regressions {
         let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sub = LogLines(logs.clone());
         tracing::subscriber::with_default(sub, || {
+            // Another test thread may have cached "never" for the code-request callsite before
+            // this subscriber existed; recompute it with this one in place.
+            tracing::callsite::rebuild_interest_cache();
             run_in_vault(async {
                 let mock = start_mock_gsa(MockBehavior::default()).await;
                 let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
