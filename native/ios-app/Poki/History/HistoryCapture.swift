@@ -285,6 +285,9 @@ final class HistoryCapture: ObservableObject {
         BacktapeNotes.shared.reset()
         await HistoryStore.shared.delete(from: Date().addingTimeInterval(-seconds), to: Date().addingTimeInterval(60))
         HistoryStore.shared.note("cleared", "\(Int(seconds))")
+        // What was learned rests partly on what was just deleted: forget it, so it is not worked out
+        // again from the reads that are left.
+        ScreenHabits.forget()
         changes += 1
     }
 
@@ -297,6 +300,7 @@ final class HistoryCapture: ObservableObject {
     func delete(from start: Date, to end: Date) async {
         BacktapeNotes.shared.reset()
         await HistoryStore.shared.delete(from: start, to: end)
+        ScreenHabits.forget()
         changes += 1
     }
 

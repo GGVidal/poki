@@ -61,9 +61,32 @@ enum ScreenHabits {
         return musicWords.contains { lower.contains($0) }
     }
 
-    /// The line a music request's instructions carry, or nil.
+    /// Names that mean one music app. Plain "Music" and 音乐 are left out: they ask for music, not for
+    /// Apple's app.
+    private static let musicAppNames: [String] = {
+        let generic: Set<String> = ["music", "音乐", "音樂"]
+        let known = MusicAppCatalog.allCanonicalIDs.flatMap { KnownApps.find($0)?.names ?? [] }
+        let more = ["Apple Music", "Apple 音乐", "Apple 音樂", "网易云", "網易雲", "QQ Music", "酷狗", "Kugou", "酷我", "Kuwo",
+                    "汽水音乐", "汽水音樂", "Spotify", "YouTube Music", "Apple Music Classical"]
+        return Array(Set((known + more).map { $0.lowercased() }).subtracting(generic))
+    }()
+
+    /// The owner's saved notes, as the app's own copy of PokiCore holds them.
+    static var memory: RoutineStore { RoutineStore.shared }
+
+    /// Whether `text` names a music app.
+    static func namesMusicApp(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return musicAppNames.contains { lower.contains($0) }
+    }
+
+    /// The line a music request's instructions carry, or nil. The owner's own choice comes first: a
+    /// music app named in the request, then a saved note naming one. Either way the guess is left out,
+    /// so it cannot win over them, and a "from now on" request can be saved.
     static func instructions(for task: String) -> String? {
-        guard isAboutMusic(task), let habit = musicApp() else { return nil }
+        guard isAboutMusic(task), !namesMusicApp(task),
+              !memory.notes.contains(where: { namesMusicApp($0.text) }),
+              let habit = musicApp() else { return nil }
         let id = habit.bundleID
         let known = KnownApps.find(id)
         let names = known.map { $0.names.joined(separator: " / ") } ?? id

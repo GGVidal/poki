@@ -67,6 +67,51 @@ final class ScreenHistoryTests: XCTestCase {
         XCTAssertNil(ScreenHabits.musicApp())
     }
 
+    /// Five NetEase uses on three days before today (and one today with `extraToday`), learning on.
+    private func learnNetEase(extraToday: Bool = false) async {
+        let day = Calendar.current.startOfDay(for: Date())
+        let now = Date()
+        var uses = [(3, 9), (3, 18), (2, 9), (2, 18), (1, 9)]
+        if extraToday { uses.append((0, 1)) }
+        for (daysAgo, hour) in uses {
+            let at = min(day.addingTimeInterval(Double(-daysAgo) * 86_400 + Double(hour) * 3600), now.addingTimeInterval(-600))
+            HistoryStore.shared.add(at: at, app: "com.netease.cloudmusic", title: "", text: "")
+        }
+        _ = await HistoryStore.shared.size()
+        HistoryCapture.shared.enabled = true
+        HistoryCapture.shared.learnHabits = true
+    }
+
+    /// A music app the owner names in the request is the one used: the learned app is not offered,
+    /// so it cannot win over the owner's choice, and a "from now on" request can be saved.
+    func testAMusicAppTheOwnerNamesIsNotOverriddenByTheLearnedOne() async throws {
+        await learnNetEase()
+        XCTAssertNotNil(ScreenHabits.instructions(for: "放一首周杰伦的歌"))
+        XCTAssertNotNil(ScreenHabits.instructions(for: "放点音乐"), "a request for music that names no app")
+        for ask in ["用QQ音乐放一首周杰伦的歌", "在 Apple Music 里放一首周杰伦的歌", "以后都用酷狗音乐放歌", "Play a Taylor Swift song on Spotify"] {
+            XCTAssertNil(ScreenHabits.instructions(for: ask), ask)
+        }
+    }
+
+    /// A saved note naming the owner's music app comes before the learned app.
+    func testASavedNoteNamingAMusicAppComesBeforeTheLearnedOne() async throws {
+        await learnNetEase()
+        // The app's copy of the store: the test bundle links its own PokiCore.
+        let note = try XCTUnwrap(ScreenHabits.memory.remember("我听歌都用 QQ音乐", by: "test"))
+        defer { _ = ScreenHabits.memory.forgetNote(note.id) }
+        XCTAssertNil(ScreenHabits.instructions(for: "放一首周杰伦的歌"))
+    }
+
+    /// Deleting part of Screen History forgets what was learned, even when the reads left would
+    /// still be enough.
+    func testDeletingSomeHistoryForgetsTheLearnedApp() async throws {
+        await learnNetEase(extraToday: true)
+        XCTAssertNotNil(ScreenHabits.musicApp())
+        let today = Calendar.current.startOfDay(for: Date())
+        await HistoryCapture.shared.delete(from: today, to: Date())
+        XCTAssertNil(ScreenHabits.musicApp())
+    }
+
     func testALeftOutAppAndTheHomeScreenLeaveNothingInTheStore() async {
         let capture = HistoryCapture()
         capture.exclude("com.example.bank")
