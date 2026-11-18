@@ -4,12 +4,13 @@
 #   beta    Poki-external-0.3.0-712.ipa on app-0.3.0-beta.1, a prerelease, with the Gym scorecards
 #   stable  Poki-external-0.3.0.ipa on app-0.3.0, a full release (never marked Latest: GitHub's
 #           Latest is Poki MCP's v* release, which the Mac server's update check reads)
-# Poki Setup files come along from app-alpha-latest (beta, filled by the alpha job) or the source
+# Poki Setup files come along from app-alpha-latest (beta, filled just before) or the source
 # release (stable). Created as a draft, checked, then published. A beta waits for approval in the
 # "beta" environment, a stable in "stable" (Settings > Environments > Required reviewers).
 #
-# A beta first puts the same build on the Alpha channel's releases, which older Poki and Poki Setup
-# still read, with no approval of its own: the alpha job below.
+# Older Poki and Poki Setup still read the Alpha channel's releases and install what they find there.
+# So nothing reaches them before that approval: the same job, after it, puts the same build on the
+# Alpha releases and then publishes the Beta.
 name: Publish promotion
 
 on:
@@ -83,42 +84,9 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
-  # The build being promoted to Beta, as app-<VERSION>-alpha.<build> on app-alpha-latest (and the old
-  # ios-alpha-latest), before the Beta waits for approval: scripts/release/publish-compat.sh needs that
-  # tag and release to make the Beta's compatibility release. Its tag push uses the workflow's own
-  # token, so it starts no tag-triggered workflow. Re-running it with the same build is harmless.
-  alpha:
-    needs: read
-    if: needs.read.outputs.channel == 'beta'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-    env:
-      GH_TOKEN: ${{ github.token }}
-      SHA: ${{ fromJSON(needs.read.outputs.rec).sha }}
-      BASE: ${{ fromJSON(needs.read.outputs.rec).base_version }}
-      BUILD: ${{ fromJSON(needs.read.outputs.rec).build }}
-    steps:
-      - uses: actions/checkout@v4
-        with: { ref: "${{ fromJSON(needs.read.outputs.rec).sha }}", fetch-depth: 0, filter: 'tree:0' }
-      # The publishing script from this workflow's commit, so older pre-alphas can be published too.
-      - uses: actions/checkout@v4
-        with: { path: pipeline, sparse-checkout: .github/scripts }
-      - name: The pre-alpha's IPA
-        run: |
-          set -euo pipefail
-          run="$(gh run list --workflow prealpha.yml --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId')"
-          [ -n "$run" ] || { echo "::error::no successful Pre-alpha run built $SHA (artifacts are kept 90 days)"; exit 1; }
-          gh run download "$run" --name Poki-unsigned --dir app
-      - name: Publish to app-alpha-latest
-        run: pipeline/.github/scripts/publish-rolling.sh alpha "$BASE" "$BUILD" app app-prealpha-latest
-
   publish:
-    needs: [read, alpha]
-    if: >-
-      always() && needs.read.result == 'success' &&
-      (needs.read.outputs.channel == 'stable' || (needs.read.outputs.channel == 'beta' && needs.alpha.result == 'success'))
+    needs: read
+    if: needs.read.outputs.channel == 'beta' || needs.read.outputs.channel == 'stable'
     runs-on: ubuntu-latest
     environment: ${{ needs.read.outputs.channel == 'stable' && 'stable' || 'beta' }}
     permissions:
@@ -137,6 +105,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ fromJSON(needs.read.outputs.rec).sha }}", fetch-depth: 0, filter: 'tree:0' }
+      # The publishing script from this workflow's commit, so older pre-alphas can be published too.
+      - uses: actions/checkout@v4
+        if: env.CHANNEL == 'beta'
+        with: { path: pipeline, sparse-checkout: .github/scripts }
+      # Only after the beta approval above: the build as app-<VERSION>-alpha.<build> on
+      # app-alpha-latest (and the old ios-alpha-latest), for older clients, then the Beta below.
+      # scripts/release/publish-compat.sh needs that tag and release for the Beta's compatibility
+      # release. The tag push uses the workflow's own token, so it starts no tag-triggered workflow,
+      # and re-running with the same build is harmless.
+      - name: Alpha records for older clients
+        if: env.CHANNEL == 'beta'
+        run: |
+          set -euo pipefail
+          run="$(gh run list --workflow prealpha.yml --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId')"
+          [ -n "$run" ] || { echo "::error::no successful Pre-alpha run built $SHA (artifacts are kept 90 days)"; exit 1; }
+          gh run download "$run" --name Poki-unsigned --dir app
+          pipeline/.github/scripts/publish-rolling.sh alpha "$BASE" "$BUILD" app app-prealpha-latest
       - name: The promoted build's files
         run: |
           set -euo pipefail

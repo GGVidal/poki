@@ -49,19 +49,26 @@ Beta runs the file that internal testers tried and the Gym scored.
 1. **Pre-alpha, automatic.** Every merge into `main` runs `.github/workflows/prealpha.yml`: one
    macOS job builds the external IPA, tags `app-<VERSION>-prealpha.<N>` and replaces the files of
    `app-prealpha-latest`. Its artifact is kept 90 days for later promotions. Internal testers
-   install this build. A build that fails gets no tag.
+   install this build. A build that fails gets no tag. The same run tests that commit: the app tests
+   (`ios-app.yml`, three macOS jobs: PokiCore and loopback tests, the in-process checks, the
+   simulator smoke test and screenshots, the app unit tests, and Poki's agent end to end) and Poki
+   Setup's core tests on Linux. They do not hold up the pre-alpha, but a build whose tests failed
+   cannot go to Beta. After a flaky failure, re-run the failed jobs; the run then counts as passed.
 2. **Beta, by PR.** Actions > Propose promotion > beta (`propose-promotion.yml`), with a pre-alpha
    tag, the merge commit it was built from, or empty for the one on `app-prealpha-latest`. The
-   proposal refuses a build whose Pre-alpha run did not succeed or whose artifact has expired, and
-   names the run. With `dry_run`, or from a branch other than `main`, it prints the promotion and
+   proposal refuses a build whose Pre-alpha run did not succeed, is still testing, never ran the
+   tests above (builds from before they joined the run) or whose artifact has expired, and names
+   the run. With `dry_run`, or from a branch other than `main`, it prints the promotion and
    opens nothing. Otherwise the Poki Release Bot opens a PR that adds the promotion to
    `.github/channels.json` and moves `native/ios-app/VERSION` to the next patch version. The PR's
    `promotion gate` check (`promotion-gate.yml`) runs the Gym on that commit and passes when neither
    scorecard has more failures than the last beta's. Test the build on a real iPhone before merging.
-   Merging runs `publish-promotion.yml`: it first puts the same build on the Alpha compatibility
-   releases (`app-<VERSION>-alpha.<N>`, `app-alpha-latest` and `ios-alpha-latest`) for older clients,
-   with no approval of its own. Then it waits for approval in `beta`, publishes `app-X.Y.Z-beta.K`
-   with the scorecards attached, and creates `release/X.Y` on a version's first beta.
+   Merging runs `publish-promotion.yml`, which publishes nothing until the approval in `beta`.
+   Older Poki and Poki Setup install whatever the Alpha releases carry, on every channel, so those
+   wait for the same approval. Once approved, the one job puts the same build on the Alpha
+   compatibility releases (`app-<VERSION>-alpha.<N>`, `app-alpha-latest` and `ios-alpha-latest`),
+   publishes `app-X.Y.Z-beta.K` with the scorecards attached, and creates `release/X.Y` on a
+   version's first beta.
 
    There is no separate Alpha step to run or approve. Records of earlier betas keep their
    `app-X.Y.Z-alpha.N` sources; new ones name the pre-alpha.
@@ -103,8 +110,8 @@ same Pre-alpha files:
 
 | Release | Tag | Made | Picked by |
 | --- | --- | --- | --- |
-| The Alpha, on its own | `app-X.Y.Z-alpha.N`, the tag the beta promotion made | after the promotion PR merges | Alpha users, in place of the rolling release (same build, published later) |
-| The Beta, under its build number | `ios-beta-X.Y.Z-N` | public just before the Beta is approved | Stable and Beta users, in place of `app-X.Y.Z-beta.K` (a build number sorts above `beta.K`) |
+| The Alpha, on its own | `app-X.Y.Z-alpha.N`, the tag the approved Beta made | after the Beta is approved and published | Alpha users, in place of the rolling release (same build, published later) |
+| The Beta, under its build number | `ios-beta-X.Y.Z-N` | right after the Beta is approved and published | Stable and Beta users, in place of `app-X.Y.Z-beta.K` (a build number sorts above `beta.K`) |
 
 Both carry `Poki-external-X.Y.Z-N.ipa`, `Poki-signing.zip`, `poki-relay-worker.js` and `SHA256SUMS`.
 `scripts/release/publish-compat.sh` makes them in three steps:
@@ -181,8 +188,8 @@ to Poki MCP's prebuilt package name its `vX.Y.Z` release instead of `releases/la
 
 Publishing Beta, Stable, or uploading installers requires the repository owner's approval.
 Main Pre-alpha builds and publishes automatically without approval. The Alpha compatibility
-releases follow a merged beta promotion without an approval of their own; the Beta itself waits for
-`beta`. Beta and Stable use their respective environments in `publish-promotion.yml`. The tag
+releases are published only after the `beta` approval, in the same job as the Beta and with the same
+build. Beta and Stable use their respective environments in `publish-promotion.yml`. The tag
 fallback selects `alpha` for a hand-pushed Alpha tag and no environment for Pre-alpha.
 The Windows installer job uses `stable`, including artifact-only runs, because its optional release
 upload shares the build job. The macOS installer workflow only uploads Actions artifacts.

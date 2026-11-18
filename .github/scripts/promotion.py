@@ -70,6 +70,11 @@ def vkey(v):
     return tuple(int(x) for x in v.split("."))
 
 
+# The test jobs of prealpha.yml as GitHub names them: its App tests job runs ios-app.yml, whose jobs
+# appear as "App tests / <job id>". Renaming any of them there means renaming it here.
+TEST_JOBS = ("App tests / inprocess", "App tests / agent-chat", "App tests / app", "Poki Setup tests")
+
+
 def prealpha(src):
     """The pre-alpha to promote to beta, and the successful Pre-alpha run whose artifact is its IPA.
     src is a pre-alpha tag, the commit it was built from, or empty for the one on app-prealpha-latest.
@@ -95,7 +100,15 @@ def prealpha(src):
         if not runs:
             sys.exit(f"No Pre-alpha run built {sha}. Only commits merged into main get a Pre-alpha build.")
         last = runs[0]
-        sys.exit(f"The Pre-alpha build of {sha} did not succeed ({last['conclusion'] or last['status']}): {last['url']}. Promote a build that succeeded.")
+        if last["status"] != "completed":
+            sys.exit(f"The Pre-alpha run of {sha} is still building or testing ({last['status']}): {last['url']}. Propose it once the run has succeeded.")
+        sys.exit(f"The Pre-alpha run of {sha} did not succeed ({last['conclusion']}): {last['url']}. Its build or its tests failed; promote a build that passed both.")
+    # A run from before the tests joined prealpha.yml succeeded without them, so the tests must be there.
+    jobs = gh_json("api", f"repos/{os.environ['GH_REPO']}/actions/runs/{good['databaseId']}/jobs?per_page=100", "--jq", "[.jobs[] | {name, conclusion}]") or []
+    passed = {j["name"] for j in jobs if j["conclusion"] == "success"}
+    untested = [name for name in TEST_JOBS if name not in passed]
+    if untested:
+        sys.exit(f"Pre-alpha run {good['url']} did not pass {', '.join(untested)}. Promote a build whose run passed the tests.")
     artifacts = gh_json("api", f"repos/{os.environ['GH_REPO']}/actions/runs/{good['databaseId']}/artifacts", "--jq", '[.artifacts[] | select(.name == "Poki-unsigned")]') or []
     if not artifacts or artifacts[0]["expired"]:
         sys.exit(f"The IPA of Pre-alpha run {good['url']} has expired (artifacts are kept 90 days). Promote a newer build.")

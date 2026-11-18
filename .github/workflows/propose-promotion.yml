@@ -98,7 +98,7 @@ jobs:
               echo "- Built by the Pre-alpha run ${BUILT_BY}."
               echo "- Gate: the Gym on this commit, with no more failures than the last beta (promotion-gate.yml)."
               echo "- Also moves \`native/ios-app/VERSION\` on (see the diff), so later pre-alphas sort above this beta in Poki Setup."
-              echo "- Merging refreshes the Alpha records that older Poki and Poki Setup read, waits for approval in \`beta\`, then publishes the prerelease and creates \`release/X.Y\` on the first beta of a version."
+              echo "- Merging waits for approval in \`beta\` and publishes nothing before it. Once approved, it updates the Alpha records that older Poki and Poki Setup read with this build, publishes the prerelease and creates \`release/X.Y\` on the first beta of a version."
             else
               echo "- Gate: the beta has been out for the wait in \`.github/channels.json\` (\`soak_days\`). Add the \`soak-override\` label to skip it."
               [ -n "$SKIP" ] && echo "- The wait was skipped when proposing: $SKIP"
