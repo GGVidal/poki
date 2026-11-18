@@ -1097,19 +1097,51 @@ final class InProcessPasscodeTests: XCTestCase {
         }
     }
 
-    /// A talk that ends (End, the Action Button again, or silence) closes the automation its steps used
-    /// at once: iOS's banner goes while the owner stays in the app they talked over.
+    /// Poki updated in the middle of a boot: automation already started in this boot under the earlier
+    /// version, so the start with Poki in front is not the boot's first. It still counts, and the next
+    /// relaunch opens automation from the background.
+    func testAStartLaterInTheBootLetsTheNextRelaunchOpenInTheBackground() async {
+        let bootKey = "automationStartedBoot"
+        let savedBoot = UserDefaults.standard.object(forKey: bootKey)
+        defer { UserDefaults.standard.set(savedBoot, forKey: bootKey) }
+        UserDefaults.standard.set(BootClock.current, forKey: bootKey)
+        await openSessionForATask()
+
+        InProcessWDA.gate.withLock { $0 = InProcessWDA.OpenGate() }
+        session = FakeAutomation()
+        useSystem(27)
+        model.wentToBackground()
+        await prepareWithoutPhoneTask()
+        model.wakeRunner()
+        await waitFor("the relaunched Poki opens with Poki in the background") { self.session.isOpen && self.model.hasOpenInProcessSession }
+    }
+
+    /// A talk that ends (End, the Action Button again, or silence) with nothing under way closes the
+    /// automation its steps used at once, as at the end of a task: on iOS 27 iOS's banner goes while the
+    /// owner stays in the app they talked over; on iOS 26 the session is kept, so the next talk needs no
+    /// passcode.
     func testTheEndOfATalkClosesTheAutomationAtOnce() async {
         UserDefaults.standard.set("1", forKey: "pokiTalkRehearsal")
         defer { UserDefaults.standard.removeObject(forKey: "pokiTalkRehearsal") }
-        await openSessionForATask()
-        model.wentToBackground()
-        await model.voice.start(microphone: false)
-        XCTAssertTrue(model.voice.isOn)
-        XCTAssertTrue(session.isOpen)
+        for system in [27, 26] {
+            useSystem(system)
+            await openSessionForATask()
+            model.wentToBackground()
+            await model.voice.start(microphone: false)
+            XCTAssertTrue(model.voice.isOn)
+            XCTAssertTrue(session.isOpen)
+            let closes = session.closes
 
-        model.voice.stop()
-        await waitFor("the end of the talk closes automation") { !self.session.isOpen && self.model.runnerPaused }
+            model.stopFromOutside(AppModel.liveActivityEnd)
+            XCTAssertFalse(model.voice.isOn, "iOS \(system): the talk ends at once")
+            if system == 27 {
+                await waitFor("iOS 27: the end of the talk closes automation") { !self.session.isOpen && self.model.runnerPaused }
+            } else {
+                await waitFor("iOS 26: the end of the talk stands by") { self.model.runnerPaused && self.model.lastInProcessClose != nil }
+                XCTAssertTrue(session.isOpen, "iOS 26: the session is kept for the next talk")
+                XCTAssertEqual(session.closes, closes)
+            }
+        }
     }
 
     /// Stop or End on the Live Activity, or Poki Anytime run again during a talk: the talk stops with

@@ -170,12 +170,10 @@ final class AppModel {
     private var passcodeHeadsUpSeen = 0.0
     private static let automationBootKey = "automationStartedBoot"
     /// Automation started in this boot: iOS will not ask again until the next restart.
-    /// `askedOwner`: iOS asked for the passcode before this start.
-    private func automationStarted(askedOwner: Bool = false) {
+    private func automationStarted() {
         InProcessWDA.gate.withLock { $0.startedThisBoot = true }
-        let firstThisBoot = UserDefaults.standard.double(forKey: Self.automationBootKey) != BootClock.current
-        if firstThisBoot || askedOwner { AutomationConsent(boot: BootClock.current, at: Date()).save() }
-        guard firstThisBoot else { return }
+        AutomationConsent(boot: BootClock.current, at: Date()).save()
+        guard UserDefaults.standard.double(forKey: Self.automationBootKey) != BootClock.current else { return }
         UserDefaults.standard.set(BootClock.current, forKey: Self.automationBootKey)
     }
     /// Continue on the note: Poki turns on, and iOS's passcode screen comes next.
@@ -420,7 +418,7 @@ final class AppModel {
         talkActivity = TalkActivity(voice: voice, activity: self.activity, deviceName: { UIDevice.current.name },
                                     keepsActivity: { [weak self] in self?.sessionOn == true },
                                     ended: { [weak self] in self?.talkEnded() },
-                                    endFromLiveActivity: { [weak self] in self?.stopFromOutside("Ended from the Live Activity") })
+                                    endFromLiveActivity: { [weak self] in self?.stopFromOutside(AppModel.liveActivityEnd) })
         // One pump for the app's whole life. Cancelling a task that reads an AsyncStream ends the
         // stream for good, so a pump per session would go silent after the first Turn off (no steps,
         // no approvals, no relay state in the log, which is what happened on the phone).
@@ -661,7 +659,7 @@ final class AppModel {
                                           : "in-process session not ready for \(why): \(result["code"] ?? "unknown") after \(seconds) s")
                 if ok {
                     self.log.add("session-timing", String(format: "session_ready uptime=%.6f", ProcessInfo.processInfo.systemUptime))
-                    self.automationStarted(askedOwner: waitedForPasscode)
+                    self.automationStarted()
                     // An open session proves both, also when the launcher only found the image mounted.
                     if !self.setup.developerMode || !self.setup.uiAutomation {
                         var confirmed = self.setup
@@ -1254,6 +1252,7 @@ final class AppModel {
     /// Stops the runner, and with it iOS's automation banner, while the relay stays connected; the
     /// next agent request starts it again. From the Stop runner button, the Live Activity, or idle.
     static let liveActivityStop = "Stopped from the Live Activity"
+    static let liveActivityEnd = "Ended from the Live Activity"
 
     private func isApprovalTapEcho(_ reason: String) -> Bool {
         guard reason == Self.liveActivityStop, let answered = lastApprovalAnswered else { return false }
@@ -1262,21 +1261,29 @@ final class AppModel {
 
     /// The owner's Stop from outside Poki: Stop or End on the Live Activity, or Poki Anytime run again.
     /// The talk, the chat's task, a waiting approval and the agent's steps all stop at once, and the
-    /// Live Activity ends with them.
+    /// Live Activity ends with them. End with nothing under way only ends the talk: the automation
+    /// then closes as after a task (`closeAfterTalk`), so on iOS 18–26 the next talk needs no passcode.
     func stopFromOutside(_ reason: String) {
         if isApprovalTapEcho(reason) {
             log.add("runner", "a Stop from the Live Activity right after an approval was ignored")
             return
         }
-        log.add("session", "\(reason): the talk, the task and the Live Activity stop")
+        let chat = AskPoki.app === self ? AskPoki.chat : nil
+        let busy = chat?.running == true || stepUnderWay != nil || !approvals.isEmpty
         if voice.isOn { voice.stop() }
-        if let chat = AskPoki.chat, chat.running { chat.stop() }
+        guard busy || reason == Self.liveActivityStop else {
+            log.add("session", "\(reason): the talk ends")
+            return
+        }
+        log.add("session", "\(reason): the talk, the task and the Live Activity stop")
+        if let chat, chat.running { chat.stop() }
         for approval in approvals { resolve(approval, approved: false) }
-        pauseRunner(reason: reason)
+        pauseRunner(reason: reason, refusingApprovals: true)
         activity.end()
     }
 
-    func pauseRunner(reason: String = "Stopped", byOwner: Bool = true) {
+    /// `refusingApprovals`: the caller has refused the approvals that wait, which end a moment later.
+    func pauseRunner(reason: String = "Stopped", byOwner: Bool = true, refusingApprovals: Bool = false) {
         let splitChat = byOwner && AskPoki.app === self && AskPoki.chat?.isRunningInSplitView == true ? AskPoki.chat : nil
         splitChat?.stop()
         guard sessionOn, !runnerPaused || byOwner else { return }
@@ -1288,7 +1295,7 @@ final class AppModel {
             log.add("runner", "a Stop from the Live Activity right after an approval was ignored")
             return
         }
-        guard approvals.isEmpty || splitChat != nil else { return }
+        guard approvals.isEmpty || splitChat != nil || refusingApprovals else { return }
         ownerPaused = byOwner
         if runnerPaused {
             if automationPath == .inProcess { closeInProcess("stopped by the owner") }
@@ -2535,10 +2542,10 @@ enum BootClock {
     }()
 }
 
-/// When iOS last let automation start: the boot it was in, and when (the boot's first start, or a
-/// start iOS asked the passcode for). On iOS 27 a relaunched Poki opens automation without the
-/// passcode in that boot (on the phone, 2 h after the passcode, the first open answered in 2.6 s),
-/// until iOS asks again 8 hours after the passcode.
+/// When automation last started: the boot it was in, and when. On iOS 27 a relaunched Poki opens
+/// automation without the passcode in that boot (on the phone, 2 h after the passcode, the first open
+/// answered in 2.6 s). Poki trusts that for 8 hours after the last start, a margin of its own: no
+/// Apple document gives a limit, and past it the first open waits for Poki in front again.
 struct AutomationConsent: Equatable {
     let boot: Double
     let at: Date
