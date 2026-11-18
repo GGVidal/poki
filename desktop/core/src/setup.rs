@@ -70,6 +70,7 @@ impl Signer {
     }
 
     pub fn set_anisette(&mut self, source: Source) -> Result<()> {
+        self.sync_account();
         self.account.anisette = Some(source.clone());
         self.client = gsa::Client::new(Provider::new(source))?;
         store::save(&self.account)
@@ -78,6 +79,19 @@ impl Signer {
     pub fn signed_in(&self) -> bool { self.account.session.is_some() && !self.account.needs_reauth }
 
     pub fn needs_reauth(&self) -> bool { self.account.needs_reauth }
+
+    /// Another client (the CLI, a second app) may have changed the sign-in-again state since this
+    /// one loaded the account. Takes the stored account then, so a stale copy neither signs in with
+    /// the kept password nor writes the state away. True when the account now needs a fresh sign-in.
+    pub fn sync_account(&mut self) -> bool {
+        if let Ok(stored) = store::load() {
+            if stored.needs_reauth != self.account.needs_reauth {
+                self.account = stored;
+                self.pending = store::load_pending().filter(|p| p.is_fresh(now_unix()));
+            }
+        }
+        self.account.needs_reauth
+    }
 
     /// Keeps the anisette server that worked (the client may have moved to a fallback).
     fn remember_anisette(&mut self) {
@@ -99,6 +113,7 @@ impl Signer {
         keep_password: bool,
         caller: gsa::CodeCaller,
     ) -> Result<Option<Pending>> {
+        self.sync_account();
         let now = now_unix();
         if self.account.is_rate_limited(now) {
             return Err(gsa::rate_limited());
@@ -195,6 +210,9 @@ impl Signer {
     }
 
     pub async fn resend_code(&mut self) -> Result<Pending> {
+        if self.sync_account() {
+            return Err(gsa::incomplete_session());
+        }
         let now = now_unix();
         if self.account.is_rate_limited(now) {
             return Err(gsa::rate_limited());
@@ -253,6 +271,7 @@ impl Signer {
     /// A token good for at least ten minutes, refreshed from the session or, when the
     /// session is expired and the password is kept, from a fresh sign-in.
     pub async fn token(&mut self) -> Result<AppToken> {
+        self.sync_account();
         let now = now_unix();
         if self.account.is_rate_limited(now) {
             return Err(gsa::rate_limited());
@@ -342,6 +361,7 @@ impl Signer {
     }
 
     pub fn choose_team(&mut self, team_id: &str) -> Result<()> {
+        self.sync_account();
         self.account.team_id = Some(team_id.to_string());
         store::save(&self.account)
     }
@@ -628,7 +648,7 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
 #[cfg(feature = "device")]
 /// Signs Poki again for a phone this computer set up and reinstalls it (an upgrade keeps data).
 pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Result<keeper::Record> {
-    if signer.needs_reauth() {
+    if signer.sync_account() {
         return Err(gsa::incomplete_session());
     }
     let rec = keeper::get(udid)?.ok_or_else(|| Error::msg("This computer did not set up that iPhone."))?;
@@ -666,7 +686,7 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
 #[cfg(feature = "device")]
 /// Renews every phone that is due. Returns (udid, result) pairs.
 pub async fn renew_due(signer: &mut Signer, reporter: &Reporter) -> Vec<(String, Result<keeper::Record>)> {
-    if signer.is_rate_limited() || signer.pending().is_some() || signer.needs_reauth() {
+    if signer.sync_account() || signer.is_rate_limited() || signer.pending().is_some() {
         return vec![];
     }
     let prev_caller = signer.caller;
