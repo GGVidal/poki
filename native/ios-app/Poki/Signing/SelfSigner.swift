@@ -13,6 +13,12 @@ import UserNotifications
 @MainActor
 @Observable
 final class SelfSigner {
+    /// A release channel the core offers.
+    struct Channel: Decodable, Hashable, Identifiable {
+        let id: String
+        let title: String
+    }
+
     struct Status: Decodable, Equatable {
         var signed_in: Bool
         var needs_code: Bool
@@ -21,6 +27,8 @@ final class SelfSigner {
         var team_id: String?
         var keeps_password: Bool
         var anisette: String
+        var channel: String
+        var channels: [Channel]
     }
 
     struct Team: Decodable, Identifiable, Hashable {
@@ -246,6 +254,14 @@ final class SelfSigner {
         await reload()
     }
 
+    /// Follows another release channel and looks up its newest build.
+    func setChannel(_ id: String) async {
+        await run(nil) { _ = try await SignerBridge.call(["op": "set_channel", "channel": id]) }
+        await reload()
+        latest = nil
+        await checkLatest()
+    }
+
     func setAnisette(_ url: String) async {
         await run(nil) { _ = try await SignerBridge.call(["op": "set_anisette", "url": url]) }
         await reload()
@@ -363,7 +379,7 @@ final class SelfSigner {
         request["kind"] = kind
         request["app_path"] = Bundle.main.bundlePath
         request["device_name"] = UIDevice.current.name
-        await run(kind == "update" ? "Preparing the update" : "Preparing a refresh") {
+        await run(kind == "update" ? "Preparing the update" : "Preparing a renewal") {
             let p: Prepared
             do {
                 p = try await SignerBridge.decode(Prepared.self, request) { [weak self] progress in
@@ -376,8 +392,8 @@ final class SelfSigner {
             }
             self.ready[kind] = p
             self.log.add("signing", "prepared \(kind): \(p.version) (\(p.build)), profile until \(p.expires)")
-            self.notify(title: kind == "update" ? AppLocalization.text(LocalizedStringResource("Poki Update Ready")) : AppLocalization.text(LocalizedStringResource("Poki Refresh Ready")),
-                        body: AppLocalization.text(LocalizedStringResource("Open Settings > Signing & Updates to install when Poki isn’t running a task.")))
+            self.notify(title: kind == "update" ? AppLocalization.text(LocalizedStringResource("Poki Update Ready")) : AppLocalization.text(LocalizedStringResource("Poki Renewal Ready")),
+                        body: AppLocalization.text(LocalizedStringResource("Go to Settings > Signing & Updates to install it when Poki isn’t running a task.")))
         }
     }
 
@@ -602,7 +618,7 @@ final class SelfSigner {
         UserDefaults.standard.set(Date(), forKey: key)
         let when = expiry.map { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(AppLocalization.locale)) } ?? ""
         notify(title: AppLocalization.text(LocalizedStringResource("Poki Expires Soon")),
-               body: next != nil ? AppLocalization.text(LocalizedStringResource("Poki is ready to refresh. Open Settings > Signing & Updates and tap Install before \(when).")) : AppLocalization.text(LocalizedStringResource("Open Settings > Signing & Updates to refresh Poki before \(when).")))
+               body: next != nil ? AppLocalization.text(LocalizedStringResource("Poki’s renewal is ready. Go to Settings > Signing & Updates and tap Install before \(when).")) : AppLocalization.text(LocalizedStringResource("Go to Settings > Signing & Updates to renew Poki before \(when).")))
     }
 
     /// `-pokiSigningDays 1`: a simulator has no profile, so a screenshot gives Poki one that ends then.

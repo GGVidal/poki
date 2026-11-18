@@ -6,7 +6,7 @@ import XCTest
 final class SigningPageTests: XCTestCase {
     /// Settings › Signing & Updates and the page under it, read as a person reads them with an update
     /// waiting and the signing about to end: every word is in Poki's language, and none of them is a
-    /// release channel's name or a word only the maintainers use.
+    /// word only the maintainers use. A release channel's name appears only as a choice on Advanced.
     func testSigningPagesUseThePersonsLanguageAndNoInternalWords() async throws {
         try XCTSkipUnless(Bundle.main.preferredLocalizations.first == "en", "Requires iOS app language English (-AppleLanguages (en))")
         let language = AppLocalization.shared.preference
@@ -26,12 +26,21 @@ final class SigningPageTests: XCTestCase {
         let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
         await app.signer.checkLatest()
         XCTAssertTrue(app.signer.updateAvailable, "the simulator's newer build is known")
+        // The core's own answer (its channels and its sign-in server), as the signer asks at launch.
+        SignerBridge.installVault()
+        try await SignerBridge.call(["op": "configure", "home": SelfSigner.home.path, "device_name": UIDevice.current.name])
+        await app.signer.reload()
+        let channels = try XCTUnwrap(app.signer.status, "the signer answers on the simulator").channels.map(\.title)
+        XCTAssertFalse(channels.isEmpty, "the core offers a release channel")
         let output = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SigningPageEvidence")
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
         let internalWords = ["Beta", "anisette", "GitHub", "R2", "https://", "headers", "Signing Options", "Set up Poki", "Renew in"]
-        let titles = ["en": "Signing & Updates", "zh-Hans": "签名与更新", "zh-Hant": "簽署與更新"]
+        let titles = ["en": "Signing & Updates", "zh-Hans": "安装签名与更新", "zh-Hant": "安裝簽名與更新"]
+        let choices = ["en": ["Release Channel", "Sign-In Server", "Default", "Custom"],
+                       "zh-Hans": ["更新通道", "登录服务器", "默认", "自定义"],
+                       "zh-Hant": ["更新通道", "登入伺服器", "預設", "自訂"]]
         for options in [false, true] {
             for preference in ["en", "zh-Hans", "zh-Hant"] {
                 AppLocalization.shared.preference = preference
@@ -61,7 +70,14 @@ final class SigningPageTests: XCTestCase {
                 try XCTUnwrap(image).write(to: output.appendingPathComponent("\(name).png"))
 
                 XCTAssertGreaterThanOrEqual(words.all.count, 4, "\(name): the page shows its rows")
-                if !options { XCTAssertTrue(words.all.contains(titles[preference]!), "\(name): the page has the name of its row in Settings") }
+                if options {
+                    for word in choices[preference]! + channels {
+                        XCTAssertTrue(words.all.contains { $0.contains(word) }, "\(name): “\(word)” is on Advanced")
+                    }
+                    words.leaveOut(channels)
+                } else {
+                    XCTAssertTrue(words.all.contains(titles[preference]!), "\(name): the page has the name of its row in Settings")
+                }
                 for word in internalWords {
                     let found = words.all.filter { $0.localizedCaseInsensitiveContains(word) }
                     XCTAssertEqual(found, [], "\(name): “\(word)” is not a word for the person")
@@ -106,6 +122,11 @@ private final class PageWords: NSObject, XMLParserDelegate {
 
     /// Names that stay as they are in every language, and the Apple ID as it was typed.
     private static let names = ["Poki", "Apple", "ID", "iPhone", "Mac", "MB"]
+
+    /// The core's own names (a release channel's title), which no language translates.
+    func leaveOut(_ names: [String]) {
+        all.removeAll { names.contains($0) }
+    }
 
     var leftInEnglish: [String] {
         all.filter { text in

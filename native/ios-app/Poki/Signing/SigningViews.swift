@@ -55,7 +55,7 @@ struct AccountPage: View {
                     .textContentType(.password)
                 Toggle("Keep Me Signed In", isOn: $keepPassword)
             } footer: {
-                Text("A free Apple Account can be used. Poki signs itself for 7 days at a time and prepares to refresh before expiration. Your Apple Account and password are sent only to Apple.")
+                Text("You can use a free Apple Account. Signing lasts 7 days, and Poki automatically prepares a renewal before it expires. Your Apple Account and password are sent only to Apple.")
             }
             Section {
                 Button("Sign In") { Task { await signer.signIn(appleID: appleID, password: password, keepPassword: keepPassword); password = "" } }
@@ -113,7 +113,7 @@ struct SignerActivityRows: View {
 }
 
 /// Settings › Signing & Updates: the installed Poki and the newest one, when its signing ends, the
-/// update or the refresh to install, and the way to the Apple Account and to Advanced.
+/// update or the renewal to install, and the way to the Apple Account and to Advanced.
 struct SigningUpdatesPage: View {
     @Environment(AppModel.self) private var model
 
@@ -150,7 +150,7 @@ struct SigningSection: View {
             }
             SignedUntilRow(expiry: signer.expiry, countdownColor: countdownColor)
             if !signer.updateNotReady, let next = signer.next {
-                SettingsRow(title: next.kind == "update" ? "Update Ready" : "Refresh Ready", symbol: "checkmark.seal",
+                SettingsRow(title: next.kind == "update" ? "Update Ready" : "Renewal Ready", symbol: "checkmark.seal",
                             value: next.kind == "update" ? "\(next.version) (\(next.build))"
                                 : AppLocalization.text(LocalizedStringResource("Until \(next.expires.formatted(.dateTime.month(.abbreviated).day().year().locale(AppLocalization.locale)))")))
             }
@@ -171,7 +171,7 @@ struct SigningSection: View {
                     // Idle is partly time (a minute since the last agent step), which nothing observes, so
                     // the row looks again every few seconds instead of staying as it was first drawn.
                     TimelineView(.periodic(from: .now, by: 5)) { _ in
-                        SignerAction(signer: signer, title: next.kind == "update" ? "Install Update" : "Install Refresh", systemImage: "arrow.down.app") { await signer.install() }
+                        SignerAction(signer: signer, title: next.kind == "update" ? "Install Update" : "Install Renewal", systemImage: "arrow.down.app") { await signer.install() }
                     }
                 }
             }
@@ -183,7 +183,7 @@ struct SigningSection: View {
                 }
             }
             if signer.signedIn {
-                SignerAction(signer: signer, title: "Prepare Refresh Now", systemImage: "arrow.clockwise") { await signer.prepare(kind: "refresh") }
+                SignerAction(signer: signer, title: "Prepare Renewal Now", systemImage: "arrow.clockwise") { await signer.prepare(kind: "refresh") }
             }
         } footer: {
             Text(footer)
@@ -217,7 +217,7 @@ struct SigningSection: View {
                 ? AppLocalization.text(LocalizedStringResource("Installing closes Poki for a moment. Your chats and setup stay."))
                 : (model.signingBusyReason ?? "") + " " + AppLocalization.text(LocalizedStringResource("Install is available when Poki isn’t running a task."))
         }
-        return AppLocalization.text(LocalizedStringResource("Poki automatically prepares the next build \(Int(SelfSigner.refreshWithDaysLeft)) days before signing expires, or when an update is available. Nothing is installed until you tap Install."))
+        return AppLocalization.text(LocalizedStringResource("Poki automatically prepares a renewal \(Int(SelfSigner.refreshWithDaysLeft)) days before signing expires, or prepares an update when one is available. Nothing is installed until you tap Install."))
     }
 }
 
@@ -256,7 +256,7 @@ private struct SignedUntilRow: View {
     }
 }
 
-/// What the Signing & Updates page offers when there is a newer Poki (ESP-387).
+/// What the Signing & Updates page offers when there is a newer Poki.
 enum UpdateStep: Equatable {
     /// One tap downloads it, signs it and installs it.
     case download
@@ -300,23 +300,58 @@ struct ExpiryWarning {
     }
 }
 
-/// Signing & Updates › Advanced: the server that helps Poki sign in to the Apple Account (the core's
-/// anisette server). Poki's own is used until the person names another.
+/// Signing & Updates › Advanced: the release channel Poki follows, and the server that helps Poki
+/// sign in to the Apple Account (the core's anisette server). Poki's own server is used until the
+/// person names another.
 struct SigningOptionsPage: View {
     @Environment(AppModel.self) private var model
-    @State private var server = ""
+    @State private var address = ""
+    /// Custom was tapped, so the address field shows before the signer has an address to keep.
+    @State private var entering = false
+    @FocusState private var typing: Bool
     private var signer: SelfSigner { model.signer }
+    private var saved: String? { signer.customSignInServer }
 
     var body: some View {
         List {
+            if let status = signer.status, !status.channels.isEmpty {
+                Section {
+                    ForEach(status.channels) { channel in
+                        ChoiceRow(title: Text(verbatim: channel.title), selected: channel.id == status.channel) {
+                            if channel.id != status.channel { Task { await signer.setChannel(channel.id) } }
+                        }
+                    }
+                } header: {
+                    SettingsHeader("Release Channel")
+                } footer: {
+                    Text("Poki receives updates from the selected release channel.")
+                }
+            }
             Section {
-                TextField("Default Server", text: $server)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onSubmit { Task { await signer.setAnisette(server) } }
-                Button("Use Default Server") { server = ""; Task { await signer.setAnisette("") } }
-                    .disabled(server.isEmpty && signer.customSignInServer == nil)
+                ChoiceRow(title: Text("Default"), selected: saved == nil) {
+                    entering = false
+                    typing = false
+                    address = ""
+                    if saved != nil { Task { await signer.setAnisette("") } }
+                }
+                // The tick moves to Custom once the signer has taken the address.
+                ChoiceRow(title: Text("Custom"), selected: saved != nil) {
+                    entering = true
+                    typing = true
+                }
+                if entering || saved != nil {
+                    TextField("Server Address", text: $address)
+                        .keyboardType(.URL)
+                        .textContentType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .focused($typing)
+                        .onSubmit {
+                            let url = address.trimmingCharacters(in: .whitespaces)
+                            if !url.isEmpty { Task { await signer.setAnisette(url) } }
+                        }
+                }
             } header: {
                 SettingsHeader("Sign-In Server")
             } footer: {
@@ -327,7 +362,32 @@ struct SigningOptionsPage: View {
         .navigationTitle(AppLocalization.text("Advanced"))
         .navigationBarTitleDisplayMode(.inline)
         .settingsPage()
-        .onAppear { server = signer.customSignInServer ?? "" }
+        // The signer's answer can come after the page opens, and it is what the field shows.
+        .onChange(of: saved, initial: true) { _, saved in
+            if let saved { address = saved }
+        }
+    }
+}
+
+/// One choice of a few, ticked when it is the one in use (the rows of Settings › Language).
+private struct ChoiceRow: View {
+    let title: Text
+    let selected: Bool
+    let choose: () -> Void
+
+    var body: some View {
+        Button(action: choose) {
+            HStack {
+                title.foregroundStyle(Color(.label))
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Tint.blueText)
+                        .accessibilityHidden(true)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
