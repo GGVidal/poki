@@ -350,6 +350,50 @@ on the phone; the next first `look` of a task in that app names the saved routin
   more steps that no routine ran. Any MCP client can list, show, save, edit, rename, forget, export and
   import routines, and `remember`/`forget_note` the owner's notes (`PokiCore.memoryBrief(for:)` gives
   the on-device chat the same brief).
+- **A path is a routine sent once.** `do {actions: [{path: {goal, steps: [{tap: "Compose"}, {type: "…",
+  into: "Search"}, …]}}]}` runs up to 20 steps across screens in one call, each target named by the
+  text it shows (or `{label, type}`, or a point), never by a number from an earlier read. Each step
+  waits for its target as a routine's does and is held by the same approval rules. Nothing is saved.
+  With no model at all: a step's `expect: "text"` must be on screen after it (read from the tree, up
+  to 3 s) or the path stops there; `optional: true` leaves a step out when its target is not on a
+  screen that holds still; the path's `dismiss: ["Not Now", "Later"]` names controls that are closed
+  when they are in the way of a step (each such tap is still held by the approval rules);
+  `read: ["label"]` answers values from the last screen. A run or path that ended on a check that
+  passed skips the pause before the final read.
+- **Intent.** Any action may carry `intent: "why"`; it is kept with the recorded step and is what a
+  fix is decided from.
+- **Fixes on the way, and fast decisions.** Where a step would stop, a run first applies what the routine
+  remembers from an earlier fix (a control that closed what was in the way, another form of the
+  target), with no model. Past that, when the owner has added a decision model provider and picked a model
+  (Settings › Models, Decision Model; there is no other switch, and `CoreConfig.decider` is nil
+  until then), or picked a model on the phone (Apple Intelligence, through `PromptDecider`, which
+  asks in one prompt, reads the JSON in the answer as strictly, and sends nothing out), one request goes from the phone straight to their decision model (the
+  System One format of TypeSafe's Jev, which Cloudflare's Clef speaks too, or OpenAI's Decisions
+  API, `POST /v1/decisions`, in its own format): the goal, the step
+  wanted, and the screen's elements as text, with no picture and nothing from a secure field. The
+  options are built from the screen (the target under another name, close what is in the way, scroll,
+  wait, stop), so the answer is always one of them. It is acted on only at `DeciderPolicy`'s
+  confidence 0.6 and margin 0.15, at most twice a step and five times a run; a tap it leads to that
+  would need approval stops the run instead. A step whose target is missing asks once the screen
+  has held still for 0.7 s, in place of waiting its whole time; a screen still changing keeps the
+  step's whole time. A fix that led to a finished run is saved in the routine, and the answer
+  names each fix, how long the decision took and how sure it was. Two more uses, only with a
+  decider: a path target given as `{find: "what it is"}` is chosen from the screen (refused before
+  anything is sent when there is no decider), and a step's `check: "what should be true"` is one
+  yes or no after the step, where a clear no stops the run and an unsure answer is reported.
+- **Apps by name, and the session's app** (`CoreConfig.appNames`, on by default; a switch in the
+  app's Testing Options). `{launch: "Clock"}` takes the name the iPhone shows as well as a bundle id,
+  resolved by `CoreConfig.resolveApp` (the app backs it with its list of known apps); a name nothing
+  resolves is refused before anything is sent. `do {app: "Clock", actions: […]}` names the app once
+  for the session: it is brought to the front first when it is not there already, and later calls in
+  the same session need not name it. The handle outlives every change of screen; an answer says so
+  when another app is in front, and nothing is switched on its own. `app: false`, `finish` or a new
+  task lets go of it, which closes nothing.
+- **Reading when the screen settles** (`CoreConfig.quickRead`, on by default; a switch in Testing
+  Options). After a launch, a button, a swipe or a pinch (pauses of 0.6 s and up) the read comes as
+  soon as the tree has changed from what it was before the action and two reads in a row agree,
+  bounded by the old fixed pause; the answer says "read after N ms". A tap keeps its fixed 0.45 s,
+  since two tree reads cost about as much.
 - **Moving and backing up**: `export` answers the whole memory as JSON (schema
   `poki.agent-backup/1`); `import {data}` merges one in (newer wins). The app keeps a copy at
   `Documents/AgentBackup/poki-agent-backup.json`, which Poki Setup copies off and puts back; a copy put

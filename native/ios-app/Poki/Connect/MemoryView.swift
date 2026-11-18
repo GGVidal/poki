@@ -108,7 +108,8 @@ struct MemoryView: View {
     }
 }
 
-/// A routine: its name, how many steps, how often it worked, and a flag when it stopped twice in a row.
+/// A routine: its name, how many steps, how often it worked, how many steps were fixed on the way, and
+/// a flag when it stopped twice in a row.
 private struct RoutineRow: View {
     var routine: Routine
     var body: some View {
@@ -116,6 +117,9 @@ private struct RoutineRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: routine.name).fontWeight(.semibold)
                 Text(detail).font(.footnote).foregroundStyle(routine.stale ? Color.red : Color.secondary)
+                if let fixes = routine.fixes, fixes > 0 {
+                    Text("\(fixes) steps fixed on the way").font(.footnote).foregroundStyle(Color.secondary)
+                }
             }
             Spacer()
             if let ms = routine.lastMs {
