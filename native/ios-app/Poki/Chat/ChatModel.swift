@@ -528,8 +528,9 @@ final class ChatModel {
         let namedApps = chooseWorkspace && kind == .poki && app.canPlanSplitView
             ? AppIconStore.bundleIDs(namedIn: text) : []
         if !inSplitView, namedApps.count < 2, Self.direct, provider == .anthropic || provider == .openai {
-            habitLine = ScreenHabits.instructions(for: resumedTask ?? text)
-            let instructions = [Harness.instructions(for: resumedTask ?? text), habitLine, restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
+            // The learned music app joins when the task starts: the model may be asked about it first.
+            habitLine = nil
+            let instructions = [Harness.instructions(for: resumedTask ?? text), restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
             // Another model starts a new conversation on the model's side; the chat on screen stays.
             if client?.signature != "\(provider.rawValue)/\(model)" {
                 client = provider == .openai ? OpenAIClient(key: key, model: model) : AnthropicClient(key: key, model: model)
@@ -550,7 +551,9 @@ final class ChatModel {
 
     private func executePreparedSend(_ prepared: PreparedSend, token: Int) async {
         switch prepared.engine {
-        case .direct(let client, let instructions):
+        case .direct(let client, let base):
+            habitLine = await ScreenHabits.prepareInstructions(for: prepared.resumedTask ?? prepared.text)
+            let instructions = [base, habitLine].compactMap { $0 }.joined(separator: "\n\n")
             client.say(prepared.message)
             began("direct", prepared.provider, prepared.model)
             await run(client, instructions: instructions, delivered: prepared.you.id, token: token)
@@ -609,7 +612,7 @@ final class ChatModel {
             }
             let loop = modelLoop(provider: prepared.provider, model: piModel, inSplitView: splitSession != nil)
             let continuation = prepared.resumedTask.map { "The owner selected this saved task to resume: \($0). Recheck the current screen and continue from the saved progress; do not substitute a task from long-term memory." }
-            habitLine = splitSession == nil ? ScreenHabits.instructions(for: prepared.resumedTask ?? prepared.message) : nil
+            habitLine = splitSession == nil ? await ScreenHabits.prepareInstructions(for: prepared.resumedTask ?? prepared.message) : nil
             let instructions = [Harness.instructions(for: prepared.resumedTask ?? prepared.message, inSplitView: splitSession != nil), habitLine, restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
             let outcome = await loop.run(prepared.message.isEmpty ? Self.picturesOnly : prepared.message, images: prepared.images, instructions: instructions, maxTurns: Self.maxTurns) { [weak self] text in
                 guard let self, self.runToken == token else { return }
@@ -1041,8 +1044,10 @@ final class ChatModel {
             }
             return response
         default:
-            if habitLine != nil, call.name == "routines", ["save", "remember"].contains(args["action"] as? String ?? "") {
-                return PokiCore.ToolAnswer(text: "Not saved: this task's music app came from a habit learned from Screen History, which the owner can delete or turn off, so nothing of it is kept in memory.", jpeg: nil, isError: false)
+            // A routine made while the learned app is in the task would keep the guess. A note is the
+            // owner's own words ("以后都用某某放歌"): it is always saved, and it then comes before the guess.
+            if habitLine != nil, call.name == "routines", args["action"] as? String == "save" {
+                return PokiCore.ToolAnswer(text: "Not saved: this task's music app came from a habit learned from Screen History, which the owner can delete or turn off, so no routine is kept for it.", jpeg: nil, isError: false)
             }
             return await app.runTool(call.name, arguments: call.arguments)
         }

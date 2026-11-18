@@ -19,7 +19,7 @@ struct MemoryView: View {
     private let store = RoutineStore.shared
     @ObservedObject private var capture = HistoryCapture.shared
     @ObservedObject private var lock = HistoryLock.shared
-    @State private var habit: InferredMusicAppHabit?
+    @State private var habit: LearnedMusicHabit?
     private var learning: Bool { capture.enabled && capture.learnHabits }
 
     var body: some View {
@@ -95,6 +95,8 @@ struct MemoryView: View {
         .navigationTitle(AppLocalization.text("Memory"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
+        // The model is asked when what it would read changed since it was last asked.
+        .task { await ScreenHabits.judge(); reload() }
         .onChange(of: lock.unlocked) { _, _ in reload() }
         .onChange(of: capture.learnHabits) { _, _ in reload() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
@@ -171,7 +173,7 @@ private struct RoutineRow: View {
 
 /// The habit Screen History taught Poki, marked as inferred, with what it rests on and Forget.
 private struct LearnedHabitRows: View {
-    var habit: InferredMusicAppHabit?
+    var habit: LearnedMusicHabit?
     var forget: () -> Void
 
     var body: some View {
@@ -194,13 +196,13 @@ private struct LearnedHabitRows: View {
         AppIconStore.name(id) ?? id
     }
 
-    private func detail(_ habit: InferredMusicAppHabit) -> String {
-        // Month and day in the app's language with the system region: 11月16日至11月18日, Nov 16 to Nov 18.
+    /// "Inferred automatically · <the model's evidence> · 11月18日": the day it was learned, as month and day
+    /// in the app's language with the system region.
+    private func detail(_ habit: LearnedMusicHabit) -> String {
         let day = DateFormatter()
         day.locale = AppLocalization.locale
         day.setLocalizedDateFormatFromTemplate("MMMd")
-        let from = day.string(from: habit.windowStart), to = day.string(from: habit.lastObservedAt)
-        let range = AppLocalization.text(LocalizedStringResource("\(from) to \(to)"))
-        return AppLocalization.text(LocalizedStringResource("Inferred automatically · \(habit.activeSessionCount) uses on \(habit.distinctDayCount) days · \(range)"))
+        let learned = day.string(from: habit.learnedAt)
+        return AppLocalization.text(LocalizedStringResource("Inferred automatically · \(habit.evidence) · \(learned)"))
     }
 }

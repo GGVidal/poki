@@ -1,48 +1,24 @@
 import Foundation
 
-/// Habits Poki learns from Screen History, computed on this iPhone from which app was in front and
-/// when. No screen text or title goes in. Today there is one: the music app the owner uses most.
+/// Habits Poki learns from Screen History. Today there is one: the music app the owner uses most.
+///
+/// No count or time window decides it. This file only sums up the owner's own use of music apps
+/// (which app was in front, and when; no screen text or title), and the model reads that summary
+/// with a description of what a habit is and decides (`MusicHabitJudgment`).
 
 // MARK: Types
 
-public enum HabitInferenceSource: String, Codable, Equatable, Sendable {
-    case screenHistoryLocalStats = "screen_history_local_stats"
-}
-
-public struct InferredMusicAppHabit: Codable, Equatable, Sendable {
+/// What the model decided: the owner's usual music app and, in its own words, what it rests on.
+public struct LearnedMusicHabit: Codable, Equatable, Sendable {
     public var bundleID: String
-    public var source: HabitInferenceSource
-    public var windowStart: Date
-    public var windowEnd: Date
-    public var activeSessionCount: Int
-    public var distinctDayCount: Int
-    public var lastObservedAt: Date
-    public var weightedShare: Double
-    public var computedAt: Date
-    public var expiresAt: Date
+    /// The model's evidence, in the owner's language ("过去一周用了 4 次，多在晚上").
+    public var evidence: String
+    public var learnedAt: Date
 
-    public init(
-        bundleID: String,
-        source: HabitInferenceSource = .screenHistoryLocalStats,
-        windowStart: Date,
-        windowEnd: Date,
-        activeSessionCount: Int,
-        distinctDayCount: Int,
-        lastObservedAt: Date,
-        weightedShare: Double,
-        computedAt: Date,
-        expiresAt: Date? = nil
-    ) {
+    public init(bundleID: String, evidence: String, learnedAt: Date) {
         self.bundleID = bundleID
-        self.source = source
-        self.windowStart = windowStart
-        self.windowEnd = windowEnd
-        self.activeSessionCount = activeSessionCount
-        self.distinctDayCount = distinctDayCount
-        self.lastObservedAt = lastObservedAt
-        self.weightedShare = weightedShare
-        self.computedAt = computedAt
-        self.expiresAt = expiresAt ?? lastObservedAt.addingTimeInterval(7 * 86_400)
+        self.evidence = evidence
+        self.learnedAt = learnedAt
     }
 }
 
@@ -60,6 +36,7 @@ public struct ScreenHabitRawObservation: Equatable, Sendable {
     }
 }
 
+/// A time an agent had an app open: reads of that app then are the agent's, not the owner's.
 public struct AgentAppSpan: Codable, Equatable, Sendable {
     public var bundleID: String
     public var startAt: Date
@@ -85,6 +62,7 @@ public enum MusicAppCatalog {
         "com.luna.music",
         "com.google.ios.youtubemusic",
         "com.apple.Classical",
+        "cmccwm.mobilemusic",
     ]
 
     private static let aliasToCanonical: [String: String] = {
@@ -113,236 +91,117 @@ public enum MusicAppCatalog {
     }
 }
 
-// MARK: Evaluator
+// MARK: Summary
 
-public enum MusicHabitEvaluator {
-    public static let sessionMergeInterval: TimeInterval = 30 * 60
-    public static let maxSessionsPerDay = 2
-    public static let minActiveSessions = 5
-    public static let minDistinctDays = 3
-    public static let windowSeconds: TimeInterval = 14 * 86_400
-    public static let recentRequiredSeconds: TimeInterval = 7 * 86_400
-    public static let decayHalfLifeSeconds: TimeInterval = 7 * 86_400
-    public static let requiredWeightedShare: Double = 0.70
+/// The owner's own uses of one music app.
+public struct MusicAppUsage: Equatable, Sendable {
+    public var bundleID: String
+    /// When each use started, oldest first.
+    public var uses: [Date]
+}
 
-    private struct OpenSession {
-        var startAt: Date
-        var endAt: Date
-        var firstOtherAppAt: Date?
-        var taintedByAgent: Bool
-    }
+public enum MusicUsageSummary {
+    /// Reads of the same app this close together are one use: a page read a hundred times is still
+    /// one time the owner opened the app.
+    public static let sameUseGap: TimeInterval = 30 * 60
+    /// How far back the summary looks: the short behavior log Poki keeps.
+    public static let lookBack: TimeInterval = 30 * 86_400
 
-    public struct Session: Equatable, Sendable {
-        public var bundleID: String
-        public var startAt: Date
-        public var endAt: Date
-    }
-
-    /// Evaluates foreground bundle ID observations locally without inspecting any screen text or titles.
-    public static func evaluate(
+    /// The owner's uses of each music app since `lookBack` (and after `watermarkAt`), from which app
+    /// was in front and when. Uses while an agent had the app open are left out, and so are apps the
+    /// owner leaves out of Screen History.
+    public static func usages(
         observations: [ScreenHabitRawObservation],
         agentSpans: [AgentAppSpan] = [],
         watermarkAt: Date? = nil,
         keepsApp: (String) -> Bool = { _ in true },
-        now: Date = Date(),
-        calendar: Calendar = .current
-    ) -> InferredMusicAppHabit? {
-        // Survivorship guard: if any known music app is excluded or omitted by allowlist mode,
-        // competing usage cannot be observed fairly, so do not infer a default preference.
-        guard MusicAppCatalog.allCanonicalIDs.allSatisfy({ keepsApp($0) }) else {
-            return nil
+        now: Date = Date()
+    ) -> [MusicAppUsage] {
+        let floor = max(now.addingTimeInterval(-lookBack), watermarkAt ?? .distantPast)
+        let spans = agentSpans.compactMap { span -> (String, Date, Date)? in
+            guard let app = MusicAppCatalog.canonicalBundleID(for: span.bundleID) else { return nil }
+            return (app, span.startAt, max(span.startAt, span.endAt))
         }
-
-        let windowFloor = now.addingTimeInterval(-windowSeconds)
-        let prefilterFloor = windowFloor.addingTimeInterval(-sessionMergeInterval * 2)
-        let upperBound = now.addingTimeInterval(1)
-
-        let normalizedSpans: [(canonicalOrLower: String, startAt: Date, endAt: Date)] = agentSpans.compactMap { span in
-            guard MusicAppCatalog.isValidBundleID(span.bundleID) else { return nil }
-            let key = MusicAppCatalog.canonicalBundleID(for: span.bundleID) ?? span.bundleID.lowercased()
-            return (key, span.startAt, max(span.startAt, span.endAt))
+        var reads: [String: [Date]] = [:]
+        for item in observations {
+            guard item.at > floor, item.at <= now, !item.isAgentInitiated,
+                  let app = MusicAppCatalog.canonicalBundleID(for: item.bundleID),
+                  keepsApp(item.bundleID), keepsApp(app),
+                  !spans.contains(where: { $0.0 == app && item.at >= $0.1 && item.at <= $0.2 }) else { continue }
+            reads[app, default: []].append(item.at)
         }
-
-        func isAgentTriggered(canonicalApp: String, at time: Date, flagged: Bool) -> Bool {
-            if flagged { return true }
-            for span in normalizedSpans where span.canonicalOrLower == canonicalApp {
-                if time >= span.startAt && time <= span.endAt {
-                    return true
-                }
+        return reads.map { app, times in
+            var uses: [Date] = []
+            var last: Date?
+            for at in times.sorted() {
+                if let last, at.timeIntervalSince(last) <= sameUseGap {} else { uses.append(at) }
+                last = at
             }
-            return false
+            return MusicAppUsage(bundleID: app, uses: uses)
+        }.sorted { $0.uses.count == $1.uses.count ? $0.bundleID < $1.bundleID : $0.uses.count > $1.uses.count }
+    }
+
+    /// The summary as the model reads it: for each app, how many uses, on which days, at what times
+    /// of day, and the last one.
+    public static func text(_ usages: [MusicAppUsage], name: (String) -> String, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let day = DateFormatter()
+        day.calendar = calendar
+        day.timeZone = calendar.timeZone
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.dateFormat = "yyyy-MM-dd (EEE)"
+        var lines = ["Today is \(day.string(from: now)). The owner's own uses of music apps on this iPhone in the last \(Int(lookBack / 86_400)) days (Poki's own launches are left out; reads within \(Int(sameUseGap / 60)) minutes count as one use):"]
+        for usage in usages {
+            let days = Dictionary(grouping: usage.uses) { calendar.startOfDay(for: $0) }
+            let dayList = days.keys.sorted().map { "\(day.string(from: $0)) ×\(days[$0]?.count ?? 0)" }.joined(separator: ", ")
+            var parts: [String: Int] = [:]
+            for use in usage.uses { parts[partOfDay(calendar.component(.hour, from: use)), default: 0] += 1 }
+            let times = ["morning", "afternoon", "evening", "night"].compactMap { part in parts[part].map { "\(part) \($0)" } }.joined(separator: ", ")
+            lines.append("- \(name(usage.bundleID)) (bundle id \(usage.bundleID)): \(usage.uses.count) uses on \(days.count) days: \(dayList). Times of day: \(times).")
         }
+        if usages.isEmpty { lines.append("- none") }
+        return lines.joined(separator: "\n")
+    }
 
-        let sanitized = observations.filter { item in
-            guard MusicAppCatalog.isValidBundleID(item.bundleID) else { return false }
-            guard item.at >= prefilterFloor && item.at <= upperBound else { return false }
-            if let watermarkAt, item.at <= watermarkAt { return false }
-            guard keepsApp(item.bundleID) else { return false }
-            if let canonical = MusicAppCatalog.canonicalBundleID(for: item.bundleID), !keepsApp(canonical) {
-                return false
-            }
-            return true
-        }.sorted { lhs, rhs in
-            if lhs.at == rhs.at { return lhs.id < rhs.id }
-            return lhs.at < rhs.at
+    static func partOfDay(_ hour: Int) -> String {
+        switch hour {
+        case 5..<12: return "morning"
+        case 12..<18: return "afternoon"
+        case 18..<23: return "evening"
+        default: return "night"
         }
+    }
+}
 
-        guard !sanitized.isEmpty else { return nil }
+// MARK: The model's judgment
 
-        var openByApp: [String: OpenSession] = [:]
-        var completedByApp: [String: [OpenSession]] = [:]
+public enum MusicHabitJudgment {
+    /// What the model is told: what counts as a habit, what to look at, how to write the evidence.
+    public static func instructions(language: String) -> String {
+        """
+        You decide whether the owner has a usual music app: one they choose again and again, so that \
+        when they ask Poki to play music without naming an app, opening that app is what they would expect.
+        You get a summary of the owner's own use of music apps on this iPhone: how many times they used \
+        each app, on which days and at what times. Look at how often and how regularly they come back to \
+        an app, whether it is recent, and how it compares with the other music apps. Using an app more \
+        than twice is a useful hint, not a rule: decide from the whole picture. When two apps are used \
+        about as much, or the use looks like a one-off, there is no habit.
+        Reply with JSON only, no other text: {"habit": true, "bundle_id": "<the app's bundle id>", \
+        "evidence": "<one short sentence for the owner, in the language with code \(language), saying \
+        what you saw, such as how many times, on how many days and at what time of day>"} \
+        or {"habit": false}.
+        """
+    }
 
-        for item in sanitized {
-            let clampedAt = min(item.at, now)
-            let canonicalMusic = MusicAppCatalog.canonicalBundleID(for: item.bundleID)
-            let currentIdentity = canonicalMusic ?? item.bundleID.lowercased()
-
-            for existingApp in Array(openByApp.keys) where existingApp != currentIdentity {
-                if openByApp[existingApp]?.firstOtherAppAt == nil {
-                    openByApp[existingApp]?.firstOtherAppAt = clampedAt
-                }
-            }
-
-            guard let musicApp = canonicalMusic else { continue }
-            let agentFlag = isAgentTriggered(canonicalApp: musicApp, at: clampedAt, flagged: item.isAgentInitiated)
-
-            if var active = openByApp[musicApp] {
-                let directGap = clampedAt.timeIntervalSince(active.endAt)
-                let mergedBySwitch: Bool = {
-                    guard let switchedAt = active.firstOtherAppAt else { return false }
-                    return switchedAt.timeIntervalSince(active.endAt) <= sessionMergeInterval
-                        && clampedAt.timeIntervalSince(switchedAt) <= sessionMergeInterval
-                }()
-
-                if directGap <= sessionMergeInterval || mergedBySwitch {
-                    active.endAt = max(active.endAt, clampedAt)
-                    active.firstOtherAppAt = nil
-                    openByApp[musicApp] = active
-                } else {
-                    completedByApp[musicApp, default: []].append(active)
-                    openByApp[musicApp] = OpenSession(
-                        startAt: clampedAt,
-                        endAt: clampedAt,
-                        firstOtherAppAt: nil,
-                        taintedByAgent: agentFlag
-                    )
-                }
-            } else {
-                openByApp[musicApp] = OpenSession(
-                    startAt: clampedAt,
-                    endAt: clampedAt,
-                    firstOtherAppAt: nil,
-                    taintedByAgent: agentFlag
-                )
-            }
-        }
-
-        for (musicApp, active) in openByApp {
-            completedByApp[musicApp, default: []].append(active)
-        }
-
-        // Filter out agent-tainted and out-of-window sessions, then cap to at most 2 sessions per natural day.
-        var validSessionsByApp: [String: [Session]] = [:]
-        var weightedScoreByApp: [String: Double] = [:]
-
-        for (musicApp, rawSessions) in completedByApp {
-            let cleanInWindow = rawSessions.filter { session in
-                guard !session.taintedByAgent else { return false }
-                guard session.endAt >= windowFloor && session.endAt <= now else { return false }
-                if let watermarkAt, session.startAt <= watermarkAt || session.endAt <= watermarkAt {
-                    return false
-                }
-                return true
-            }
-            guard !cleanInWindow.isEmpty else { continue }
-
-            var byDay: [Date: [OpenSession]] = [:]
-            for session in cleanInWindow {
-                let day = calendar.startOfDay(for: session.startAt)
-                byDay[day, default: []].append(session)
-            }
-
-            var capped: [Session] = []
-            for day in byDay.keys.sorted() {
-                let sortedInDay = (byDay[day] ?? []).sorted { $0.endAt < $1.endAt }
-                for kept in sortedInDay.suffix(maxSessionsPerDay) {
-                    capped.append(Session(bundleID: musicApp, startAt: kept.startAt, endAt: kept.endAt))
-                }
-            }
-            capped.sort { $0.endAt < $1.endAt }
-            guard !capped.isEmpty else { continue }
-
-            let score = capped.reduce(0.0) { partial, session in
-                let age = max(0, now.timeIntervalSince(session.endAt))
-                let weight = pow(0.5, age / decayHalfLifeSeconds)
-                return partial + weight
-            }
-            if score > 0 {
-                validSessionsByApp[musicApp] = capped
-                weightedScoreByApp[musicApp] = score
-            }
-        }
-
-        let totalWeight = weightedScoreByApp.values.reduce(0.0, +)
-        guard totalWeight > 0 else { return nil }
-
-        guard let (bestApp, bestWeight) = weightedScoreByApp.max(by: { lhs, rhs in
-            if lhs.value == rhs.value { return lhs.key > rhs.key }
-            return lhs.value < rhs.value
-        }) else {
-            return nil
-        }
-
-        let share = bestWeight / totalWeight
-        // Guard against 1-ULP IEEE 754 rounding on exact 7:3 decayed sums while rejecting < 70%.
-        guard share >= requiredWeightedShare - 1e-12 else {
-            return nil
-        }
-
-        guard let bestSessions = validSessionsByApp[bestApp],
-              bestSessions.count >= minActiveSessions,
-              let earliest = bestSessions.first,
-              let latest = bestSessions.last else {
-            return nil
-        }
-
-        guard now.timeIntervalSince(latest.endAt) <= recentRequiredSeconds else {
-            return nil
-        }
-
-        var latestEndByDay: [Date: Date] = [:]
-        for session in bestSessions {
-            let day = calendar.startOfDay(for: session.startAt)
-            if let prev = latestEndByDay[day] {
-                latestEndByDay[day] = max(prev, session.endAt)
-            } else {
-                latestEndByDay[day] = session.endAt
-            }
-        }
-        let sortedDays = latestEndByDay.keys.sorted()
-        guard sortedDays.count >= minDistinctDays else {
-            return nil
-        }
-
-        let recencyExpiry = latest.endAt.addingTimeInterval(recentRequiredSeconds)
-        let fifthMostRecentExpiry = bestSessions[bestSessions.count - minActiveSessions].endAt.addingTimeInterval(windowSeconds)
-        let thirdMostRecentDay = sortedDays[sortedDays.count - minDistinctDays]
-        let thirdDayExpiry = (latestEndByDay[thirdMostRecentDay] ?? latest.endAt).addingTimeInterval(windowSeconds)
-        let expiresAt = min(recencyExpiry, min(fifthMostRecentExpiry, thirdDayExpiry))
-
-        guard expiresAt > now else { return nil }
-
-        return InferredMusicAppHabit(
-            bundleID: bestApp,
-            source: .screenHistoryLocalStats,
-            windowStart: earliest.startAt,
-            windowEnd: now,
-            activeSessionCount: bestSessions.count,
-            distinctDayCount: sortedDays.count,
-            lastObservedAt: latest.endAt,
-            weightedShare: min(1.0, share),
-            computedAt: now,
-            expiresAt: expiresAt
-        )
+    /// The model's reply read as a habit, `.some(nil)` for "no habit", or nil when it cannot be read.
+    /// Only a bundle id from the summary is taken.
+    public static func parse(_ reply: String, offered: [MusicAppUsage], now: Date = Date()) -> LearnedMusicHabit?? {
+        guard let start = reply.firstIndex(of: "{"), let end = reply.lastIndex(of: "}"),
+              let object = try? JSONSerialization.jsonObject(with: Data(reply[start...end].utf8)) as? [String: Any],
+              let habit = object["habit"] as? Bool else { return nil }
+        guard habit else { return .some(nil) }
+        guard let raw = object["bundle_id"] as? String, let app = MusicAppCatalog.canonicalBundleID(for: raw),
+              offered.contains(where: { $0.bundleID == app }) else { return nil }
+        let evidence = (object["evidence"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return .some(LearnedMusicHabit(bundleID: app, evidence: String(evidence.prefix(200)), learnedAt: now))
     }
 }

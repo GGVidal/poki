@@ -129,18 +129,18 @@
         }
       }
     },
-    "Inferred automatically · %lld uses on %lld days · %@" : {
+    "Inferred automatically · %@ · %@" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自动推断 · %1$lld 次使用，分布在 %2$lld 天 · %3$@"
+            "value" : "自动推断 · %1$@ · %2$@"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自動推斷 · %1$lld 次使用，分布在 %2$lld 天 · %3$@"
+            "value" : "自動推斷 · %1$@ · %2$@"
           }
         }
       }

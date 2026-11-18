@@ -8,7 +8,7 @@ import XCTest
 /// them, through the same call a run makes.
 @MainActor
 final class ScreenHistoryTests: XCTestCase {
-    private let keys = ["history.enabled", "history.listMode", "history.excluded", "history.included", "history.learnHabits", "history.habitsForgottenAt"]
+    private let keys = ["history.enabled", "history.listMode", "history.excluded", "history.included", "history.learnHabits", "history.habitsForgottenAt", "history.learnedMusicHabit", "history.habitJudged"]
     private var saved: [String: Any] = [:]
     private var savedLanguage = AppLocalization.system
 
@@ -40,38 +40,30 @@ final class ScreenHistoryTests: XCTestCase {
         ["ok": true, "app": app, "title": "", "text": text, "changed": true]
     }
 
-    /// The usual music app reaches a music request's instructions only while both switches are on,
-    /// and turning learning off forgets it for good: turning it on again does not bring it back from
-    /// the same reads.
+    /// What the model decided reaches a music request's instructions only while both switches are
+    /// on, and turning learning off forgets it for good.
     func testTheLearnedMusicAppIsForgottenWhenLearningIsTurnedOff() async throws {
-        let day = Calendar.current.startOfDay(for: Date())
-        let now = Date()
-        for (daysAgo, hour) in [(2, 9), (2, 18), (1, 9), (1, 18), (0, 1)] {
-            let at = min(day.addingTimeInterval(Double(-daysAgo) * 86_400 + Double(hour) * 3600), now.addingTimeInterval(-600))
-            HistoryStore.shared.add(at: at, app: "com.netease.cloudmusic", title: "", text: "每日推荐")
-        }
-        _ = await HistoryStore.shared.size()
         let ask = "放一首周杰伦的歌"
         HistoryCapture.shared.enabled = true
+        ScreenHabits.learn(LearnedMusicHabit(bundleID: "com.netease.cloudmusic", evidence: "最近三天用了五次", learnedAt: Date()))
         XCTAssertNil(ScreenHabits.instructions(for: ask), "learning is off until the owner turns it on")
         HistoryCapture.shared.learnHabits = true
         let line = try XCTUnwrap(ScreenHabits.instructions(for: ask))
-        XCTAssertTrue(line.contains("com.netease.cloudmusic"))
+        XCTAssertTrue(line.contains("com.netease.cloudmusic") && line.contains("最近三天用了五次"))
         XCTAssertNil(ScreenHabits.instructions(for: "打开设置把亮度调低"), "a request that is not about music gets nothing")
-        XCTAssertFalse(line.contains("每日推荐"), "no screen text goes to the model")
 
         HistoryCapture.shared.learnHabits = false
-        XCTAssertNil(ScreenHabits.instructions(for: ask))
         HistoryCapture.shared.learnHabits = true
-        XCTAssertNil(ScreenHabits.instructions(for: ask), "the same reads do not teach it again")
+        XCTAssertNil(ScreenHabits.instructions(for: ask), "turning it off forgot it")
         XCTAssertNil(ScreenHabits.musicApp())
     }
 
-    /// Five NetEase uses on three days before today (and one today with `extraToday`), learning on.
+    /// NetEase uses on three days before today (and one today with `extraToday`), learning on, and
+    /// the model's decision that NetEase is the usual app.
     private func learnNetEase(extraToday: Bool = false) async {
         let day = Calendar.current.startOfDay(for: Date())
         let now = Date()
-        var uses = [(3, 9), (3, 18), (2, 9), (2, 18), (1, 9)]
+        var uses = [(3, 9), (2, 9), (1, 9)]
         if extraToday { uses.append((0, 1)) }
         for (daysAgo, hour) in uses {
             let at = min(day.addingTimeInterval(Double(-daysAgo) * 86_400 + Double(hour) * 3600), now.addingTimeInterval(-600))
@@ -80,6 +72,7 @@ final class ScreenHistoryTests: XCTestCase {
         _ = await HistoryStore.shared.size()
         HistoryCapture.shared.enabled = true
         HistoryCapture.shared.learnHabits = true
+        ScreenHabits.learn(LearnedMusicHabit(bundleID: "com.netease.cloudmusic", evidence: "常用", learnedAt: Date()))
     }
 
     /// A music app the owner names in the request is the one used: the learned app is not offered,
@@ -102,8 +95,7 @@ final class ScreenHistoryTests: XCTestCase {
         XCTAssertNil(ScreenHabits.instructions(for: "放一首周杰伦的歌"))
     }
 
-    /// Deleting part of Screen History forgets what was learned, even when the reads left would
-    /// still be enough.
+    /// Deleting part of Screen History forgets what was learned from it.
     func testDeletingSomeHistoryForgetsTheLearnedApp() async throws {
         await learnNetEase(extraToday: true)
         XCTAssertNotNil(ScreenHabits.musicApp())

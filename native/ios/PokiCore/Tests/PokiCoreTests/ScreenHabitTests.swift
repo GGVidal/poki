@@ -2,9 +2,8 @@ import Foundation
 import XCTest
 @testable import PokiCore
 
-/// The usual music app is worked out from which app was in front and when. These pin the rules the
-/// owner was promised: real uses, not rows; several days; recent; a clear lead over other music apps;
-/// and nothing from Poki's own launches or from before the owner said stop.
+/// What the model gets to decide the usual music app from: the owner's own uses of each music app,
+/// and only those. No count decides anything here.
 final class ScreenHabitTests: XCTestCase {
     static let netease = "com.netease.cloudmusic"
     static let appleMusic = "com.apple.Music"
@@ -23,99 +22,53 @@ final class ScreenHabitTests: XCTestCase {
         return (0..<reads).map { ScreenHabitRawObservation(at: start.addingTimeInterval(Double($0) * 60), bundleID: app) }
     }
 
-    static func evaluate(_ rows: [ScreenHabitRawObservation], spans: [AgentAppSpan] = [], watermark: Date? = nil,
-                         keeps: @escaping (String) -> Bool = { _ in true }) -> InferredMusicAppHabit? {
-        MusicHabitEvaluator.evaluate(observations: rows, agentSpans: spans, watermarkAt: watermark, keepsApp: keeps, now: now, calendar: utc)
+    static func usages(_ rows: [ScreenHabitRawObservation], spans: [AgentAppSpan] = [], watermark: Date? = nil,
+                       keeps: @escaping (String) -> Bool = { _ in true }) -> [MusicAppUsage] {
+        MusicUsageSummary.usages(observations: rows, agentSpans: spans, watermarkAt: watermark, keepsApp: keeps, now: now)
     }
 
-    func testFiveUsesOverThreeDaysMakeTheHabit() throws {
-        let rows = Self.use(Self.netease, daysAgo: 2, hour: 9) + Self.use(Self.netease, daysAgo: 2, hour: 18)
-            + Self.use(Self.netease, daysAgo: 1, hour: 9) + Self.use(Self.netease, daysAgo: 1, hour: 18) + Self.use(Self.netease, daysAgo: 0, hour: 9)
-        let habit = try XCTUnwrap(Self.evaluate(rows))
-        XCTAssert(habit.bundleID == Self.netease)
-        XCTAssert(habit.activeSessionCount == 5)
-        XCTAssert(habit.distinctDayCount == 3)
-        XCTAssert(habit.weightedShare == 1)
+    func testAHundredReadsOfOnePageAreOneUse() {
+        let rows = Self.use(Self.netease, daysAgo: 1, hour: 10, reads: 100)
+        XCTAssertEqual(Self.usages(rows).first?.uses.count, 1)
     }
 
-    func testManyRowsOfOneUseCountOnce() {
-        // A hundred reads of the same page each day are three uses, not three hundred.
-        let rows = (0..<3).flatMap { Self.use(Self.netease, daysAgo: $0, hour: 10, reads: 100) }
-        XCTAssertNil(Self.evaluate(rows))
+    func testTwoUsesAreGivenToTheModelWithTheirDaysAndTimes() {
+        let rows = Self.use(Self.netease, daysAgo: 2, hour: 21) + Self.use(Self.netease, daysAgo: 1, hour: 21)
+        let usages = Self.usages(rows)
+        XCTAssertEqual(usages.map(\.bundleID), [Self.netease])
+        let text = MusicUsageSummary.text(usages, name: { _ in "NetEase Cloud Music" }, now: Self.now, calendar: Self.utc)
+        XCTAssertTrue(text.contains("2 uses on 2 days: 2026-11-16 (Mon) ×1, 2026-11-17 (Tue) ×1. Times of day: evening 2."), text)
     }
 
-    func testTenOpeningsInADayCountTwice() {
-        // Ten uses an hour apart on two days: at most two a day count, so four in all.
-        let rows = (0..<2).flatMap { day in (0..<10).flatMap { Self.use(Self.netease, daysAgo: day, hour: 8 + $0) } }
-        XCTAssertNil(Self.evaluate(rows))
-    }
-
-    func testFourUsesAreNotEnough() {
-        let rows = Self.use(Self.netease, daysAgo: 2, hour: 9) + Self.use(Self.netease, daysAgo: 1, hour: 9)
-            + Self.use(Self.netease, daysAgo: 1, hour: 18) + Self.use(Self.netease, daysAgo: 0, hour: 9)
-        XCTAssertNil(Self.evaluate(rows))
-    }
-
-    func testFiveUsesOnTwoDaysAreNotEnough() {
-        let rows = [9, 12, 15].flatMap { Self.use(Self.netease, daysAgo: 1, hour: $0) }
-            + [9, 12].flatMap { Self.use(Self.netease, daysAgo: 0, hour: $0) }
-        XCTAssertNil(Self.evaluate(rows))
-    }
-
-    func testUsesOlderThanTwoWeeksDoNotCount() {
-        let rows = (15..<20).flatMap { Self.use(Self.netease, daysAgo: $0, hour: 9) + Self.use(Self.netease, daysAgo: $0, hour: 18) }
-        XCTAssertNil(Self.evaluate(rows))
-    }
-
-    func testNoUseInTheLastWeekEndsTheHabit() {
-        let rows = (8..<12).flatMap { Self.use(Self.netease, daysAgo: $0, hour: 9) + Self.use(Self.netease, daysAgo: $0, hour: 18) }
-        XCTAssertNil(Self.evaluate(rows))
-    }
-
-    func testALeadOfSeventyPercentMakesTheHabit() throws {
-        // NetEase twice a day for four days, Apple Music once a day on three: about 72%.
-        let rows = (0..<4).flatMap { Self.use(Self.netease, daysAgo: $0, hour: 9) + Self.use(Self.netease, daysAgo: $0, hour: 18) }
-            + (0..<3).flatMap { Self.use(Self.appleMusic, daysAgo: $0, hour: 13) }
-        let habit = try XCTUnwrap(Self.evaluate(rows))
-        XCTAssert(habit.bundleID == Self.netease)
-        XCTAssert(habit.weightedShare > 0.7 && habit.weightedShare < 0.75)
-    }
-
-    func testALeadUnderSeventyPercentMakesNoHabit() {
-        // Twice a day for three days against once a day on the same days: about 67%.
-        let rows = (0..<3).flatMap { Self.use(Self.netease, daysAgo: $0, hour: 9) + Self.use(Self.netease, daysAgo: $0, hour: 18) }
-            + (0..<3).flatMap { Self.use(Self.appleMusic, daysAgo: $0, hour: 13) }
-        XCTAssertNil(Self.evaluate(rows))
-    }
-
-    func testPokisOwnLaunchesAreNotEvidence() {
-        // Two uses by the owner, then Poki opened NetEase twenty times: still no habit.
-        let owner = Self.use(Self.netease, daysAgo: 3, hour: 9) + Self.use(Self.netease, daysAgo: 2, hour: 9)
-        var agent: [ScreenHabitRawObservation] = []
+    func testPokisOwnLaunchesAreNotTheOwnersUses() {
+        var rows: [ScreenHabitRawObservation] = []
         var spans: [AgentAppSpan] = []
         for i in 0..<20 {
-            let rows = Self.use(Self.netease, daysAgo: i % 3, hour: 6 + i / 3 * 2)
-            agent += rows
-            spans.append(AgentAppSpan(bundleID: Self.netease, startAt: rows[0].at.addingTimeInterval(-5), endAt: rows[rows.count - 1].at.addingTimeInterval(90)))
+            let use = Self.use(Self.netease, daysAgo: i % 3, hour: 6 + i / 3 * 2)
+            rows += use
+            spans.append(AgentAppSpan(bundleID: Self.netease, startAt: use[0].at.addingTimeInterval(-5), endAt: use[use.count - 1].at.addingTimeInterval(90)))
         }
-        XCTAssertNil(Self.evaluate(owner + agent, spans: spans))
-        // The same rows without the spans would have made one.
-        XCTAssert(Self.evaluate(owner + agent)?.bundleID == Self.netease)
+        XCTAssertTrue(Self.usages(rows, spans: spans).isEmpty)
+        XCTAssertEqual(Self.usages(rows).first?.uses.count, 20, "the same reads without the spans")
     }
 
-    func testUsesBeforeTheOwnerSaidStopDoNotCount() {
-        let rows = Self.use(Self.netease, daysAgo: 2, hour: 9) + Self.use(Self.netease, daysAgo: 2, hour: 18)
-            + Self.use(Self.netease, daysAgo: 1, hour: 9) + Self.use(Self.netease, daysAgo: 1, hour: 18) + Self.use(Self.netease, daysAgo: 0, hour: 9)
-        XCTAssertNil(Self.evaluate(rows, watermark: Self.now.addingTimeInterval(-60)))
-        // Uses after it count again from zero.
-        let watermark = Self.now.addingTimeInterval(-2.5 * 86_400)
-        XCTAssert(Self.evaluate(rows, watermark: watermark)?.activeSessionCount == 5)
+    func testUsesBeforeTheOwnerSaidForgetAreLeftOut() {
+        let rows = Self.use(Self.netease, daysAgo: 2, hour: 9) + Self.use(Self.netease, daysAgo: 0, hour: 9)
+        XCTAssertEqual(Self.usages(rows, watermark: Self.now.addingTimeInterval(-86_400)).first?.uses.count, 1)
     }
 
-    func testAnExcludedMusicAppStopsTheHabit() {
-        // Apple Music is left out of Screen History, so NetEase's 100% says nothing.
-        let rows = Self.use(Self.netease, daysAgo: 2, hour: 9) + Self.use(Self.netease, daysAgo: 2, hour: 18)
-            + Self.use(Self.netease, daysAgo: 1, hour: 9) + Self.use(Self.netease, daysAgo: 1, hour: 18) + Self.use(Self.netease, daysAgo: 0, hour: 9)
-        XCTAssertNil(Self.evaluate(rows, keeps: { $0 != Self.appleMusic }))
+    func testAnAppLeftOutOfScreenHistoryIsLeftOut() {
+        let rows = Self.use(Self.netease, daysAgo: 1, hour: 9) + Self.use(Self.appleMusic, daysAgo: 1, hour: 13)
+        XCTAssertEqual(Self.usages(rows, keeps: { $0 != Self.appleMusic }).map(\.bundleID), [Self.netease])
+    }
+
+    func testOnlyAnAppFromTheSummaryIsTakenFromTheModel() throws {
+        let usages = Self.usages(Self.use(Self.netease, daysAgo: 1, hour: 9))
+        let taken = try XCTUnwrap(MusicHabitJudgment.parse(#"{"habit": true, "bundle_id": "com.netease.cloudmusic", "evidence": "用了一次"}"#, offered: usages, now: Self.now))
+        XCTAssertEqual(taken?.bundleID, Self.netease)
+        XCTAssertEqual(taken?.evidence, "用了一次")
+        XCTAssertNil(MusicHabitJudgment.parse(#"{"habit": true, "bundle_id": "com.spotify.client"}"#, offered: usages), "not in the summary")
+        XCTAssertEqual(MusicHabitJudgment.parse(#"{"habit": false}"#, offered: usages), .some(nil))
+        XCTAssertNil(MusicHabitJudgment.parse("I think so", offered: usages))
     }
 }

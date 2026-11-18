@@ -1,16 +1,20 @@
 import Foundation
 import PokiCore
 
-/// Habits Poki learns from Screen History: today only the music app the owner uses most.
+/// Habits Poki learns from Screen History: today only the owner's usual music app.
 ///
-/// Nothing is stored. The habit is worked out on this iPhone each time it is needed, from which app
-/// was in front and when (`MusicHabitEvaluator`), so deleting history deletes its evidence with it
-/// and no copy outlives the switches. It is not a note: it stays out of Memory's export, the
-/// computer's backup and what connected agents read. The model sees it only for a request about
-/// music, as one line in that task's instructions.
+/// No count decides it. Poki sums up the owner's own use of music apps from which app was in front
+/// and when (`MusicUsageSummary`, no screen text), and the chat's model reads that with a description
+/// of what a habit is and decides (`MusicHabitJudgment`). What it decides is kept here, with the
+/// model's evidence, and the Memory page shows it as inferred. The model is asked again only when the
+/// summary changes. The owner's own words come first: a music app named in the request, or a saved
+/// note saying which app to use, leaves the learned app out.
 @MainActor
 enum ScreenHabits {
     private static let forgottenKey = "history.habitsForgottenAt"
+    private static let learnedKey = "history.learnedMusicHabit"
+    /// The summary the model last judged, so an unchanged one is not asked about again.
+    private static let judgedKey = "history.habitJudged"
 
     /// Both switches are on: Screen History, and Learn Habits from Screen History.
     static var isOn: Bool {
@@ -18,25 +22,67 @@ enum ScreenHabits {
         return capture.enabled && capture.learnHabits
     }
 
-    /// Reads kept before this never count again (turning a switch off, or Forget on the Memory page).
+    /// Reads kept before this never count again (turning a switch off, deleting history, or Forget).
     static var forgottenAt: Date? {
         UserDefaults.standard.object(forKey: forgottenKey) as? Date
     }
 
-    /// The owner's usual music app, or nil while learning is off or the evidence falls short.
-    static func musicApp(now: Date = Date()) -> InferredMusicAppHabit? {
-        guard isOn else { return nil }
-        let capture = HistoryCapture.shared
-        let since = now.addingTimeInterval(-MusicHabitEvaluator.windowSeconds - 3600)
-        let inputs = HistoryStore.shared.habitInputs(since: since)
-        return MusicHabitEvaluator.evaluate(observations: inputs.observations, agentSpans: inputs.spans,
-                                            watermarkAt: forgottenAt, keepsApp: { capture.keeps($0) }, now: now)
+    /// The owner's usual music app as the model decided it, or nil while learning is off or nothing is learned.
+    static func musicApp() -> LearnedMusicHabit? {
+        guard isOn, let data = UserDefaults.standard.data(forKey: learnedKey),
+              let habit = try? JSONDecoder().decode(LearnedMusicHabit.self, from: data) else { return nil }
+        if let forgottenAt, habit.learnedAt <= forgottenAt { return nil }
+        return habit
+    }
+
+    /// Keeps what the model decided: a habit, or none.
+    static func learn(_ habit: LearnedMusicHabit?) {
+        if let habit, let data = try? JSONEncoder().encode(habit) {
+            UserDefaults.standard.set(data, forKey: learnedKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: learnedKey)
+        }
     }
 
     /// Forgets what was learned. Uses kept so far are never counted again, after a restart too.
     static func forget(at now: Date = Date()) {
         let at = max(now, forgottenAt ?? now)
         UserDefaults.standard.set(at, forKey: forgottenKey)
+        UserDefaults.standard.removeObject(forKey: learnedKey)
+        UserDefaults.standard.removeObject(forKey: judgedKey)
+    }
+
+    /// The owner's uses of each music app, from Screen History.
+    static func usages(now: Date = Date()) -> [MusicAppUsage] {
+        let capture = HistoryCapture.shared
+        let inputs = HistoryStore.shared.habitInputs(since: now.addingTimeInterval(-MusicUsageSummary.lookBack))
+        return MusicUsageSummary.usages(observations: inputs.observations, agentSpans: inputs.spans,
+                                        watermarkAt: forgottenAt, keepsApp: { capture.keeps($0) }, now: now)
+    }
+
+    /// Asks the chat's model whether the owner has a usual music app, when learning is on and the
+    /// summary changed since it was last asked. What it says replaces what was learned before.
+    static func judge(provider: ModelProvider = ModelKeys.selectedProvider, model: String = ModelKeys.selectedModel) async {
+        guard isOn, let piModel = provider.piModel(model) else { return }
+        let usages = usages()
+        guard !usages.isEmpty else { return }
+        let summary = MusicUsageSummary.text(usages, name: { KnownApps.find($0)?.names.first ?? $0 })
+        // The summary names days and counts, not exact times: a new use changes it, a re-read does not.
+        guard UserDefaults.standard.string(forKey: judgedKey) != summary else { return }
+        let forgottenBefore = forgottenAt
+        let loop = PiLoop(provider: provider, model: piModel, tools: []) { _ in .init(text: "No tools.", jpeg: nil, isError: true) }
+        let reply = Reply()
+        let outcome = await loop.run(summary, instructions: MusicHabitJudgment.instructions(language: AppLocalization.language), maxTurns: 1) { text in
+            if reply.text == nil { reply.text = text }
+        }
+        guard outcome == .done, let text = reply.text, let decided = MusicHabitJudgment.parse(text, offered: usages) else {
+            AppLog.shared.add("history", "habit judgment unreadable")
+            return
+        }
+        // Switched off, or forgotten, while the model was answering: what it said is not kept.
+        guard isOn, forgottenAt == forgottenBefore else { return }
+        learn(decided)
+        UserDefaults.standard.set(summary, forKey: judgedKey)
     }
 
     // MARK: Agents' own launches
@@ -67,7 +113,8 @@ enum ScreenHabits {
         let generic: Set<String> = ["music", "音乐", "音樂"]
         let known = MusicAppCatalog.allCanonicalIDs.flatMap { KnownApps.find($0)?.names ?? [] }
         let more = ["Apple Music", "Apple 音乐", "Apple 音樂", "网易云", "網易雲", "QQ Music", "酷狗", "Kugou", "酷我", "Kuwo",
-                    "汽水音乐", "汽水音樂", "Spotify", "YouTube Music", "Apple Music Classical"]
+                    "汽水音乐", "汽水音樂", "Spotify", "YouTube Music", "Apple Music Classical",
+                    "苹果音乐", "蘋果音樂", "咪咕音乐", "咪咕音樂", "咪咕", "Migu"]
         return Array(Set((known + more).map { $0.lowercased() }).subtracting(generic))
     }()
 
@@ -80,22 +127,44 @@ enum ScreenHabits {
         return musicAppNames.contains { lower.contains($0) }
     }
 
+    /// Whether a saved note says which app plays the owner's music: it names a music app, or it is
+    /// about music and says which app to use ("以后都用某某放歌", "always use X for songs"), even an
+    /// app Poki has no name for.
+    static func choosesMusicApp(_ note: String) -> Bool {
+        let lower = note.lowercased()
+        return namesMusicApp(note) || (isAboutMusic(note) && ["用", "app", "use"].contains { lower.contains($0) })
+    }
+
+    /// Whether the learned app has a say in `task`: a request about music that names no app, with no
+    /// saved note saying which app to use.
+    static func applies(to task: String) -> Bool {
+        isAboutMusic(task) && !namesMusicApp(task) && !memory.notes.contains(where: { choosesMusicApp($0.text) })
+    }
+
+    /// Asks the model about the habit when `task` could use it, then gives the line its instructions carry.
+    static func prepareInstructions(for task: String) async -> String? {
+        guard isOn, applies(to: task) else { return nil }
+        await judge()
+        return instructions(for: task)
+    }
+
     /// The line a music request's instructions carry, or nil. The owner's own choice comes first: a
-    /// music app named in the request, then a saved note naming one. Either way the guess is left out,
-    /// so it cannot win over them, and a "from now on" request can be saved.
+    /// music app named in the request, then a saved note naming one. Either way the learned app is
+    /// left out, so it cannot win over them, and a "from now on" request can be saved.
     static func instructions(for task: String) -> String? {
-        guard isAboutMusic(task), !namesMusicApp(task),
-              !memory.notes.contains(where: { namesMusicApp($0.text) }),
-              let habit = musicApp() else { return nil }
+        guard applies(to: task), let habit = musicApp() else { return nil }
         let id = habit.bundleID
-        let known = KnownApps.find(id)
-        let names = known.map { $0.names.joined(separator: " / ") } ?? id
+        let names = KnownApps.find(id).map { $0.names.joined(separator: " / ") } ?? id
+        let evidence = habit.evidence.isEmpty ? "" : " (\(habit.evidence))"
         return """
-        The owner's usual music app, worked out on this iPhone from Screen History because the owner turned on Learn Habits: \(names), bundle id \(id) (\(habit.activeSessionCount) uses on \(habit.distinctDayCount) days in the last two weeks). \
+        The owner's usual music app, learned on this iPhone from Screen History because the owner turned on Learn Habits: \(names), bundle id \(id)\(evidence). \
         When the owner asks to play music, a song, a singer or a playlist and names no app, play it in this app: start with do {launch: "\(id)"}. \
-        A music app the owner names in this message comes first, and that choice is for this time only. A saved note naming the owner's music app also comes before this guess. \
+        A music app the owner names in this message comes first, and that choice is for this time only. \
         If this app is not installed, needs sign-in or cannot play, say so and ask which app to use; do not switch on your own. \
-        This is a guess from Screen History, not a saved preference: do not save it, or a routine for this task, with routines.
+        This is inferred, not something the owner said: do not save it as a note, or a routine for this task. When the owner says which music app to use from now on, save their words with routines remember.
         """
     }
 }
+
+@MainActor
+private final class Reply { var text: String? }
