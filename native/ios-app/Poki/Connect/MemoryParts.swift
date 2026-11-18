@@ -59,7 +59,8 @@ struct MemoryItemRow: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 main
-                if !isOpen { foot }
+                // Open, a skill that needs redoing still says so; the rest show it in the facts below.
+                if !isOpen || (item.kind == .skill && item.stale) { foot }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Group {
@@ -172,7 +173,7 @@ struct MemoryItemDetail: View {
             if let ms = item.lastMs {
                 rows.append(("Last", AnyView(Text("\(Int((Double(ms) / 1000).rounded())) s").font(.subheadline).foregroundStyle(Color(.label)))))
             }
-            if !item.params.isEmpty { rows.append(("Changes", value(item.params.formatted(.list(type: .and).locale(AppLocalization.locale))))) }
+            if !item.params.isEmpty { rows.append(("Changes", value(item.params.joined(separator: AppLocalization.text("List separator"))))) }
             rows.append(("Source", AnyView(Text("\(Text(item.source.label)), \(MemoryFormat.day(item.updated))").font(.subheadline).foregroundStyle(Color(.label)))))
             return rows
         }

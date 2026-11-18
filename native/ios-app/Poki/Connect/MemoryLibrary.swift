@@ -209,6 +209,8 @@ final class MemoryLibrary {
         items[i].text = clean
         items[i].app = app
         items[i].source = .edited
+        // What you wrote or changed was not heard in a conversation: no link back to one.
+        items[i].heard = nil
         items[i].locked = true
         items[i].updated = Date()
         log(.edited, .owner, items[i], previous: before == clean ? nil : before)
@@ -250,8 +252,11 @@ final class MemoryLibrary {
             reload()
             return
         }
+        // Undoing Poki's or Dream's change locks the item, so it is not made again; what you forgot comes
+        // back as it was.
+        let locks = change.actor != .owner
         var back = change.item
-        back.locked = true
+        if locks { back.locked = true }
         switch change.action {
         case .forgot:
             items.append(back)
@@ -260,7 +265,7 @@ final class MemoryLibrary {
         case .edited:
             guard let i = items.firstIndex(where: { $0.id == change.item.id }) else { return }
             if let previous = change.previous { items[i].text = previous }
-            items[i].locked = true
+            if locks { items[i].locked = true }
         }
     }
 

@@ -102,8 +102,6 @@ struct MemoryView: View {
             // Two shapes, as the design draws them: the Recent Updates capsule and the More circle.
             if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
             ToolbarItem(placement: .topBarTrailing) { more }
-            // In the middle whatever the width on the right (an inline title moves left beside it).
-            ToolbarItem(placement: .principal) { Text("Memory").font(.headline).accessibilityAddTraits(.isHeader) }
         }
         .safeAreaInset(edge: .bottom) { MemoryUndoToast() }
         .environment(library)
@@ -368,17 +366,6 @@ struct MemoryRecentView: View {
             if library.changes.isEmpty {
                 Section { MemoryEmptyCard(title: "No updates yet", message: "What is added, edited and forgotten will appear here.") }
             } else {
-                Section {
-                    Picker("Show", selection: $filter) {
-                        Text("All").tag(MemoryChange.Action?.none)
-                        Text("New").tag(MemoryChange.Action?.some(.added))
-                        Text("Edited").tag(MemoryChange.Action?.some(.edited))
-                        Text("Forgotten").tag(MemoryChange.Action?.some(.forgot))
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-                }
                 ForEach(days(shown), id: \.0) { day, changes in
                     Section {
                         ForEach(changes) { change in line(change) }
@@ -386,6 +373,20 @@ struct MemoryRecentView: View {
                         MemoryHeader(verbatim: day)
                     }
                 }
+            }
+        }
+        // The filter stays under the bar while the days scroll under it.
+        .topBar {
+            if !library.changes.isEmpty {
+                Picker("Show", selection: $filter) {
+                    Text("All").tag(MemoryChange.Action?.none)
+                    Text("New").tag(MemoryChange.Action?.some(.added))
+                    Text("Edited").tag(MemoryChange.Action?.some(.edited))
+                    Text("Forgotten").tag(MemoryChange.Action?.some(.forgot))
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
             }
         }
         .navigationTitle(AppLocalization.text("Recent Updates"))
@@ -398,12 +399,15 @@ struct MemoryRecentView: View {
     @ViewBuilder private func line(_ change: MemoryChange) -> some View {
         let lit = change.id == highlight && seen != change.id
         if change.action != .forgot || change.undone, library.item(change.item.id) != nil {
-            NavigationLink(value: SettingsRoute.memoryPage(change.item.kind == .memory && change.item.app == nil
-                                                           ? .about(open: change.item.id) : .app(change.item.app, open: change.item.id))) {
-                MemoryChangeRow(change: change, highlighted: lit)
-            }
-            .simultaneousGesture(TapGesture().onEnded { seen = change.id })
-            .listRowBackground(lit ? Tint.blueSoft : Color(.secondarySystemGroupedBackground))
+            // The whole line opens the item where it lives; no chevron, as the design draws it.
+            MemoryChangeRow(change: change, highlighted: lit)
+                .background {
+                    NavigationLink(value: SettingsRoute.memoryPage(change.item.kind == .memory && change.item.app == nil
+                                                                   ? .about(open: change.item.id) : .app(change.item.app, open: change.item.id))) { EmptyView() }
+                        .opacity(0)
+                }
+                .simultaneousGesture(TapGesture().onEnded { seen = change.id })
+                .listRowBackground(lit ? Tint.blueSoft : Color(.secondarySystemGroupedBackground))
         } else {
             MemoryChangeRow(change: change, highlighted: lit)
                 .listRowBackground(lit ? Tint.blueSoft : Color(.secondarySystemGroupedBackground))

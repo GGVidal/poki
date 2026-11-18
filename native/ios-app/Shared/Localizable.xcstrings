@@ -86,6 +86,30 @@
         }
       }
     },
+    "List separator" : {
+      "comment" : "Between the things a skill can change: 联系人、内容.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : ", "
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "、"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "、"
+          }
+        }
+      }
+    },
     "Dream" : {
       "comment" : "The name of Poki's overnight pass over memories. A name: never translated.",
       "extractionState" : "manual",
