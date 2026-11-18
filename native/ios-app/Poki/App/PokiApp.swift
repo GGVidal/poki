@@ -349,10 +349,13 @@ struct RootView: View {
             // which lights that change up.
             let change = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "change" }?.value
             openDetails(url.path() == "/recent" ? [SettingsRoute.memory, SettingsRoute.memoryPage(.recent(highlight: change))] : [SettingsRoute.memory])
-        } else if url.host() == "session", let id = url.pathComponents.dropFirst().first, SessionStore.shared.session(id) != nil {
-            // poki://session/<id>: a memory's Source, back to the conversation it was heard in.
-            detailsOpen = false
-            openRun(id)
+        } else if url.host() == "session" {
+            // poki://session/<id>: a memory's Source, back to the conversation it was heard in. A conversation
+            // that is no longer kept leaves the page where it is.
+            if let id = url.pathComponents.dropFirst().first, SessionStore.shared.session(id) != nil {
+                detailsOpen = false
+                openRun(id)
+            }
         } else if url.host() == "voice" {
             detailsOpen = false
             model.voice.open(url)

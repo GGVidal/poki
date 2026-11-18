@@ -135,6 +135,8 @@ final class MemoryLibrary {
     @ObservationIgnored private let store: RoutineStore?
     /// Routines by item id, to put a forgotten skill back exactly.
     @ObservationIgnored private var routines: [String: Routine] = [:]
+    /// Forgotten routines by item id, kept apart so a reload in between cannot lose what undo puts back.
+    @ObservationIgnored private var forgottenRoutines: [String: Routine] = [:]
 
     var isSample: Bool { store == nil }
     /// Locks, app tags and Recent Updates need fields the store does not have yet.
@@ -159,7 +161,8 @@ final class MemoryLibrary {
     var apps: [String] {
         let tagged = items.compactMap { item in item.app.map { ($0, item.updated) } }
         let latest = Dictionary(tagged, uniquingKeysWith: { max($0, $1) })
-        return latest.keys.sorted { latest[$0]! > latest[$1]! }
+        // Ties (Dream changes several apps at the same minute) go by bundle id, so the order holds between launches.
+        return latest.keys.sorted { latest[$0]! != latest[$1]! ? latest[$0]! > latest[$1]! : $0 < $1 }
     }
 
     /// Skills with no app, for the Other row.
@@ -228,7 +231,9 @@ final class MemoryLibrary {
         if let store {
             switch item.kind {
             case .memory: _ = store.forgetNote(item.id)
-            case .skill: _ = store.forget(item.text)
+            case .skill:
+                forgottenRoutines[item.id] = routines[item.id]
+                _ = store.forget(item.text)
             case .habit: break
             }
         }
@@ -246,7 +251,7 @@ final class MemoryLibrary {
             guard change.action == .forgot else { return }
             switch change.item.kind {
             case .memory: _ = store.remember(change.item.text, by: by(change.item.source))
-            case .skill: if let routine = routines[change.item.id] { store.save(routine) }
+            case .skill: if let routine = forgottenRoutines.removeValue(forKey: change.item.id) { store.save(routine) }
             case .habit: break
             }
             reload()

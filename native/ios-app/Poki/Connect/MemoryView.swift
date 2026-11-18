@@ -394,20 +394,20 @@ struct MemoryRecentView: View {
         .animation(.easeInOut(duration: 0.2), value: filter)
         .environment(library)
         .onAppear { library.unread = false }
+        // Once you have gone on from here, the change you came for is no longer lit.
+        .onDisappear { seen = highlight }
     }
 
     @ViewBuilder private func line(_ change: MemoryChange) -> some View {
         let lit = change.id == highlight && seen != change.id
         if change.action != .forgot || change.undone, library.item(change.item.id) != nil {
             // The whole line opens the item where it lives; no chevron, as the design draws it.
-            MemoryChangeRow(change: change, highlighted: lit)
-                .background {
-                    NavigationLink(value: SettingsRoute.memoryPage(change.item.kind == .memory && change.item.app == nil
-                                                                   ? .about(open: change.item.id) : .app(change.item.app, open: change.item.id))) { EmptyView() }
-                        .opacity(0)
-                }
-                .simultaneousGesture(TapGesture().onEnded { seen = change.id })
-                .listRowBackground(lit ? Tint.blueSoft : Color(.secondarySystemGroupedBackground))
+            NavigationLink(value: SettingsRoute.memoryPage(change.item.kind == .memory && change.item.app == nil
+                                                           ? .about(open: change.item.id) : .app(change.item.app, open: change.item.id))) {
+                MemoryChangeRow(change: change, highlighted: lit)
+            }
+            .navigationLinkIndicatorVisibility(.hidden)
+            .listRowBackground(lit ? Tint.blueSoft : Color(.secondarySystemGroupedBackground))
         } else {
             MemoryChangeRow(change: change, highlighted: lit)
                 .listRowBackground(lit ? Tint.blueSoft : Color(.secondarySystemGroupedBackground))
