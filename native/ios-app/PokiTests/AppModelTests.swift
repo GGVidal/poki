@@ -1699,6 +1699,10 @@ final class FrontendSubtractionTests: XCTestCase {
         let phonePairing: [String: Any] = ["identifier": "test-host", "public_key": Data(repeating: 1, count: 32), "private_key": Data(repeating: 2, count: 32)]
         try PropertyListSerialization.data(fromPropertyList: phonePairing, format: .xml, options: 0).write(to: pairing)
 
+        // The loopback page probes 10.7.0.1 when it appears, and this Mac may answer there: every probe says no answer.
+        let forced = UserDefaults.standard.object(forKey: "pokiLoopback")
+        UserDefaults.standard.set("noanswer", forKey: "pokiLoopback")
+        defer { UserDefaults.standard.set(forced, forKey: "pokiLoopback") }
         let (model, restore) = try modelWithLoopbackChosen(launcher: FakeLauncher(), imageMounted: { true })
         defer { restore() }
         model.loopback.simulate(.noAnswer)
@@ -1716,6 +1720,10 @@ final class FrontendSubtractionTests: XCTestCase {
         XCTAssertTrue(model.setupReadyForUse, "the Settings entry after the task")
         let connection = try await renderedLabels(of: NavigationStack { ConnectionView() }, model: model)
         XCTAssertFalse(connection.contains { $0.contains("Turn On") || $0.contains("Continue Setup") }, "Connection after the task: \(connection)")
+        model.setup.proxyApp = "localdevvpn"
+        let page = try await renderedLabels(of: NavigationStack { SetupStepPage(step: .loopback) }, model: model)
+        XCTAssertTrue(page.contains { $0.contains("Local automation ready") }, "the loopback page's status after the task: \(page)")
+        XCTAssertFalse(page.contains { $0.contains("No Answer") || $0.contains("with the loopback on") }, "the loopback page after the task: \(page)")
         let chat = try await renderedLabels(
             of: NavigationStack { ChatView(openDetails: { _ in }, openVoice: {}, openSetup: {}, openModel: {}, openThreads: {}) },
             model: model
@@ -1732,6 +1740,8 @@ final class FrontendSubtractionTests: XCTestCase {
         try PropertyListSerialization.data(fromPropertyList: lockdown, format: .xml, options: 0).write(to: pairing)
         XCTAssertEqual(SetupIssueHint.first(model: model)?.target, .step(.loopback), "a computer's pairing file")
         XCTAssertTrue(Issue.current(model).contains { $0.id == "loopback" }, "Settings issues, a computer's pairing file")
+        let refused = try await renderedLabels(of: NavigationStack { SetupStepPage(step: .loopback) }, model: model)
+        XCTAssertTrue(refused.contains { $0.contains("with the loopback on") }, "the loopback page, a computer's pairing file: \(refused)")
     }
 
     private func waitOnMain(_ condition: @escaping () -> Bool) async {
