@@ -126,7 +126,7 @@ final class VoiceLink: NSObject, VoiceConnection, RTCPeerConnectionDelegate, RTC
         }
         // The largest event the data channel takes (64 KiB when the answer names none): a screenshot must fit.
         let size = answer.range(of: #"a=max-message-size:\d+"#, options: .regularExpression).map { answer[$0].dropFirst(19) } ?? "none named"
-        AppLog.shared.add("voice", "data channel max-message-size: \(size)")
+        await MainActor.run { AppLog.shared.add("voice", "data channel max-message-size: \(size)") }
         try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
             peer.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: answer)) { error in if let error { done.resume(throwing: error) } else { done.resume() } }
         }
