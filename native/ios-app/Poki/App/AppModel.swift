@@ -172,7 +172,7 @@ final class AppModel {
     /// Automation started in this boot: iOS will not ask again until the next restart.
     private func automationStarted() {
         InProcessWDA.gate.withLock { $0.startedThisBoot = true }
-        AutomationConsent(boot: BootClock.current, at: Date()).save()
+        AutomationAllowance(boot: BootClock.current, at: Date()).save()
         guard UserDefaults.standard.double(forKey: Self.automationBootKey) != BootClock.current else { return }
         UserDefaults.standard.set(BootClock.current, forKey: Self.automationBootKey)
     }
@@ -339,9 +339,9 @@ final class AppModel {
         self.activity = ActivityController()
         self.automation = automation
         self.idleSessionPolicy = .forSystem(systemVersion)
-        // iOS 27 lets a relaunched Poki open automation without the passcode while the boot's consent
-        // lasts, so a phone step from the background (Talk Here, an agent) does not wait for Poki in front.
-        if IdleSessionPolicy.forSystem(systemVersion) == .close, AutomationConsent.saved?.covers(boot: BootClock.current, at: Date()) == true {
+        // iOS 27 lets a relaunched Poki open automation without the passcode while the boot's allowance
+        // lasts, so a phone step from the background (Poki Anytime, an agent) does not wait for Poki in front.
+        if IdleSessionPolicy.forSystem(systemVersion) == .close, AutomationAllowance.saved?.covers(boot: BootClock.current, at: Date()) == true {
             InProcessWDA.gate.withLock { $0.startedThisBoot = true }
         }
         self.requiresDiskImageCheck = requiresDiskImageCheck ?? !Self.onSimulator
@@ -1261,29 +1261,34 @@ final class AppModel {
 
     /// The owner's Stop from outside Poki: Stop or End on the Live Activity, or Poki Anytime run again.
     /// The talk, the chat's task, a waiting approval and the agent's steps all stop at once, and the
-    /// Live Activity ends with them. End with nothing under way only ends the talk: the automation
+    /// Live Activity shows Poki standing by. End with nothing under way only ends the talk: the automation
     /// then closes as after a task (`closeAfterTalk`), so on iOS 18–26 the next talk needs no passcode.
+    /// While Poki is on, its Live Activity stays (as when a talk ends, `TalkActivity`): an outside agent
+    /// can start again from the background, where iOS starts no Live Activity, and its steps and Stop
+    /// must show there.
     func stopFromOutside(_ reason: String) {
-        if isApprovalTapEcho(reason) {
+        let chat = AskPoki.app === self ? AskPoki.chat : nil
+        // A Split View task stops at once, even right after an approval (as in `pauseRunner`).
+        if chat?.isRunningInSplitView != true, isApprovalTapEcho(reason) {
             log.add("runner", "a Stop from the Live Activity right after an approval was ignored")
             return
         }
-        let chat = AskPoki.app === self ? AskPoki.chat : nil
         let busy = chat?.running == true || stepUnderWay != nil || !approvals.isEmpty
         if voice.isOn { voice.stop() }
         guard busy || reason == Self.liveActivityStop else {
             log.add("session", "\(reason): the talk ends")
             return
         }
-        log.add("session", "\(reason): the talk, the task and the Live Activity stop")
+        log.add("session", "\(reason): the talk and the task stop")
         if let chat, chat.running { chat.stop() }
         for approval in approvals { resolve(approval, approved: false) }
-        pauseRunner(reason: reason, refusingApprovals: true)
-        activity.end()
+        pauseRunner(reason: reason, fromOutside: true)
+        if !sessionOn { activity.end() }
     }
 
-    /// `refusingApprovals`: the caller has refused the approvals that wait, which end a moment later.
-    func pauseRunner(reason: String = "Stopped", byOwner: Bool = true, refusingApprovals: Bool = false) {
+    /// `fromOutside`: `stopFromOutside` has stopped the chat's task, checked the Stop is no echo of an
+    /// approval's tap, and refused the approvals that wait, which end a moment later.
+    func pauseRunner(reason: String = "Stopped", byOwner: Bool = true, fromOutside: Bool = false) {
         let splitChat = byOwner && AskPoki.app === self && AskPoki.chat?.isRunningInSplitView == true ? AskPoki.chat : nil
         splitChat?.stop()
         guard sessionOn, !runnerPaused || byOwner else { return }
@@ -1291,11 +1296,11 @@ final class AppModel {
         // that lands within a few seconds of an answered approval is that same tap (build 144: an
         // Allow, then "Stopped from the Live Activity" 0.7 s after the approval ended). A running
         // Split View task still needs an immediate Stop, including during and just after approval.
-        if splitChat == nil, isApprovalTapEcho(reason) {
+        if splitChat == nil, !fromOutside, isApprovalTapEcho(reason) {
             log.add("runner", "a Stop from the Live Activity right after an approval was ignored")
             return
         }
-        guard approvals.isEmpty || splitChat != nil || refusingApprovals else { return }
+        guard approvals.isEmpty || splitChat != nil || fromOutside else { return }
         ownerPaused = byOwner
         if runnerPaused {
             if automationPath == .inProcess { closeInProcess("stopped by the owner") }
@@ -1455,7 +1460,10 @@ final class AppModel {
     }
 
     private func closeAfterTalk() {
-        guard talkStepsToClose, !voice.isOn, stepUnderWay == nil, outsideAgentsAtWork.isEmpty else { return }
+        guard talkStepsToClose else { return }
+        // A new talk or task owns the session now; its own end closes it.
+        if voice.isOn || chatTaskActive { talkStepsToClose = false; return }
+        guard stepUnderWay == nil, outsideAgentsAtWork.isEmpty else { return }
         talkStepsToClose = false
         closeAfterTask("the talk ended")
     }
@@ -2544,21 +2552,21 @@ enum BootClock {
 
 /// When automation last started: the boot it was in, and when. On iOS 27 a relaunched Poki opens
 /// automation without the passcode in that boot (on the phone, 2 h after the passcode, the first open
-/// answered in 2.6 s). Poki trusts that for 8 hours after the last start, a margin of its own: no
-/// Apple document gives a limit, and past it the first open waits for Poki in front again.
-struct AutomationConsent: Equatable {
+/// answered in 2.6 s). iOS asks again 8 hours later (the passcode notice, `ActivityFace`), so past 8
+/// hours after the last start the first open waits for Poki in front again.
+struct AutomationAllowance: Equatable {
     let boot: Double
     let at: Date
     static let lasts: TimeInterval = 8 * 3600
-    static let key = "automationConsent"
+    static let key = "automationAllowance"
 
     func covers(boot current: Double, at now: Date) -> Bool {
         boot == current && now >= at && now.timeIntervalSince(at) < Self.lasts
     }
 
-    static var saved: AutomationConsent? {
+    static var saved: AutomationAllowance? {
         guard let pair = UserDefaults.standard.array(forKey: key) as? [Double], pair.count == 2 else { return nil }
-        return AutomationConsent(boot: pair[0], at: Date(timeIntervalSince1970: pair[1]))
+        return AutomationAllowance(boot: pair[0], at: Date(timeIntervalSince1970: pair[1]))
     }
 
     func save() { UserDefaults.standard.set([boot, at.timeIntervalSince1970], forKey: Self.key) }

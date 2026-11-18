@@ -548,7 +548,7 @@ final class PasscodeTests: XCTestCase {
 @MainActor
 final class InProcessPasscodeTests: XCTestCase {
     private var saved: (relay: String?, relayEnabled: Any?, setup: SetupState)!
-    private var savedConsent: Any?
+    private var savedAllowance: Any?
     private var model: AppModel!
     private var session: FakeAutomation!
     private var launcher: FakeLauncher!
@@ -558,8 +558,8 @@ final class InProcessPasscodeTests: XCTestCase {
         // The open gate is process-wide: a suite that sent Poki to the background before this one
         // must not leave each open here refused as "open Poki first".
         InProcessWDA.gate.withLock { $0 = InProcessWDA.OpenGate() }
-        savedConsent = UserDefaults.standard.object(forKey: AutomationConsent.key)
-        UserDefaults.standard.removeObject(forKey: AutomationConsent.key)
+        savedAllowance = UserDefaults.standard.object(forKey: AutomationAllowance.key)
+        UserDefaults.standard.removeObject(forKey: AutomationAllowance.key)
         saved = (UserDefaults.standard.string(forKey: "relayAddress"), UserDefaults.standard.object(forKey: "relayEnabled"), SetupState.load())
         session = FakeAutomation()
         launcher = FakeLauncher()
@@ -581,7 +581,7 @@ final class InProcessPasscodeTests: XCTestCase {
     override func tearDown() async throws {
         session?.answer(nil)
         session?.releasePause()
-        UserDefaults.standard.set(savedConsent, forKey: AutomationConsent.key)
+        UserDefaults.standard.set(savedAllowance, forKey: AutomationAllowance.key)
         guard let saved, let model else { return }
         model.stopSession()
         UserDefaults.standard.set(saved.relay, forKey: "relayAddress")
@@ -1071,27 +1071,27 @@ final class InProcessPasscodeTests: XCTestCase {
     }
 
     /// Talk Here starts a relaunched Poki in the background. On iOS 27 its first open asks for no
-    /// passcode while the boot's consent lasts, so it opens there instead of telling the owner to open
-    /// Poki; a consent from another boot, or older than 8 hours, still waits for Poki in front.
-    func testARelaunchedPokiOpensAutomationInTheBackgroundWhileTheConsentLasts() async {
+    /// passcode while the boot's allowance lasts, so it opens there instead of telling the owner to open
+    /// Poki; an allowance from another boot, or older than 8 hours, still waits for Poki in front.
+    func testARelaunchedPokiOpensAutomationInTheBackgroundWhileTheAllowanceLasts() async {
         let now = Date()
-        let cases: [(String, AutomationConsent, opens: Bool)] = [
-            ("2 hours ago in this boot", AutomationConsent(boot: BootClock.current, at: now.addingTimeInterval(-2 * 3600)), true),
-            ("9 hours ago in this boot", AutomationConsent(boot: BootClock.current, at: now.addingTimeInterval(-9 * 3600)), false),
-            ("in an earlier boot", AutomationConsent(boot: BootClock.current - 600, at: now), false),
+        let cases: [(String, AutomationAllowance, opens: Bool)] = [
+            ("2 hours ago in this boot", AutomationAllowance(boot: BootClock.current, at: now.addingTimeInterval(-2 * 3600)), true),
+            ("9 hours ago in this boot", AutomationAllowance(boot: BootClock.current, at: now.addingTimeInterval(-9 * 3600)), false),
+            ("in an earlier boot", AutomationAllowance(boot: BootClock.current - 600, at: now), false),
         ]
-        for (when, consent, opens) in cases {
+        for (when, allowance, opens) in cases {
             InProcessWDA.gate.withLock { $0 = InProcessWDA.OpenGate() }
-            consent.save()
+            allowance.save()
             session = FakeAutomation()
             useSystem(27)
             model.wentToBackground()
             await prepareWithoutPhoneTask()
             model.wakeRunner()
             if opens {
-                await waitFor("consent \(when): the open runs with Poki in the background") { self.session.isOpen && self.model.hasOpenInProcessSession }
+                await waitFor("allowance \(when): the open runs with Poki in the background") { self.session.isOpen && self.model.hasOpenInProcessSession }
             } else {
-                await waitFor("consent \(when): the open waits for Poki in front") { self.model.host.currentRunner.describe.contains("open_poki_first") }
+                await waitFor("allowance \(when): the open waits for Poki in front") { self.model.host.currentRunner.describe.contains("open_poki_first") }
                 XCTAssertFalse(session.isOpen, when)
             }
         }
@@ -1144,8 +1144,9 @@ final class InProcessPasscodeTests: XCTestCase {
         }
     }
 
-    /// Stop or End on the Live Activity, or Poki Anytime run again during a talk: the talk stops with
-    /// the steps, not only the steps, and the automation session closes.
+    /// Stop on the Live Activity during a talk: the talk stops with the steps, not only the steps, and
+    /// the automation session closes. Poki stays on, and the next agent's look opens automation again
+    /// from the background.
     func testAStopFromOutsidePokiEndsTheTalkAndTheSteps() async {
         UserDefaults.standard.set("1", forKey: "pokiTalkRehearsal")
         defer { UserDefaults.standard.removeObject(forKey: "pokiTalkRehearsal") }
@@ -1157,6 +1158,10 @@ final class InProcessPasscodeTests: XCTestCase {
         model.stopFromOutside(AppModel.liveActivityStop)
         XCTAssertFalse(model.voice.isOn, "the talk stops at once")
         await waitFor("the steps stop and automation closes") { self.model.runnerPaused && !self.session.isOpen }
+        XCTAssertTrue(model.sessionOn, "Poki stays on")
+
+        await lookForTheNextTask()
+        XCTAssertTrue(session.isOpen, "the next agent's look opens automation from the background")
     }
 
     func testRemotePhoneReadWaitsForSessionWithoutInputPreparation() async throws {
