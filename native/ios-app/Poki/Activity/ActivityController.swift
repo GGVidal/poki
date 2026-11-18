@@ -271,6 +271,8 @@ final class ActivityController {
             if state.app == old.app { state.app = nil }
             tally = Tally()
             if planFinished { state.plan = nil; planFinished = false }
+            // What the last run came to belongs to it.
+            state.result = nil; state.task = nil
             AppLog.shared.add("activity", "run started from \(old.phase.rawValue)\(activity == nil ? " with no Live Activity" : "")")
             if state.since == nil { state.since = now }
             // The runner's start and the agent's first step are one start.
@@ -382,16 +384,24 @@ final class ActivityController {
 
     /// The chat's task ended: the run is finished now, not after the quiet wait. `alert` false when
     /// the chat tells the owner itself (its reply notification). True when the finish pop-up went to a
-    /// Dynamic Island, so no banner is needed on top of it.
+    /// Dynamic Island, so no banner is needed on top of it. `result` is finish_task's summary of a task
+    /// that succeeded, `task` the task as the owner asked it: the finished run says what it came to.
     @discardableResult
-    func finishNow(alert: Bool) -> Bool {
+    func finishNow(alert: Bool, result: String? = nil, task: String? = nil) -> Bool {
         finishTimer?.cancel()
         guard state.phase == .working, state.approval == nil, state.handoff == nil else {
             if Self.runPhases.contains(state.phase) { AppLog.shared.add("activity", "the run was not marked finished: the activity shows \(state.phase.rawValue)") }
             return false
         }
         inStep = false
+        state.result = result.map(Self.oneLine)
+        state.task = task.map(Self.oneLine)
         return finish(alert: alert)
+    }
+
+    /// A line for the Live Activity: the first line, cut short. ActivityKit caps the whole state at 4 KB.
+    private static func oneLine(_ text: String) -> String {
+        String((text.split(whereSeparator: \.isNewline).first ?? "").prefix(80))
     }
 
     private func finishRun(ifCount count: Int) {
@@ -410,7 +420,7 @@ final class ActivityController {
         state.previous = nil
         state.headline = "Finished"
         setEvent(.finished, "Run finished")
-        let summary = state.runSummary ?? state.doneTitle
+        let summary = state.doneLine ?? state.runTime ?? ""
         let popUp = alert ? ordinary(StatusWord.done.text, summary) : nil
         send(alert: popUp, critical: true)
         armFold()
@@ -440,6 +450,7 @@ final class ActivityController {
                 state.headline = "Waiting for agent"
                 state.previous = nil; state.stepCount = 0; state.failedCount = 0; state.failedSteps = nil
                 state.since = nil; state.endedAt = nil; state.event = nil; state.plan = nil
+                state.result = nil; state.task = nil
             }
         }
     }

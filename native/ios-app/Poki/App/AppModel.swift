@@ -1871,7 +1871,7 @@ final class AppModel {
     }
 
     /// End the task, return to Poki and finish its Live Activity.
-    func chatTaskEnded(reply: String?, session: String, acted: Bool, inSplitView: Bool = false) {
+    func chatTaskEnded(reply: String?, session: String, acted: Bool, inSplitView: Bool = false, result: String? = nil, task: String? = nil) {
         lastShot = nil
         guard acted else {
             if !inSplitView { finishTask() }
@@ -1886,7 +1886,7 @@ final class AppModel {
             return
         }
         // On a Dynamic Island the activity's own pop-up says the task is over: no banner on top of it.
-        let islandTold = activity.finishNow(alert: true)
+        let islandTold = activity.finishNow(alert: true, result: result, task: task)
         if !inSplitView {
             finishTask { [weak self] in
                 guard !islandTold else { return }

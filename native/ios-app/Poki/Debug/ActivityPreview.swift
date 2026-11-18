@@ -206,6 +206,11 @@ struct ActivityPreview: View {
         doneLong.app = "Messages"
         let chinese = AppLocalization.locale.identifier.hasPrefix("zh")
         doneLong.plan = .init(steps: steps, current: 2, title: chinese ? "给妈妈发消息，说今晚加班会晚点回家吃饭" : "Text Mom that I’m working late and will be home after dinner")
+        // A chat task finished: finish_task's summary, or the task as asked when there is none.
+        var doneResult = doneJust
+        doneResult.result = chinese ? "已在微信给妈妈发送“今晚加班，晚点回家”" : "Sent Mom “Working late, home after dinner” in WeChat"
+        var doneTask = doneJust
+        doneTask.task = chinese ? "看看明天上海会不会下雨" : "Check if it rains in Shanghai tomorrow"
         var yourTurnJust = yourTurn
         yourTurnJust.event = .init(kind: .handoff, text: "Your turn")
         var problemJust = problem
@@ -231,7 +236,7 @@ struct ActivityPreview: View {
                    ("plan", plan), ("plannext", planNext), ("plandone", planDone),
                    ("ready", ready), ("waking", waking), ("idle", idle), ("problem", problem), ("pairing", pairWait), ("code", pairCode), ("setup", setup), ("voice", voice),
                    ("voiceworking", voiceWorking), ("voiceapproval", voiceApproval),
-                   ("donejust", doneJust), ("donelong", doneLong), ("yourturnjust", yourTurnJust), ("problemjust", problemJust),
+                   ("donejust", doneJust), ("donelong", doneLong), ("doneresult", doneResult), ("donetask", doneTask), ("yourturnjust", yourTurnJust), ("problemjust", problemJust),
                    ("codejust", codeJust), ("pairedjust", pairedJust)]
         // `-pokiActivityCaller "Claude Code"`: every sample as an outside agent's, to see where its badge goes.
         guard let caller = UserDefaults.standard.string(forKey: "pokiActivityCaller") else { return all }
