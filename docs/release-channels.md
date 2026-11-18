@@ -62,8 +62,9 @@ Beta runs the file that internal testers tried and the Gym scored.
    opens nothing. Otherwise the Poki Release Bot opens a PR that adds the promotion to
    `.github/channels.json` and moves `native/ios-app/VERSION` to the next patch version. The PR's
    `promotion gate` check (`promotion-gate.yml`) runs the Gym on that commit and passes when neither
-   scorecard has more failures than the last beta's. Test the build on a real iPhone before merging.
-   Merging runs `publish-promotion.yml`, which publishes nothing until the approval in `beta`.
+   scorecard has more failures than the last beta's.
+   Merging runs `publish-promotion.yml`, which publishes nothing until the approval in `beta`. The
+   repository owner tests the build on a real iPhone before approving.
    Older Poki and Poki Setup install whatever the Alpha releases carry, on every channel, so those
    wait for the same approval. Once approved, the one job puts the same build on the Alpha
    compatibility releases (`app-<VERSION>-alpha.<N>`, `app-alpha-latest` and `ios-alpha-latest`),
