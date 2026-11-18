@@ -104,8 +104,8 @@ _Avoid_: choice card, nudge, popup
 ## Memory
 
 **Memory library**:
-Everything Poki has learned about its owner on the iPhone, in three kinds: memories, skills and habits. Every agent operating the phone shares this library.
-_Related_: Memory, Skill, Habit, Memory page
+Everything Poki keeps about its owner on the iPhone, in four kinds: memories, skills, habits and to-dos. Every agent operating the phone shares this library.
+_Related_: Memory, Skill, Habit, To-do, Memory page
 _Avoid_: memory store, brain, knowledge base
 
 **Memory**:
@@ -115,7 +115,7 @@ _Avoid_: note, fact, preference entry
 
 **Global memory**:
 A memory without an app tag that Poki applies across all tasks. Global memories appear under About You on the Memory page.
-_Related_: App memory, Rule
+_Related_: App memory, Rule, Your people
 _Avoid_: always-on memory, core memory, permanent memory
 
 **App memory**:
@@ -149,13 +149,13 @@ _Related_: Skill, Suggestion card, Reason, Behavior log
 _Avoid_: routine, pattern, schedule
 
 **To-do**:
-Something the owner has agreed to do, phrased as one sentence from the owner's side with a due time, which Poki reminds the owner about when it is due.
-_Related_: Your people, Task
+Something the owner has agreed to do, phrased as one sentence from the owner's side with a due time and the app it came from, which Poki reminds the owner about when it is due. To-dos are their own kind in the Memory library.
+_Related_: Memory library, Your people, Task
 _Avoid_: task, reminder, commitment
 
 **Your people**:
-The people the owner refers to by name or relationship, such as "Mom", each linked to a contact with an address, a birthday, and the app the owner usually uses to reach them.
-_Related_: To-do, Global memory
+Global memories about the people the owner refers to by name or relationship, such as "Mom", each linked to a contact with an address, a birthday, and the app the owner usually uses to reach them. They appear under About You on the Memory page.
+_Related_: Global memory, To-do
 _Avoid_: contacts, relationships, social graph
 
 **Source**:
