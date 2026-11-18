@@ -2,7 +2,8 @@
 # Puts one Poki build into a channel's rolling prerelease (app-prealpha-latest or app-alpha-latest)
 # and tags its commit app-<version>-<channel>.<build>, the record of what was built. Poki Setup reads
 # the channel from the release's tag and the version from the IPA's name (docs/release-channels.md).
-# Each channel has exactly one rolling release; nothing is copied to the old ios-<channel>-latest ones.
+# Until every Poki Setup reads app-* tags, the same files also go to the old ios-<channel>-latest
+# release, which Poki Setup 0.2.2 and earlier read.
 #
 #   publish-rolling.sh <prealpha|alpha> <version> <build> <dir with Poki-external-unsigned.ipa and Poki-signing.zip> [desktop source release]
 #
@@ -17,6 +18,7 @@ case "$CHANNEL" in
   *) echo "::error::channel is prealpha or alpha"; exit 2 ;;
 esac
 ROLLING="app-$CHANNEL-latest"
+LEGACY="ios-$CHANNEL-latest"
 TAG="app-$VERSION-$CHANNEL.$BUILD"
 SHA="$(git rev-parse HEAD)"
 git config user.name >/dev/null || git config user.name "github-actions[bot]"
@@ -35,7 +37,7 @@ if [ -n "$DESKTOP_FROM" ]; then
 fi
 
 # What changed since the previous build on this channel.
-previous="$(git tag --list "app-*-$CHANNEL.*" --sort=-creatordate | grep -vx "$TAG" | head -1 || true)"
+previous="$(git tag --list "app-*-$CHANNEL.*" "ios-$CHANNEL-*" --sort=-creatordate | grep -vx "$TAG" | grep -vx "$LEGACY" | head -1 || true)"
 if [ -n "$previous" ] && git merge-base --is-ancestor "$previous" HEAD 2>/dev/null; then
   range="$previous..HEAD"; since="since $previous"; limit=60
 else
@@ -64,7 +66,7 @@ else
   git push origin "refs/tags/$TAG"
 fi
 
-# Replaces the files of the channel's rolling release (made on first use) with this build's.
+# Replaces the files of one rolling release (made on first use) with this build's.
 publish_to() {
   local rel="$1" old new count
   sed "s#/releases/download/$ROLLING/#/releases/download/$rel/#" notes.md > "notes-$rel.md"
@@ -93,3 +95,4 @@ publish_to() {
   echo "Published Poki v$VERSION ($BUILD) to $rel: https://github.com/$GITHUB_REPOSITORY/releases/tag/$rel"
 }
 publish_to "$ROLLING"
+publish_to "$LEGACY"

@@ -3,8 +3,8 @@
 # ios-prealpha-X.Y.Z-N tags still work.
 # X.Y.Z is native/ios-app/VERSION at the tagged commit and N is its commit count, so every commit has
 # one build number and later commits on a branch always get bigger ones. Builds Poki from that commit
-# and puts into the channel's one rolling prerelease (app-alpha-latest / app-prealpha-latest)
-# Poki-external-X.Y.Z-N.ipa, Poki-X.Y.Z-N.ipa,
+# and puts into the channel's rolling prereleases (app-alpha-latest / app-prealpha-latest, mirrored to
+# ios-alpha-latest / ios-prealpha-latest for installed apps and Poki Setup that read only those) Poki-external-X.Y.Z-N.ipa, Poki-X.Y.Z-N.ipa,
 # Poki-signing.zip and SHA256SUMS: the same files as an ios-v* release, so Poki Setup installs it
 # the same way. Alphas are builds picked for early testers; pre-alphas are untested snapshots. Each
 # reaches people who chose that channel (or a less stable one) in Poki Setup. See docs/release-channels.md.
@@ -94,10 +94,12 @@ jobs:
           # versioned Stable and Beta releases. The versioned tag that started this run stays as the
           # record of what was built. Poki Setup reads the version from the IPA's name and keeps its
           # own PokiSetup-* files and SHA256SUMS-desktop.txt on the release untouched.
-          # Nothing is copied to the old ios-$CHANNEL-latest releases any more.
+          # app-$CHANNEL-latest is the rolling release; ios-$CHANNEL-latest is its mirror with the same files
+          # and title, kept until installed apps and Poki Setup read app-* tags.
           ROLLING="app-$CHANNEL-latest"
+          MIRROR="ios-$CHANNEL-latest"
           # What changed since the previous cut on this channel (or the last 15 commits for the first one).
-          previous="$( { git tag --list "app-*-$CHANNEL.*" --sort=-creatordate; git tag --list "ios-$CHANNEL-*" --sort=-creatordate; } | grep -vx "$GITHUB_REF_NAME" | grep -vx "$ROLLING" | grep -vx "ios-$CHANNEL-latest" | head -1 || true)"
+          previous="$( { git tag --list "app-*-$CHANNEL.*" --sort=-creatordate; git tag --list "ios-$CHANNEL-*" --sort=-creatordate; } | grep -vx "$GITHUB_REF_NAME" | grep -vx "$ROLLING" | grep -vx "$MIRROR" | head -1 || true)"
           if [ -n "$previous" ] && git merge-base --is-ancestor "$previous" HEAD; then
             range="$previous..HEAD"; since="since $previous"; limit=60
           else
@@ -135,3 +137,13 @@ jobs:
             fi
           }
           publish "$ROLLING"
+          publish "$MIRROR"
+          # A new app-* rolling release starts without Poki Setup's files: copy them over from the mirror.
+          have="$(gh release view "$ROLLING" --json assets --jq '.assets[].name')"
+          mkdir -p setup
+          gh release view "$MIRROR" --json assets --jq '.assets[].name' | grep -E '^(PokiSetup-.*|SHA256SUMS-desktop\.txt)$' | while read -r name; do
+            if ! printf '%s\n' "$have" | grep -qx "$name"; then
+              gh release download "$MIRROR" --pattern "$name" --dir setup --clobber
+              gh release upload "$ROLLING" "setup/$name" --clobber
+            fi
+          done
