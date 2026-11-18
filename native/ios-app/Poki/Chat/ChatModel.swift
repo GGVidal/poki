@@ -528,7 +528,8 @@ final class ChatModel {
         let namedApps = chooseWorkspace && kind == .poki && app.canPlanSplitView
             ? AppIconStore.bundleIDs(namedIn: text) : []
         if !inSplitView, namedApps.count < 2, Self.direct, provider == .anthropic || provider == .openai {
-            let instructions = [Harness.instructions(for: resumedTask ?? text), restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
+            habitLine = ScreenHabits.instructions(for: resumedTask ?? text)
+            let instructions = [Harness.instructions(for: resumedTask ?? text), habitLine, restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
             // Another model starts a new conversation on the model's side; the chat on screen stays.
             if client?.signature != "\(provider.rawValue)/\(model)" {
                 client = provider == .openai ? OpenAIClient(key: key, model: model) : AnthropicClient(key: key, model: model)
@@ -608,7 +609,8 @@ final class ChatModel {
             }
             let loop = modelLoop(provider: prepared.provider, model: piModel, inSplitView: splitSession != nil)
             let continuation = prepared.resumedTask.map { "The owner selected this saved task to resume: \($0). Recheck the current screen and continue from the saved progress; do not substitute a task from long-term memory." }
-            let instructions = [Harness.instructions(for: prepared.resumedTask ?? prepared.message, inSplitView: splitSession != nil), restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
+            habitLine = splitSession == nil ? ScreenHabits.instructions(for: prepared.resumedTask ?? prepared.message) : nil
+            let instructions = [Harness.instructions(for: prepared.resumedTask ?? prepared.message, inSplitView: splitSession != nil), habitLine, restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
             let outcome = await loop.run(prepared.message.isEmpty ? Self.picturesOnly : prepared.message, images: prepared.images, instructions: instructions, maxTurns: Self.maxTurns) { [weak self] text in
                 guard let self, self.runToken == token else { return }
                 self.markDelivered(prepared.you.id)
@@ -894,6 +896,10 @@ final class ChatModel {
 
     /// A look or do of this chat is on its way to the phone.
     private var phoneStepUnderWay = false
+    /// The line this task's instructions carry about the owner's usual music app (Screen History's
+    /// learned habit), or nil. While it is there, nothing of the task is saved to memory: a routine
+    /// or note would keep the guess after the owner deleted it or turned learning off.
+    private var habitLine: String?
 
     private func run(_ client: ModelClient, instructions: String, delivered youID: UUID, token: Int) async {
         // Stop has moved the token on (and said Stopped): this task writes nothing more.
@@ -1035,6 +1041,9 @@ final class ChatModel {
             }
             return response
         default:
+            if habitLine != nil, call.name == "routines", ["save", "remember"].contains(args["action"] as? String ?? "") {
+                return PokiCore.ToolAnswer(text: "Not saved: this task's music app came from a habit learned from Screen History, which the owner can delete or turn off, so nothing of it is kept in memory.", jpeg: nil, isError: false)
+            }
             return await app.runTool(call.name, arguments: call.arguments)
         }
     }

@@ -34,7 +34,18 @@ final class HistoryCapture: ObservableObject {
     @Published var enabled: Bool {
         didSet {
             save(enabled, Self.enabledKey)
-            if !enabled { stop() }
+            if !enabled {
+                stop()
+                if oldValue { ScreenHabits.forget() }
+            }
+        }
+    }
+    /// Whether Poki may work out habits (today, the usual music app) from what Screen History kept.
+    /// Off until the owner turns it on, after an update too. Turning it off forgets what was learned.
+    @Published var learnHabits: Bool {
+        didSet {
+            save(learnHabits, "history.learnHabits")
+            if oldValue, !learnHabits { ScreenHabits.forget() }
         }
     }
     @Published var listMode: ListMode { didSet { save(listMode.rawValue, "history.listMode") } }
@@ -87,6 +98,7 @@ final class HistoryCapture: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         enabled = defaults.bool(forKey: Self.enabledKey)
+        learnHabits = defaults.bool(forKey: "history.learnHabits")
         listMode = ListMode(rawValue: defaults.string(forKey: "history.listMode") ?? "") ?? .exclude
         // Poki's own screens and the suggested apps are left out from the start.
         excluded = defaults.stringArray(forKey: "history.excluded") ?? [Bundle.main.bundleIdentifier ?? "nz.zheha.poki"] + Self.suggested

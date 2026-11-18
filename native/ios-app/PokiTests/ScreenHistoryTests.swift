@@ -8,7 +8,7 @@ import XCTest
 /// them, through the same call a run makes.
 @MainActor
 final class ScreenHistoryTests: XCTestCase {
-    private let keys = ["history.enabled", "history.listMode", "history.excluded", "history.included"]
+    private let keys = ["history.enabled", "history.listMode", "history.excluded", "history.included", "history.learnHabits", "history.habitsForgottenAt"]
     private var saved: [String: Any] = [:]
     private var savedLanguage = AppLocalization.system
 
@@ -20,12 +20,15 @@ final class ScreenHistoryTests: XCTestCase {
             UserDefaults.standard.removeObject(forKey: key)
         }
         HistoryCapture.shared.enabled = false
+        HistoryCapture.shared.learnHabits = false
         await HistoryStore.shared.deleteEverything()
+        UserDefaults.standard.removeObject(forKey: "history.habitsForgottenAt")
     }
 
     override func tearDown() async throws {
         await HistoryStore.shared.deleteEverything()
         HistoryCapture.shared.enabled = false
+        HistoryCapture.shared.learnHabits = false
         for key in keys {
             if let value = saved[key] { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
         }
@@ -35,6 +38,33 @@ final class ScreenHistoryTests: XCTestCase {
     /// A read as the launcher reports it for a screen whose text changed.
     private func read(_ app: String, _ text: [String]) -> [String: Any] {
         ["ok": true, "app": app, "title": "", "text": text, "changed": true]
+    }
+
+    /// The usual music app reaches a music request's instructions only while both switches are on,
+    /// and turning learning off forgets it for good: turning it on again does not bring it back from
+    /// the same reads.
+    func testTheLearnedMusicAppIsForgottenWhenLearningIsTurnedOff() async throws {
+        let day = Calendar.current.startOfDay(for: Date())
+        let now = Date()
+        for (daysAgo, hour) in [(2, 9), (2, 18), (1, 9), (1, 18), (0, 1)] {
+            let at = min(day.addingTimeInterval(Double(-daysAgo) * 86_400 + Double(hour) * 3600), now.addingTimeInterval(-600))
+            HistoryStore.shared.add(at: at, app: "com.netease.cloudmusic", title: "", text: "每日推荐")
+        }
+        _ = await HistoryStore.shared.size()
+        let ask = "放一首周杰伦的歌"
+        HistoryCapture.shared.enabled = true
+        XCTAssertNil(ScreenHabits.instructions(for: ask), "learning is off until the owner turns it on")
+        HistoryCapture.shared.learnHabits = true
+        let line = try XCTUnwrap(ScreenHabits.instructions(for: ask))
+        XCTAssertTrue(line.contains("com.netease.cloudmusic"))
+        XCTAssertNil(ScreenHabits.instructions(for: "打开设置把亮度调低"), "a request that is not about music gets nothing")
+        XCTAssertFalse(line.contains("每日推荐"), "no screen text goes to the model")
+
+        HistoryCapture.shared.learnHabits = false
+        XCTAssertNil(ScreenHabits.instructions(for: ask))
+        HistoryCapture.shared.learnHabits = true
+        XCTAssertNil(ScreenHabits.instructions(for: ask), "the same reads do not teach it again")
+        XCTAssertNil(ScreenHabits.musicApp())
     }
 
     func testALeftOutAppAndTheHomeScreenLeaveNothingInTheStore() async {
