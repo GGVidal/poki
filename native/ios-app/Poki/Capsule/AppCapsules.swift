@@ -130,9 +130,11 @@ enum CapsuleText {
             var table: [unichar: [Name]] = [:]
             for app in AppCapsule.catalog {
                 for name in app.names {
-                    let latin = name.unicodeScalars.allSatisfy(\.isASCII)
+                    // A name in a script written without spaces (Chinese, Japanese, Korean) can sit inside
+                    // a sentence; any other ("Strava", "Café") is a word of its own.
+                    let spaced = !name.unicodeScalars.contains(where: CapsuleText.isUnspaced)
                     let options: NSString.CompareOptions = AppCapsule.everydayWords.contains(name) || app.installedOnly ? .literal : .caseInsensitive
-                    let onlyAsApp = AppCapsule.everydayChinese.contains(name) || (app.installedOnly && !latin)
+                    let onlyAsApp = AppCapsule.everydayChinese.contains(name) || (app.installedOnly && !spaced)
                     let entry = Name(app: app, text: name as NSString, options: options, onlyAsApp: onlyAsApp)
                     table[fold((name as NSString).character(at: 0)), default: []].append(entry)
                 }
@@ -161,10 +163,19 @@ enum CapsuleText {
         "\(name) \(sentence)"
     }
 
+    /// Han, kana and Hangul: scripts whose words are not set apart by spaces.
+    static func isUnspaced(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x2E80...0x9FFF, 0xAC00...0xD7AF, 0xF900...0xFAFF, 0xFF66...0xFF9F, 0x20000...0x3FFFF: true
+        default: false
+        }
+    }
+
     private static func wholeWord(_ name: NSString, at i: Int, in text: NSString) -> Bool {
         let wordy = CharacterSet.alphanumerics
+        // A letter or digit of a spaced script, accented ones too: "Café" does not end inside "Cafés".
         func isLatinWordChar(_ unit: unichar) -> Bool {
-            unit < 0x80 && UnicodeScalar(unit).map(wordy.contains) == true
+            UnicodeScalar(unit).map { wordy.contains($0) && !isUnspaced($0) } == true
         }
         if isLatinWordChar(name.character(at: 0)), i > 0, isLatinWordChar(text.character(at: i - 1)) { return false }
         let end = i + name.length

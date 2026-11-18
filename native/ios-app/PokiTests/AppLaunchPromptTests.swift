@@ -36,9 +36,14 @@ final class AppLaunchPromptTests: XCTestCase {
 
     // MARK: The debug file
 
-    private func clearDebugFile() { try? FileManager.default.removeItem(at: ChatDebugLog.file) }
-    override func setUp() async throws { clearDebugFile() }
-    override func tearDown() async throws { clearDebugFile() }
+    /// The files and the index these tests fill, at their real places.
+    private func clear() {
+        try? FileManager.default.removeItem(at: ChatDebugLog.file)
+        try? FileManager.default.removeItem(at: InstalledApps.cacheFile)
+        DynamicApps.set([])
+    }
+    override func setUp() async throws { clear() }
+    override func tearDown() async throws { clear() }
 
     func testTheDebugFileKeepsKindsAndFailureCategoriesOnly() {
         let calls = [
@@ -46,19 +51,37 @@ final class AppLaunchPromptTests: XCTestCase {
             CallRecord(name: "do", arguments: #"{"actions":[{"launch":"com.taobao.taobao"}]}"#,
                        answer: "app: Poki\nerror: launch com.taobao.taobao: no app with that bundle id is installed on this device\nelements (3):",
                        ms: 120, ok: false),
-            CallRecord(name: "do", arguments: #"{"actions":[{"run":"Order my usual"},{"type":"hello","ref":3},{"key":"return"},{"swipe":"sideways please"}]}"#,
+            CallRecord(name: "do", arguments: #"{"actions":[{"run":"Order my usual"},{"type":"hello","ref":3},{"key":"return"},{"swipe":"sideways please"},{"finish":true}]}"#,
                        answer: "error: the field holds hello", ms: 80, ok: false),
+            CallRecord(name: "do", arguments: #"{"actions":[{"launch":"com.taobao.taobao4iphone"},{"launch":"my.private.note"},{"launch":{"bundle":"com.strava.stravaride"}}]}"#,
+                       answer: "app: 淘宝", ms: 300, ok: true),
         ]
+        DynamicApps.set([.init(id: "com.strava.stravaride", name: "Strava", user: true)])
         let entry = ChatDebugLog.entry(model: "pi, openai/x", named: ["com.taobao.taobao4iphone"], calls: calls, finished: false, seconds: 4.26)
         XCTAssertEqual(entry.seconds, 4.3)
-        XCTAssertEqual(entry.calls[1].actions, ["launch com.taobao.taobao"])
+        XCTAssertEqual(entry.calls[1].actions, ["launch"], "an id no app has is not kept")
         XCTAssertEqual(entry.calls[1].error, "launch_not_installed")
         XCTAssertEqual(entry.calls[2].actions, ["run", "type", "key return", "swipe"], "no routine name, no text, no free-form direction")
         XCTAssertEqual(entry.calls[2].error, "failed")
+        XCTAssertEqual(entry.calls[3].actions, ["launch com.taobao.taobao4iphone", "launch", "launch com.strava.stravaride"],
+                       "an app Poki lists or the phone has is kept; a made-up dotted string is not")
+        // A type with a ref is a type every time, whichever key the dictionary gives first.
+        for _ in 0..<200 {
+            XCTAssertEqual(ChatDebugLog.actions(#"{"actions":[{"ref":3,"type":"hello"},{"tap":4,"count":2},{"mystery":1}]}"#), ["type", "tap", "other"])
+        }
+    }
 
-        for _ in 0..<(ChatDebugLog.limit + 3) { ChatDebugLog.add(entry) }
-        XCTAssertEqual(ChatDebugLog.entries().count, ChatDebugLog.limit)
+    /// The file keeps the newest 20 tasks: the number is written here, not read from the code.
+    func testTheDebugFileKeepsTheNewestTwentyTasks() {
+        for index in 1...23 {
+            ChatDebugLog.add(ChatDebugLog.entry(model: "pi, openai/x", named: ["com.taobao.taobao4iphone"], calls: [], finished: true, seconds: Double(index)))
+        }
+        let kept = ChatDebugLog.entries()
+        XCTAssertEqual(kept.count, 20)
+        XCTAssertEqual(kept.first?.seconds, 4, "the three oldest are gone")
+        XCTAssertEqual(kept.last?.seconds, 23)
         guard case .array(let tasks) = ChatDebugLog.json(), case .object(let first)? = tasks.first else { return XCTFail("chat_tasks is a list") }
+        XCTAssertEqual(tasks.count, 20)
         XCTAssertEqual(first["named"], .array([.string("com.taobao.taobao4iphone")]))
     }
 
@@ -113,11 +136,22 @@ final class AppLaunchPromptTests: XCTestCase {
 
     private let xianyu: [InstalledApps.StoreApp] = [.init(id: "com.taobao.fleamarket", name: "闲鱼", url: "https://apps.apple.com/cn/app/id510909506")]
 
-    func testNamesFindTheInstalledAppExactNameFirst() {
-        XCTAssertEqual(InstalledApps.matches("美团", in: phoneList).first?.id, "com.meituan.imeituan", "美团, ahead of 美团外卖 which holds it")
-        XCTAssertEqual(InstalledApps.matches("Taobao", in: phoneList).first?.id, "com.taobao.taobao4iphone", "KnownApps' English name")
-        XCTAssertEqual(InstalledApps.matches("Notes", in: phoneList).first?.id, "com.apple.mobilenotes")
-        XCTAssertTrue(InstalledApps.matches("闲鱼", in: phoneList).isEmpty)
+    /// The first app find_app's answer lists: the one the agent is told to launch.
+    private func firstListed(_ answer: String) -> String? {
+        answer.split(separator: "\n").first { $0.hasPrefix("- ") }.map(String.init)
+    }
+
+    func testNamesFindTheInstalledAppExactNameFirst() async {
+        let apps = finder(list: phoneList)
+        let meituan = await apps.find(name: "美团", purpose: nil).text
+        XCTAssertEqual(firstListed(meituan), "- 美团: com.meituan.imeituan (installed)", "美团, ahead of 美团外卖 which holds it")
+        XCTAssertTrue(meituan.contains("launch it") && meituan.contains("com.meituan.itakeaway"), meituan)
+        let taobao = await apps.find(name: "Taobao", purpose: nil).text
+        XCTAssertEqual(firstListed(taobao), "- 淘宝: com.taobao.taobao4iphone (installed)", "KnownApps' English name")
+        let notes = await apps.find(name: "Notes", purpose: nil).text
+        XCTAssertEqual(firstListed(notes), "- MobileNotes: com.apple.mobilenotes (installed)")
+        let none = await apps.find(name: "闲鱼", purpose: nil).text
+        XCTAssertNil(firstListed(none), none)
     }
 
     func testFindAppAnswersTheInstalledID() async {
@@ -136,6 +170,16 @@ final class AppLaunchPromptTests: XCTestCase {
             XCTAssertTrue(answer.text.contains("Do not pick one: ask the owner"), answer.text)
             XCTAssertFalse(answer.text.contains("launch it"), answer.text)
             XCTAssertTrue(answer.text.contains("com.strava.stravaride") && answer.text.contains("com.example.strava"), answer.text)
+        }
+        // An app Poki lists by that name and another the phone calls the same are two as well: the
+        // system's Notes does not win over a second app named Notes.
+        let systemNotes = InstalledApps.App(id: "com.apple.mobilenotes", name: "Notes", bundleName: "MobileNotes")
+        let otherNotes = InstalledApps.App(id: "com.example.notes", name: "Notes", bundleName: nil)
+        for list in [[systemNotes, otherNotes], [otherNotes, systemNotes]] {
+            let answer = await finder(list: list).find(name: "Notes", purpose: nil)
+            XCTAssertTrue(answer.text.contains("Do not pick one: ask the owner"), answer.text)
+            XCTAssertFalse(answer.text.contains("launch it"), answer.text)
+            XCTAssertTrue(answer.text.contains("com.apple.mobilenotes") && answer.text.contains("com.example.notes"), answer.text)
         }
         let unique = await finder(list: [one]).find(name: "Strava", purpose: nil)
         XCTAssertTrue(unique.text.contains("launch it"), unique.text)
@@ -156,6 +200,16 @@ final class AppLaunchPromptTests: XCTestCase {
                           store: [.init(id: "com.meituan.imeituan", name: "美团-问美团，都安排", url: nil)])
         let answer = await apps.find(name: "问美团", purpose: nil)
         XCTAssertTrue(answer.text.contains("com.meituan.imeituan (installed)"), answer.text)
+    }
+
+    /// The installed app may be anywhere in the store's results: each is checked before the list is cut.
+    func testAnInstalledAppPastTheStoresThirdResultIsStillFound() async {
+        let others = (1...3).map { InstalledApps.StoreApp(id: "com.example.other\($0)", name: "美团 \($0)", url: "https://apps.apple.com/cn/app/id\($0)") }
+        let apps = finder(list: [.init(id: "com.meituan.imeituan", name: "Meituan", bundleName: nil)],
+                          store: others + [.init(id: "com.meituan.imeituan", name: "美团-问美团，都安排", url: nil)])
+        let answer = await apps.find(name: "问美团", purpose: nil)
+        XCTAssertTrue(answer.text.contains("com.meituan.imeituan (installed)"), answer.text)
+        XCTAssertFalse(answer.text.contains("NOT installed"), answer.text)
     }
 
     func testAPurposeListsInstalledAppsFirst() async {

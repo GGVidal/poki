@@ -29,8 +29,13 @@ import UIKit
 final class AppIconStore {
     static let shared = AppIconStore()
 
-    /// Bumped when a fetched icon arrives, so views that asked before it came draw again.
+    /// Bumped when a fetched icon arrives or the installed apps change, so views that asked before
+    /// draw again. `changed` is posted with it, for what is not a SwiftUI view (the message field's
+    /// capsules are pictures).
     private(set) var arrivals = 0
+    static let changed = Notification.Name("nz.zheha.poki.appIconsChanged")
+    /// The installed apps (DynamicApps.version) the kept answers were found with.
+    @ObservationIgnored private var directory = DynamicApps.version
     @ObservationIgnored private var memory: [String: UIImage] = [:]
     @ObservationIgnored private var unknown: Set<String> = []
     @ObservationIgnored private var fetching: Set<String> = []
@@ -47,6 +52,7 @@ final class AppIconStore {
     /// `dark`: the iPhone's own icons come in its dark style in dark mode, so each look is kept apart.
     func icon(_ app: String, dark: Bool = false) -> UIImage? {
         _ = arrivals
+        followDirectory()
         guard let key = Self.key(app) else { return nil }
         let look = key + (dark ? "|dark" : "|light")
         if let hit = memory[look] ?? memory[key] { return hit }
@@ -67,6 +73,7 @@ final class AppIconStore {
     /// Fetches the App Store's icon for `app` when nothing nearer has one, and keeps it. Returns when it
     /// has arrived or failed.
     func load(_ app: String) async {
+        followDirectory()
         guard let key = Self.key(app), memory[key] == nil, !unknown.contains(key), let id = Self.bundleID(app),
               !fetching.contains(id), !DiskCache.missedRecently(id) else { return }
         fetching.insert(id)
@@ -75,7 +82,7 @@ final class AppIconStore {
         case .found(let image):
             DiskCache.write(image, id)
             memory[key] = image
-            arrivals += 1
+            announce()
         case .absent:
             DiskCache.missed(id)
         case .unreachable:
@@ -97,9 +104,17 @@ final class AppIconStore {
         let name = app.trimmingCharacters(in: .whitespacesAndNewlines)
         if let known = KnownApps.find(name) { return known.id }
         if DynamicApps.name(forID: name) != nil { return name }
-        // "com.tencent.xin": a reverse-DNS name with no spaces.
-        if !name.contains(" "), name.split(separator: ".").count >= 3 { return name }
-        return DynamicApps.id(forName: name)
+        // An installed app's name comes before the shape of an id: an app called "A.B.C" is that app.
+        if let installed = DynamicApps.id(forName: name) { return installed }
+        return looksLikeBundleID(name) ? name : nil
+    }
+
+    /// "com.tencent.xin": reverse-DNS, three parts or more, each of ASCII letters, digits or hyphens
+    /// and at least one longer than a letter, so initials with dots ("A.B.C", "U.S.A") are not ids.
+    static func looksLikeBundleID(_ text: String) -> Bool {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count >= 3 && text.count <= 155 && parts.contains { $0.count > 1 }
+            && parts.allSatisfy { !$0.isEmpty && $0.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" } }
     }
 
     /// The name an app goes by on this iPhone, in its first language (English, Simplified or
@@ -109,11 +124,29 @@ final class AppIconStore {
         KnownApps.find(app)?.name(in: .current) ?? DynamicApps.name(forID: app)
     }
 
-    /// The phone's app list changed (InstalledApps): names that found no app may find one now, and the
-    /// views that drew a placeholder draw again.
+    /// The phone's app list was read (InstalledApps): when it changed, names that found no app may find
+    /// one now and a name that changed hands must not keep its old icon, so what was kept is dropped
+    /// and the views draw again.
     func directoryChanged() {
+        guard followDirectory() else { return }
+        announce()
+    }
+
+    /// Drops the kept icons and misses when the installed apps are no longer the ones they were found
+    /// with. Every read does this first, so a stale answer is never given even before the views are told.
+    @discardableResult
+    private func followDirectory() -> Bool {
+        let version = DynamicApps.version
+        guard version != directory else { return false }
+        directory = version
+        memory.removeAll()
         unknown.removeAll()
+        return true
+    }
+
+    private func announce() {
         arrivals += 1
+        NotificationCenter.default.post(name: Self.changed, object: self)
     }
 
     /// true when iOS has a Home Screen icon for `id`, so the app is installed; InstalledApps' check

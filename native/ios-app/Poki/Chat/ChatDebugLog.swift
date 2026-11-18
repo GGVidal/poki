@@ -92,23 +92,26 @@ enum ChatDebugLog {
     }
 
     /// Each do action's kind. Only values that cannot hold the owner's text are added: a launch's bundle
-    /// id when it has a bundle id's shape, and the direction of a button, key or swipe from their fixed
-    /// lists. A run keeps no routine name and a type no text.
+    /// id when it is an app Poki knows or one installed on this iPhone, and the direction of a button,
+    /// key or swipe from their fixed lists. A launch that names anything else (a made-up id, a sentence
+    /// with dots) is kept as "launch" alone; a run keeps no routine name and a type no text.
     static func actions(_ arguments: String) -> [String] {
         guard let object = try? JSONSerialization.jsonObject(with: Data(arguments.utf8)) as? [String: Any],
               let actions = object["actions"] as? [[String: Any]] else { return [] }
         return actions.compactMap { action in
-            guard let pair = action.first(where: { $0.key != "finish" }) else { return nil }
-            let kind = pair.key, value = pair.value
+            // An action is named by its verb, whatever else it carries: {type, ref} is a type. A
+            // dictionary has no order, so the verb is looked for, not taken as the first key.
+            guard let kind = verbs.first(where: { action[$0] != nil }) else { return action.keys.contains { $0 != "finish" } ? "other" : nil }
+            let value = action[kind]
             let word = (value as? String) ?? ((value as? [String: Any])?["direction"] as? String)
             switch kind {
             case "launch":
                 let bundle = (value as? String) ?? ((value as? [String: Any])?["bundle"] as? String)
-                return bundle.flatMap { isBundleID($0) ? "launch \($0)" : nil } ?? "launch"
+                return bundle.flatMap { isKnownApp($0) ? "launch \($0)" : nil } ?? "launch"
             case "button", "key", "swipe":
                 return word.flatMap { directions[kind]?.contains($0) == true ? "\(kind) \($0)" : nil } ?? kind
             default:
-                return knownKinds.contains(kind) ? kind : "other"
+                return kind
             }
         }
     }
@@ -118,11 +121,13 @@ enum ChatDebugLog {
         "key": ["return", "delete", "tab", "space", "escape"],
         "swipe": ["up", "down", "left", "right"],
     ]
-    private static let knownKinds: Set<String> = ["run", "tap", "type", "back", "handoff", "scroll_to", "long_press", "drag", "pinch", "wait_until", "wait"]
+    /// The verbs of a do action, the ones that say most first.
+    private static let verbs = ["launch", "run", "type", "tap", "long_press", "drag", "pinch", "swipe", "scroll_to", "key", "button", "back", "handoff", "wait_until", "wait"]
 
-    static func isBundleID(_ text: String) -> Bool {
-        text.count <= 155 && text.split(separator: ".").count >= 2
-            && text.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "." || $0 == "-" }
+    /// A bundle id Poki lists (KnownApps) or the phone's own app list holds: nothing the model or the
+    /// owner could have made up.
+    static func isKnownApp(_ id: String) -> Bool {
+        KnownApps.byID[id.lowercased()] != nil || DynamicApps.name(forID: id) != nil
     }
 
     /// The maintainers' debug file: PokiCore's routines and runs, then these tasks as `chat_tasks`.

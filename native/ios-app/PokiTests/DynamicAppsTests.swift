@@ -37,15 +37,41 @@ final class DynamicAppsTests: XCTestCase {
         XCTAssertEqual(DynamicApps.name(forID: "com.example.strava"), "Strava")
     }
 
-    func testTheIconComesOnceTheListArrives() {
-        let red = UIGraphicsImageRenderer(size: CGSize(width: 60, height: 60)).image { context in
-            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 60, height: 60))
+    private func square(_ color: UIColor) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 60, height: 60)).image { context in
+            color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 60, height: 60))
         }
+    }
+
+    /// The store follows the installed apps by itself: nothing here tells it they changed.
+    func testTheIconComesOnceTheListArrivesAndGoesWithTheName() {
+        let red = square(.red)
         let store = AppIconStore(installed: { id, _ in id == "com.strava.stravaride" ? red : nil })
         XCTAssertNil(store.icon("Strava"), "no id for the name yet")
         DynamicApps.set([strava])
-        store.directoryChanged()
         XCTAssertTrue(store.icon("Strava") === red)
+        // The app is renamed: its old name finds no app, so it shows no icon either.
+        DynamicApps.set([.init(id: "com.strava.stravaride", name: "Strava Run", user: true)])
+        XCTAssertNil(store.icon("Strava"), "the kept icon went with the name")
+        XCTAssertTrue(store.icon("Strava Run") === red)
+    }
+
+    func testANameWithDotsIsAnAppBeforeItIsAnID() {
+        XCTAssertNil(AppIconStore.bundleID("A.B.C"), "initials with dots are not a bundle id")
+        XCTAssertNil(AppIconStore.bundleID("U.S.A"))
+        XCTAssertEqual(AppIconStore.bundleID("com.tencent.xin"), "com.tencent.xin")
+        XCTAssertEqual(AppIconStore.bundleID("com.example.new-app"), "com.example.new-app")
+        DynamicApps.set([.init(id: "com.example.abc", name: "A.B.C", user: true)])
+        XCTAssertEqual(AppIconStore.bundleID("A.B.C"), "com.example.abc", "an installed app's name comes first")
+    }
+
+    func testAnAccentedNameIsAWordOfItsOwn() {
+        DynamicApps.set([.init(id: "com.example.cafe", name: "Café", user: true), strava])
+        XCTAssertEqual(capsules("Open Café and order"), ["com.example.cafe"])
+        XCTAssertEqual(capsules("Café"), ["com.example.cafe"])
+        XCTAssertEqual(capsules("two Cafés nearby"), [], "not inside a longer word")
+        XCTAssertEqual(capsules("open café"), [], "an unlisted name counts only as written")
+        XCTAssertEqual(capsules("Stravaé"), [], "an accented letter ends no word")
     }
 
     func testInstalledUserAppsBecomeCapsulesCarefully() {
@@ -76,16 +102,20 @@ final class DynamicAppsTests: XCTestCase {
         XCTAssertEqual(capsules("Open Strava and log my run"), ["com.strava.stravaride"])
     }
 
-    /// The signer's answer, as it comes over the bridge, is decoded, reaches the names and capsules, and
-    /// is kept in the file a later launch reads. A wrong key for the name or the type, or a list that is
-    /// never published, fails here.
-    func testTheSignersAnswerReachesTheNamesTheCapsulesAndTheFile() async throws {
+    /// The signer's answer, as it comes over the bridge, is decoded, reaches the names and capsules,
+    /// tells the icons, and is kept in the file a later launch reads. A wrong key for the name or the
+    /// type, a list that is never published, or icons that are never told, fails here.
+    func testTheSignersAnswerReachesTheNamesTheCapsulesTheIconsAndTheFile() async throws {
         let answer = Data(#"{"v":{"apps":[{"id":"com.strava.stravaride","name":"Strava","bundle_name":"StravaRide","type":"User"},{"id":"com.apple.PrintCenter","bundle_name":"Print Center","type":"System"}]}}"#.utf8)
         var asked: [String: Any] = [:]
-        let apps = InstalledApps(publishes: true)
+        let apps = InstalledApps()
         apps.phone = { ["device_address": "10.7.0.1"] }
         apps.call = { request in asked = request; return answer }
+        let told = expectation(forNotification: AppIconStore.changed, object: AppIconStore.shared)
+        let drawnBefore = AppIconStore.shared.arrivals
         let inventory = await apps.list()
+        await fulfillment(of: [told], timeout: 1)
+        XCTAssertGreaterThan(AppIconStore.shared.arrivals, drawnBefore, "the views that drew a placeholder draw again")
         XCTAssertEqual(asked["op"] as? String, "apps")
         XCTAssertEqual(asked["device_address"] as? String, "10.7.0.1")
         XCTAssertEqual(inventory?.apps, [.init(id: "com.strava.stravaride", name: "Strava", bundleName: "StravaRide", type: "User"),
@@ -96,29 +126,30 @@ final class DynamicAppsTests: XCTestCase {
         XCTAssertEqual(capsules("Print Center is slow"), [], "a System app is not")
 
         // The file holds the same list, stays out of backups, and a later launch publishes from it.
-        let saved = try JSONDecoder().decode([InstalledApps.App].self, from: Data(contentsOf: InstalledApps.cacheFile))
+        let file = InstalledApps.cacheFile
+        let saved = try JSONDecoder().decode([InstalledApps.App].self, from: Data(contentsOf: file))
         XCTAssertEqual(saved, inventory?.apps)
-        XCTAssertEqual(try InstalledApps.cacheFile.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
+        XCTAssertEqual(try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
         DynamicApps.set([])
         XCTAssertNil(AppIconStore.bundleID("Strava"))
-        _ = InstalledApps(publishes: true)
+        _ = InstalledApps()
         XCTAssertEqual(capsules("Open Strava and log my run"), ["com.strava.stravaride"])
 
-        // A file older than 30 days is removed unread.
-        DynamicApps.set([])
-        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-InstalledApps.cacheMaxAge - 60)], ofItemAtPath: InstalledApps.cacheFile.path)
-        _ = InstalledApps(publishes: true)
-        XCTAssertNil(AppIconStore.bundleID("Strava"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: InstalledApps.cacheFile.path))
-    }
-
-    /// A finder that is not the shared one keeps the list to itself.
-    func testOnlyThePublishingFinderFeedsTheIndex() async throws {
-        let apps = InstalledApps()
-        apps.phone = { [:] }
-        apps.call = { _ in try AppLaunchPromptTests.signerAnswer([.init(id: "com.strava.stravaride", name: "Strava", bundleName: nil, type: "User")]) }
+        // A second read fills the same file in place and it is still out of backups.
+        apps.now = { Date().addingTimeInterval(600) }
         _ = await apps.list()
-        XCTAssertNil(DynamicApps.id(forName: "Strava"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: InstalledApps.cacheFile.path))
+        XCTAssertEqual(try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
+
+        // Kept for 30 days: a file 29 days old is read, one 31 days old is removed unread.
+        let day: TimeInterval = 86_400
+        DynamicApps.set([])
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-29 * day)], ofItemAtPath: file.path)
+        _ = InstalledApps()
+        XCTAssertEqual(AppIconStore.bundleID("Strava"), "com.strava.stravaride")
+        DynamicApps.set([])
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-31 * day)], ofItemAtPath: file.path)
+        _ = InstalledApps()
+        XCTAssertNil(AppIconStore.bundleID("Strava"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 }

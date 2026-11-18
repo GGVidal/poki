@@ -19,7 +19,7 @@ import Foundation
 /// purpose asked for, and an icon the phone lacks is looked up by its one bundle id (AppIconStore).
 @MainActor
 final class InstalledApps {
-    static let shared = InstalledApps(publishes: true)
+    static let shared = InstalledApps()
 
     struct App: Equatable, Codable {
         var id: String
@@ -39,13 +39,8 @@ final class InstalledApps {
     }
     static let cacheMaxAge: TimeInterval = 30 * 86_400
 
-    /// Whether this finder feeds the app's names, icons and capsules and keeps the file: the shared one does.
-    private let publishes: Bool
-
-    init(publishes: Bool = false) {
-        self.publishes = publishes
-        guard publishes, let saved = Self.savedList() else { return }
-        publish(saved)
+    init() {
+        if let saved = Self.savedList() { publish(saved) }
     }
 
     private static func savedList() -> [App]? {
@@ -61,13 +56,27 @@ final class InstalledApps {
             (app.name ?? app.bundleName).map { DynamicApps.Entry(id: app.id, name: $0, user: app.type == "User") }
         })
         AppIconStore.shared.directoryChanged()
-        guard save, let data = try? JSONEncoder().encode(list) else { return }
-        var file = Self.cacheFile
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard (try? data.write(to: file, options: .atomic)) != nil else { return }
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? file.setResourceValues(values)
+        if save { Self.keep(list) }
+    }
+
+    /// Writes the list to the file, which is kept out of backups before it holds anything: the file is
+    /// made empty, excluded, and only then filled in place (an atomic write would swap in a new file
+    /// without the mark). If it cannot be excluded or filled, no file is left.
+    private static func keep(_ list: [App]) {
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        var file = cacheFile
+        let files = FileManager.default
+        do {
+            try files.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !files.fileExists(atPath: file.path) { try Data().write(to: file) }
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try file.setResourceValues(values)
+            guard try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true else { throw CocoaError(.fileWriteUnknown) }
+            try data.write(to: file)
+        } catch {
+            try? files.removeItem(at: file)
+        }
     }
 
     /// Reads the list again in the background when it is older than five minutes (the loopback just
@@ -122,7 +131,7 @@ final class InstalledApps {
                 let read = try await fetch(request)
                 let at = now()
                 last = (apps: read, at: at); lastProblem = nil
-                if publishes { publish(read, save: true) }
+                publish(read, save: true)
                 return Inventory(apps: read, fresh: true, readAt: at)
             } catch {
                 lastProblem = error.localizedDescription
@@ -157,7 +166,8 @@ final class InstalledApps {
     }
 
     /// How well an installed app's names fit what the owner called it: 0 an id KnownApps gives that
-    /// name, 1 the exact name, 2 a name that starts with it, 3 one that holds it; best first.
+    /// name, 1 the exact name, 2 a name that starts with it, 3 one that holds it; best first. 0 and 1
+    /// both mean "this app goes by that name".
     static func ranked(_ name: String, in list: [App]) -> [(app: App, score: Int)] {
         let key = normalized(name)
         guard !key.isEmpty else { return [] }
@@ -174,10 +184,6 @@ final class InstalledApps {
         return scored.sorted { $0.score != $1.score ? $0.score < $1.score : ($0.app.name ?? $0.app.id).count < ($1.app.name ?? $1.app.id).count }
     }
 
-    /// The installed apps called `name`, best first. KnownApps' names count too, so 淘宝 finds
-    /// com.taobao.taobao4iphone whatever the phone calls it.
-    static func matches(_ name: String, in list: [App]) -> [App] { ranked(name, in: list).map(\.app) }
-
     /// Lower-cased, without spaces and punctuation: "WeChat" and "We Chat", "淘宝-万能的淘宝！" and "淘宝万能的淘宝".
     static func normalized(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
@@ -192,10 +198,12 @@ final class InstalledApps {
             if let inventory {
                 let hits = Self.ranked(name, in: inventory.apps)
                 if let best = hits.first?.score {
-                    let top = hits.filter { $0.score == best }
+                    // Every app that goes by the name, whether KnownApps or the phone says so: the
+                    // system's Notes and another app called Notes are two.
+                    let named = hits.filter { $0.score <= 1 }
                     let lines = hits.prefix(5).map { Self.line(Match(id: $0.app.id, name: $0.app.name ?? $0.app.bundleName ?? $0.app.id, installed: true)) }
                     // A name two apps share points at neither: launching one would be a guess.
-                    if best == 1, top.count > 1 {
+                    if named.count > 1 {
                         return ("more than one installed app is named \"\(name)\" (from \(source)). Do not pick one: ask the owner which they mean, naming each.\n" + lines.joined(separator: "\n"), false)
                     }
                     if best <= 1 {
@@ -211,8 +219,10 @@ final class InstalledApps {
             // The App Store's names, kept to the ones on this phone: its own list may name an app in
             // another language than the owner did.
             let store = await search(name)
-            let marked = (store ?? []).prefix(3).map { Match(id: $0.id, name: $0.name, installed: installed($0.id, in: inventory), url: $0.url) }
-            let present = marked.filter { $0.installed == true }
+            // Every result is checked before any is dropped: the installed one may be the store's fourth.
+            let all = (store ?? []).map { Match(id: $0.id, name: $0.name, installed: installed($0.id, in: inventory), url: $0.url) }
+            let present = Array(all.filter { $0.installed == true }.prefix(3))
+            let marked = Array(all.prefix(3))
             if !present.isEmpty {
                 return ("installed apps the App Store calls \"\(name)\" (installed checked with \(source)). Launch one only when it is clearly the app the owner means; when more than one could be, ask the owner which.\n" + present.map(Self.line).joined(separator: "\n"), false)
             }
