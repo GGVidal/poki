@@ -173,6 +173,8 @@ public final class RoutineStore: @unchecked Sendable {
     static let maxNotes = 50, maxRoutines = 200, maxRuns = 50, maxNoteLength = 300, maxChanges = 100
     /// Who the Memory page writes as.
     public static let owner = "owner"
+    /// The names that are not an agent's: the owner, a file the owner imported or restored, and Dream.
+    static func isReserved(_ name: String) -> Bool { [owner, "import", "restore", "dream"].contains(name.lowercased()) }
 
     private let lock = NSLock()
     private var file = MemoryFile()
@@ -327,7 +329,9 @@ public final class RoutineStore: @unchecked Sendable {
     public func rename(_ name: String, to new: String, by: String = RoutineStore.owner) -> Bool {
         withFile(true) { f in
             guard let i = f.routines.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }),
-                  !f.routines[i].isLocked || by == Self.owner else { return false }
+                  !f.routines[i].isLocked || by == Self.owner,
+                  // Not onto another routine's name, which would hide that one.
+                  !f.routines.indices.contains(where: { $0 != i && f.routines[$0].name.caseInsensitiveCompare(new) == .orderedSame }) else { return false }
             let old = f.routines[i]
             f.routines[i].name = new
             f.routines[i].updated = Date()
@@ -505,14 +509,21 @@ public final class RoutineStore: @unchecked Sendable {
         guard incoming.schema.hasPrefix("poki.agent-backup/") else { throw ImportError("not a Poki agent backup (schema \(incoming.schema))") }
         guard incoming.schema == Self.schema else { throw ImportError("a backup of a newer Poki (\(incoming.schema)); update Poki to import it") }
         var added = 0, replaced = 0, kept = 0, notes = 0
+        // An agent's import brings what it says, but not the owner's say: nothing comes locked, and
+        // nothing claims to be the owner's, an import's or Dream's.
+        let agent = !Self.isReserved(by)
         withFile(true) { f in
-            for r in incoming.routines where !r.name.isEmpty {
+            for var r in incoming.routines where !r.name.isEmpty {
+                if agent { r.locked = nil; if Self.isReserved(r.savedBy) { r.savedBy = by } }
                 if let i = f.routines.firstIndex(where: { $0.name.caseInsensitiveCompare(r.name) == .orderedSame }) {
                     // The owner locked ours: a newer copy from elsewhere does not replace it.
                     if r.updated > f.routines[i].updated, !f.routines[i].isLocked { f.routines[i] = r; replaced += 1 } else { kept += 1 }
                 } else { f.routines.append(r); added += 1 }
             }
-            for n in incoming.notes where !f.notes.contains(where: { $0.text.caseInsensitiveCompare(n.text) == .orderedSame }) {
+            for var n in incoming.notes where !f.notes.contains(where: { $0.text.caseInsensitiveCompare(n.text) == .orderedSame }) {
+                if agent { n.locked = nil; if Self.isReserved(n.by) { n.by = by } }
+                // Another note's id would make forgetting or undoing by id reach the wrong one.
+                if f.notes.contains(where: { $0.id == n.id }) { n.id = String(UUID().uuidString.prefix(8)).lowercased() }
                 f.notes.append(n); notes += 1
             }
             Self.trim(&f.notes, to: Self.maxNotes, keeping: \.isLocked)
@@ -934,7 +945,9 @@ extension PokiCore {
         guard let store = computer.memory else { return ToolResult(text: "routines: no memory on this phone", jpeg: nil, isError: true) }
         let action = args["action"]?.string ?? "list"
         let name = args["name"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let by = session == nil ? "Poki" : (clientNames.value[session!].flatMap { $0.isEmpty ? nil : $0 } ?? "an MCP client")
+        // A client's own name never passes for the owner, an import or Dream: those are the app's own.
+        let named = session.flatMap { clientNames.value[$0] }.flatMap { $0.isEmpty || RoutineStore.isReserved($0) ? nil : $0 }
+        let by = session == nil ? "Poki" : named ?? "an MCP client"
         func fail(_ text: String) -> ToolResult { ToolResult(text: "routines \(action): \(text)", jpeg: nil, isError: true) }
         let locked = "is locked by the owner: only they change or forget it, on Poki's Memory page"
         switch action {
@@ -982,7 +995,9 @@ extension PokiCore {
                 if let steps = newSteps { r.steps = steps; r.failuresInARow = 0; r.lastStop = nil }
                 r.updated = Date()
             }
-            if let rename = args["rename"]?.string, !rename.isEmpty { store.rename(name, to: rename, by: by) }
+            if let rename = args["rename"]?.string, !rename.isEmpty, !store.rename(name, to: rename, by: by) {
+                return fail("edited \"\(name)\", but kept its name: \"\(rename)\" is another routine's")
+            }
             return ToolResult(text: "routines: edited \"\(args["rename"]?.string ?? name)\"", jpeg: nil)
         case "forget":
             if store.routine(named: name)?.isLocked == true { return fail("\"\(name)\" \(locked)") }

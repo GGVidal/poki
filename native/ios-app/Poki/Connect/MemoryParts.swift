@@ -246,8 +246,10 @@ struct MemoryPill: View {
             }
             .foregroundStyle(solid ? Color.white : tint)
             .frame(maxWidth: .infinity, minHeight: 42)
-            .background(solid ? Tint.blue : Color(.tertiarySystemFill), in: .capsule)
-            .opacity(isEnabled ? 1 : 0.3)
+            // A solid pill that cannot be pressed pales its ground only, as the design draws it: faded
+            // whole, its white words all but vanished into the pale blue.
+            .background(solid ? Tint.blue.opacity(isEnabled ? 1 : 0.35) : Color(.tertiarySystemFill), in: .capsule)
+            .opacity(solid || isEnabled ? 1 : 0.3)
         }
         .buttonStyle(.plain)
     }
@@ -372,8 +374,9 @@ struct MemoryChip: View {
     var ground: Color
     var ink: Color
     var body: some View {
+        // Its own size: at the largest text sizes a row's line was cutting the ground under the words.
         Text(title).font(.caption.weight(.semibold)).foregroundStyle(ink).lineLimit(1)
-            .padding(.horizontal, 7).frame(minHeight: 20)
+            .padding(.horizontal, 7).padding(.vertical, 1).frame(minHeight: 20).fixedSize()
             .background(ground, in: .rect(cornerRadius: 6, style: .continuous))
     }
 }
@@ -386,6 +389,8 @@ struct MemoryChangeRow: View {
     var highlighted = false
     @Environment(MemoryLibrary.self) private var library
     @Environment(\.dynamicTypeSize) private var typeSize
+    /// The icon grows with the text, up to half again.
+    @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 30
 
     var body: some View {
         Group {
@@ -420,18 +425,20 @@ struct MemoryChangeRow: View {
     }
 
     @ViewBuilder private var icon: some View {
-        if let app = change.item.app { AppIconView(app: app, size: 30) }
-        else if change.item.kind == .memory { AboutTile(size: 30) }
-        else { OtherTile(size: 30) }
+        let size = min(iconSize, 45)
+        if let app = change.item.app { AppIconView(app: app, size: size) }
+        else if change.item.kind == .memory { AboutTile(size: size) }
+        else { OtherTile(size: size) }
     }
 
-    /// What happened, to which kind, by whom and when: one line, or one under another when they do not fit.
+    /// What happened, to which kind, by whom and when: one line, or the chip above the rest when they
+    /// do not fit.
     private var meta: some View {
         let kind = Text(kindName).font(.footnote.weight(.semibold)).foregroundStyle(Color(.secondaryLabel))
         let who = Text("\(Text(actor)) \(MemoryFormat.time(change.at))").font(.footnote).foregroundStyle(Color(.secondaryLabel))
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) { chip; kind; who.padding(.leading, 2) }.lineLimit(1)
-            VStack(alignment: .leading, spacing: 4) { chip; kind; who }
+            VStack(alignment: .leading, spacing: 4) { chip; Text("\(kind) \(who)") }
         }
     }
 

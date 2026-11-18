@@ -93,11 +93,14 @@ struct MemoryView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: SettingsRoute.memoryPage(.recent())) {
                     // No padding of its own: with the dot, a wider pill pushed the title off the centre.
+                    // In English the page's whole name is too wide for that too, so the pill is "Recent".
                     HStack(spacing: 5) {
-                        Text("Recent Updates").font(.subheadline.weight(.semibold)).fixedSize()
+                        Text("Recent Updates button", comment: "The Memory page's button to Recent Updates: short, so the title stays centred")
+                            .font(.subheadline.weight(.semibold)).fixedSize()
                         if library.unread { Circle().fill(Tint.blueText).frame(width: 7, height: 7) }
                     }
                 }
+                .accessibilityLabel(Text("Recent Updates"))
                 .accessibilityIdentifier("memory.recent")
             }
             // Two shapes, as the design draws them: the Recent Updates capsule and the More circle.

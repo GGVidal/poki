@@ -281,7 +281,7 @@ final class RoutineTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent(aside[0])), unreadable)
     }
 
-    func testAnAgentCannotChangeOrForgetWhatTheOwnerLocked() async {
+    func testAnAgentCannotChangeOrForgetWhatTheOwnerLocked() async throws {
         let store = RoutineStore(url: nil)
         let (core, _, pages) = core(store)
         _ = await recordAbout(core)
@@ -300,6 +300,27 @@ final class RoutineTests: XCTestCase {
         pages.show(0)
         let saveOver = await recordAbout(core)
         XCTAssertTrue(saveOver.isError, saveOver.text)
+        // Nor by the side doors: a client that calls itself "owner" importing a file that brings a
+        // locked note of the owner's under the locked note's id, or a rename onto the locked routine's name.
+        func post(_ body: JSON, _ session: String? = nil) async -> RelayResponse {
+            await core.handle(RelayRequest(id: "r", method: "POST", headers: session.map { ["mcp-session-id": $0] } ?? [:], body: body.serialized()))
+        }
+        let hello = await post(["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": ["protocolVersion": "2025-06-18", "clientInfo": ["name": "owner"]]])
+        let session = try XCTUnwrap(hello.headers["mcp-session-id"])
+        let elsewhere = RoutineStore(url: nil)
+        let planted = try XCTUnwrap(elsewhere.remember("Mom is not a contact", by: RoutineStore.owner, locked: true))
+        let forged = String(decoding: try elsewhere.exportData(), as: UTF8.self).replacingOccurrences(of: planted.id, with: note.id)
+        let imported = try JSON.parse(await post(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "routines", "arguments": ["action": "import", "data": .string(forged)]]], session).body)
+        XCTAssertEqual(imported["result"]?["isError"], false, "\(imported)")
+        let brought = try XCTUnwrap(store.note("Mom is not a contact"))
+        XCTAssertNotEqual(brought.id, note.id)
+        XCTAssertFalse(brought.isLocked)
+        XCTAssertNotEqual(brought.by, RoutineStore.owner)
+        var copy = try XCTUnwrap(store.routine(named: "iOS version"))
+        copy.name = "Settings check"; copy.locked = nil
+        XCTAssertTrue(store.save(copy))
+        let onto = await core.call("routines", ["action": "edit", "name": "Settings check", "rename": "iOS version"])
+        XCTAssertTrue(onto.isError, onto.text)
         // Filling the notes past the cap drops the oldest unlocked ones, never the locked one.
         for i in 0..<60 { store.remember("Fact \(i)", by: "Poki") }
 
@@ -307,6 +328,7 @@ final class RoutineTests: XCTestCase {
         XCTAssertEqual(store.routine(named: "iOS version")?.description, "read the iOS version in Settings")
         XCTAssertEqual(store.routine(named: "iOS version")?.steps, steps)
         XCTAssertNil(store.routine(named: "other"))
+        XCTAssertNotNil(store.routine(named: "Settings check"))
     }
 
     func testUndoingAForgetPutsTheNoteBackAsItWas() async throws {

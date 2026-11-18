@@ -797,6 +797,30 @@
         }
       }
     },
+    "Recent Updates button" : {
+      "comment" : "The Memory page's button to Recent Updates: short, so the title stays centred",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近更新"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近更新"
+          }
+        }
+      }
+    },
     "Other" : {
       "extractionState" : "manual",
       "localizations" : {
