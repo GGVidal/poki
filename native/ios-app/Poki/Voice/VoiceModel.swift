@@ -312,8 +312,10 @@ final class VoiceModel {
     /// How long a tap waits for the owner's OK on the phone: about as long as the card says it lasts.
     static let approvalWait: Double = 115
 
-    /// look, do and open_app, run by PokiCore on this phone (the relay's tools): name, JSON arguments.
+    /// look (and do and open_app, which the voice model no longer offers), run by PokiCore on this phone (the relay's tools): name, JSON arguments.
     private let phoneTool: @MainActor (String, String) async -> PhoneAnswer
+    /// Work on the phone, done by Poki's chat agent: run_task, check_task, stop_task.
+    private let tasks: VoiceTasks
 
     /// true while a conversation with the microphone is on: Poki's silent keep-alive audio steps aside
     /// (its .playback session cannot record), and the voice-chat session keeps Poki running instead.
@@ -325,11 +327,13 @@ final class VoiceModel {
 
     init(clearTap: @escaping @MainActor (String, String?, String?) async -> TapClearance,
          phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer,
+         tasks: VoiceTasks = .chat { AskPoki.chat },
          holdMicrophone: @escaping @MainActor (Bool) -> Void = { _ in },
          connection: @escaping @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection = { VoiceLink(onEvent: $0, onClosed: $1) },
          time: VoiceClock = VoiceClock()) {
         self.clearTap = clearTap
         self.phoneTool = phoneTool
+        self.tasks = tasks
         self.holdMicrophone = holdMicrophone
         self.connection = connection
         self.time = time
@@ -860,15 +864,21 @@ final class VoiceModel {
         clock.call = clock.call ?? Date()
         clock.callNames.append(call.name)
         phase = .thinking
-        lines.append(VoiceLine(role: .tool, text: Self.describe(call)))
-        log.add("voice", "tool \(call.name) \(call.arguments)")
+        let handedOver = VoiceTasks.names.contains(call.name)
+        // The chat shows a task handed over as it runs; its words go to the log by length only.
+        if !handedOver { lines.append(VoiceLine(role: .tool, text: Self.describe(call))) }
+        log.add("voice", handedOver ? "tool \(call.name) (\(call.arguments.count) characters)" : "tool \(call.name) \(call.arguments)")
         let local = localTools.contains(call.name)
         let bridge = bridge
         Task {
             var state = VoiceCall.State.done
             var output: String
             var screen: Data?
-            if local, Self.phoneTools.contains(call.name) {
+            if handedOver {
+                let (text, failed) = await tasks.call(call.name, call.arguments)
+                output = text.count > 6000 ? String(text.prefix(6000)) + "…" : text
+                if failed { state = .failed }
+            } else if local, Self.phoneTools.contains(call.name) {
                 let answer = await phoneTool(call.name, call.arguments)
                 output = answer.text.count > 6000 ? String(answer.text.prefix(6000)) + "…" : answer.text
                 screen = answer.screen

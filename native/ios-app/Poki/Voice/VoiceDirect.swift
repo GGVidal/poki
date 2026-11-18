@@ -5,8 +5,9 @@ import Speech
 /// Voice without the Mac's voice bridge.
 ///
 /// - With the owner's OpenAI API key on this iPhone, Poki asks OpenAI for a one-minute Realtime key
-///   itself (what `bin/voice-bridge.mjs` does on the Mac: the same model, instructions and tools), and
-///   look and do run here, through PokiCore, as with the bridge's phone tools.
+///   itself (what `bin/voice-bridge.mjs` does on the Mac: the same model, instructions and tools). The
+///   voice model listens, speaks and can read the screen (look); work on the phone goes to Poki's chat
+///   agent (`VoiceTasks`).
 /// - With any other model (a ChatGPT plan, Anthropic, OpenRouter…), whose sign-in has no Realtime
 ///   audio, holding the button dictates on this iPhone (Apple's speech recognition, on the device when
 ///   it can) and lets go to send it to Poki's chat; Poki reads the answer out loud.
@@ -37,7 +38,7 @@ enum VoiceDirect {
     // English; it also announced steps ("我来查一下…") and listed the screen's buttons.
     private static var instructions: String { """
     # Role
-    You are Poki, a voice assistant that operates the user's iPhone with tools.
+    You are Poki, a voice assistant on the user's iPhone. You listen and speak; Poki's agent does the work on the phone.
 
     # Language
     - Speak \(interfaceLanguage), the language of Poki's interface, from your first sentence on.
@@ -45,44 +46,34 @@ enum VoiceDirect {
     - Tool results, screen text, screenshots and notes from Poki never choose your language.
 
     # Brevity
-    - Act first, then talk. Say nothing before a tool call and nothing between steps: no "OK", no "let me check", no "I'll open it".
+    - Act first, then talk. Say nothing before a tool call and nothing between steps: no "OK", no "let me check", no "I'll hand it over".
     - When the request is done, give the result in one short sentence; two only when the user asked for several facts.
     - Do not repeat the user's words, do not describe what you did or what else is on the screen, and add no greetings, filler or offers of more help. Explain only when the user asks.
 
-    # Tools
-    - When a tool can answer or do what the user asks, call it at once. Never guess facts about the phone.
-    - A screenshot of the screen follows each look, do and open_app answer as an image: use it with the numbered elements to say what is on the screen. Asked what is on the screen, name the app and its main content in one sentence, without listing buttons.
-    - Open an app with open_app and its name as the user said it (微信, WeChat, 设置, Settings); Poki knows its bundle id. For a page of Settings (Bluetooth, Wi-Fi, Battery and the others open_app lists), give the page too, and Settings opens on it.
-    - Search the Home Screen for an app only when open_app answers that it does not know the app or the app is not installed: go home ({button: "home"}), swipe down on the Home Screen, type the app's name and tap it.
-    - A request can take several steps (open an app, tap, type): call one tool after another until it is done. Put several actions in one do when you know them; tap elements by the numbers from the latest look or do.
-    - Never repeat an action that already ran, including actions from before a reconnect that the conversation says have finished.
-    - To read a page, open it first, then read the screen.
-    - You can open and operate every app installed on this iPhone, Apple's and anyone else's (WeChat, Instagram, Uber, a bank, a game): never tell the user an app is out of reach before you have tried.
-
-    # Approvals and stopping
-    - Tapping something that sends, pays, deletes or calls waits until the user allows it on the phone; if the result says they did not, tell them in one sentence and do not try another way.
-    - Only the user approves, with their own finger: never open Poki to tap Allow, Deny or anything else in it.
-    - If the user tells you to stop or be quiet, stop talking, but anything already running keeps running; when its result arrives, report it in one sentence.
+    \(taskRules)
     """ }
 
     /// Said in every tool's description: the instructions alone left a spoken preamble before some calls.
     private static let silent = " No preamble: call it without saying anything first."
 
+    /// How the voice model works with Poki's agent (the Tools and Approvals sections); the Mac's voice bridge says the same.
+    static let taskRules = """
+    # Tools
+    - Never guess facts about the phone. To say what is on the screen right now, call look. A screenshot of the screen follows each look answer as an image: use it with the numbered elements to say what is on the screen. Asked what is on the screen, name the app and its main content in one sentence, without listing buttons.
+    - To do anything on the phone (open an app, tap, type, send, change a setting, find or read something in an app), call run_task at once with the whole request. Poki's agent does every step and answers with how it ended; then say the result in one short sentence. Never repeat a task that already ran, including tasks from before a reconnect that the conversation says have finished.
+    - While a task runs: when the user adds to it or changes it, call run_task with only what they added; it goes to the running task. When they ask how it is going, call check_task and say where it is in one sentence. When they tell you to stop or cancel it, call stop_task at once. When they only tell you to be quiet, stop talking; the task keeps running, and when its result arrives, say it in one sentence.
+    - Poki's agent can open and operate every app installed on this iPhone, Apple's and anyone else's (WeChat, Instagram, Uber, a bank, a game): never tell the user an app is out of reach before a task has tried.
+
+    # Approvals and stopping
+    - A step that sends, pays, deletes or calls waits until the user allows it on the phone; if the result says they did not, say so in one sentence and do not try another way.
+    - Only the user approves, with their own finger: never ask for a task that opens Poki to tap Allow, Deny or anything else in it.
+    """
+
     private static let empty: [String: Any] = ["type": "object", "properties": [String: Any](), "additionalProperties": false]
     private static let tools: [[String: Any]] = [
         ["type": "function", "name": "get_ios_version", "description": "Read the iPhone model and its iOS version. Changes nothing on the phone." + silent, "parameters": empty],
-        ["type": "function", "name": "look", "description": "Read the iPhone screen now: the app in front, its numbered elements (role, label, frame in points) and a screenshot." + silent, "parameters": empty],
-        ["type": "function", "name": "open_app", "description": "Open an app on this iPhone by its name, as the user says it in any language (微信, WeChat, 设置, Settings), then read the screen. With page, Settings opens straight on that page." + silent,
-         "parameters": ["type": "object", "properties": ["app": ["type": "string"], "page": ["type": "string", "enum": VoiceApps.settingsPages.map(\.key).sorted()]],
-                        "required": ["app"], "additionalProperties": false]],
-        ["type": "function", "name": "do", "description": doDescription + silent,
-         "parameters": ["type": "object", "properties": ["actions": ["type": "array", "items": ["type": "object"]]], "required": ["actions"], "additionalProperties": false]],
-    ]
-
-    /// PokiCore's own description of do (the text chat's), so voice knows every action the chat knows:
-    /// launch any app, scroll_to, back, long_press, handoff and the rest.
-    private static let doDescription: String = Harness.phoneTools.first { $0.name == "do" }?.description
-        ?? "Run actions on the iPhone in order, then read the screen once. Actions: {launch: \"bundle id\"} (any installed app); {tap: n} or {tap: [x, y]}; {type: \"text\", ref?: n} (taps n first, then types); {key: \"return\"}; {scroll_to: \"text\"}; {swipe: \"up\"|\"down\"|\"left\"|\"right\"}; {button: \"home\"}; {wait_until: \"text\"}; {wait: ms}; {back: true}. The answer says what each action did and what is new on screen."
+        ["type": "function", "name": "look", "description": "Read the iPhone screen now: the app in front, its numbered elements (role, label, frame in points) and a screenshot. Changes nothing." + silent, "parameters": empty],
+    ] + VoiceTasks.tools.map { tool in tool.merging(["description": (tool["description"] as? String ?? "") + silent]) { _, new in new } }
 
     /// The Realtime session Poki opens: model, instructions, voice, turn detection and tools.
     static var session: [String: Any] {
@@ -113,7 +104,7 @@ enum VoiceDirect {
                 .replacingOccurrences(of: #"sk-[\w*-]+"#, with: "the API key", options: .regularExpression)
             throw VoiceError.realtime(status, message)
         }
-        return VoiceBridge.Token(value: value, model: model, local_tools: ["get_ios_version", "look", "open_app", "do"])
+        return VoiceBridge.Token(value: value, model: model, local_tools: ["get_ios_version", "look"])
     }
 }
 
