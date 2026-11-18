@@ -6,6 +6,11 @@ struct PokiApp: App {
     @State private var model: AppModel
     @State private var chat: ChatModel
 
+    @discardableResult
+    static func scheduleStartupWork(routines: RoutineStore = .shared) -> Task<String?, Never> {
+        Task.detached(priority: .utility) { routines.importRestoredBackup() }
+    }
+
     init() {
         // PokiLauncher (Rust) and the relay write to sockets the other side may have closed. In an app,
         // unlike a Rust executable, nothing ignores SIGPIPE, and it would end the whole app.
@@ -31,8 +36,8 @@ struct PokiApp: App {
         #if DEBUG && targetEnvironment(simulator)
         TestCredential.importIfGiven()
         #endif
-        // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in before any agent asks.
-        _ = RoutineStore.shared.importRestoredBackup()
+        // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in off the main thread.
+        Self.scheduleStartupWork()
         // The three-dimensional bear loads while the app starts, to be there when Poki's picture first shows.
         BearModel.shared.load()
         let model = AppModel()
@@ -63,6 +68,8 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(ChatModel.self) private var chat
     @Environment(\.scenePhase) private var scenePhase
+    var sessionStore: SessionStore = .shared
+    var shortcutStore: HomeShortcutStore = .shared
     @State private var showsSidebar = false
     // Both navigation layouts share the composer while the window changes size.
     @State private var draft = UserDefaults.standard.string(forKey: "pokiDraft") ?? ""
@@ -104,7 +111,8 @@ struct RootView: View {
     private var sessions: some View {
         SessionsView(
             openChat: { show(.chat) },
-            openSession: { show(.session($0)) }
+            openSession: { show(.session($0)) },
+            sessionStore: sessionStore
         )
     }
 
@@ -138,7 +146,9 @@ struct RootView: View {
             openVoiceKey: { openDetails([DetailsRoute.voiceKey]) },
             openThreads: split ? nil : { withAnimation(ThreadsDrawerMotion.settle) { threadsOpen = true } },
             openAgents: { fix(.agents, split: split) },
-            openUpdates: { fix(.updates, split: split) }
+            openUpdates: { fix(.updates, split: split) },
+            sessionStore: sessionStore,
+            shortcutStore: shortcutStore
         )
         // The bear stops drawing where it is out of sight: behind the open drawer or the profile over the
         // chat. Poki's card opens beside the picture and leaves it in sight.
@@ -198,6 +208,7 @@ struct RootView: View {
             .softTopEdge()
             // Settings opens from the bottom of the conversations.
             .environment(\.openPokiSettings, { openDetails() })
+            .environment(\.pokiDetailsOpen, detailsOpen)
             // Settings covers the whole screen on iPhone (ESP-469: nothing of the chat shows around it), with
             // its Close button; beside the list on iPad it stays a sheet at a page's width (ESP-376).
             .fullScreenCover(isPresented: Binding(get: { detailsOpen && !showsSidebar }, set: { detailsOpen = $0 })) {
@@ -320,6 +331,8 @@ struct RootView: View {
             openDetails([DetailsRoute.connection])
         } else if url.host() == "log" {
             openDetails([DetailsRoute.history])
+        } else if url.host() == "approvals" {
+            openDetails([DetailsRoute.approvals])
         } else if url.host() == "voice" {
             detailsOpen = false
             model.voice.open(url)
@@ -433,6 +446,8 @@ struct RootView: View {
             openDetails([DetailsRoute.voice])
         case "conversations":
             openDetails([DetailsRoute.conversations])
+        case "screenHistory":
+            openDetails([DetailsRoute.screenHistory])
         case "updates":
             openDetails([DetailsRoute.updates])
         case "steps":

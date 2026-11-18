@@ -21,11 +21,39 @@ final class AppCapsuleTests: XCTestCase {
 
     /// Old code knew seven apps: of the Chinese pills only WeChat's prompt had a capsule.
     func testEveryHomePillPutsItsAppInTheFieldAsACapsule() {
-        for language in [AppLanguage.simplifiedChinese, .english] {
+        for (preference, language) in [("zh-Hans", AppLanguage.simplifiedChinese), ("en", .english), ("zh-Hant", .traditionalChinese)] {
+            let saved = AppLocalization.shared.preference
+            AppLocalization.shared.preference = preference
+            defer { AppLocalization.shared.preference = saved }
             for pill in HomeIdea.examples(for: language) {
                 XCTAssertEqual(apps(pill.prompt), [pill.app], "\(language) \(pill.prompt)")
                 XCTAssertEqual(joined(pill.prompt), pill.prompt)
             }
+        }
+    }
+
+    func testWeChatMiniProgramNameStaysTextInComposerAndRouting() {
+        let weChat = "com.tencent.xin"
+        let diDi = "com.xiaojukeji.didi"
+        XCTAssertEqual(AppIconStore.bundleIDs(namedIn: "打开查找"), ["com.apple.findmy"])
+        for request in [
+            "帮我在微信滴滴充电小程序里查找我附近最便宜的充电桩",
+            "在微信裡的「滴滴充電」小程式找充電樁",
+        ] {
+            XCTAssertEqual(apps(request), [weChat], request)
+            XCTAssertEqual(AppIconStore.bundleIDs(namedIn: request), [weChat], request)
+            XCTAssertEqual(joined(request), request)
+        }
+
+        for request in [
+            "微信滴滴充电小程序里查价格，再打开滴滴出行",
+            "打开微信然后打开滴滴出行查小程序订单",
+            "打开微信和滴滴出行",
+            "打开微信和滴滴出行看小程序订单",
+        ] {
+            XCTAssertEqual(apps(request), [weChat, diDi], request)
+            XCTAssertEqual(AppIconStore.bundleIDs(namedIn: request), [weChat, diDi], request)
+            XCTAssertEqual(joined(request), request)
         }
     }
 

@@ -1,6 +1,9 @@
 import Foundation
 
 public struct CoreConfig: Sendable {
+    /// Host application version advertised in the relay hello. Hosts supply their installed build.
+    public var relayAppVersion = "1.0"
+
     public var runnerURL: URL
     public var sensitive: SensitivityRules
     /// The owner's way of asking (the app's Approvals page), which `sensitive` is narrowed by
@@ -45,8 +48,9 @@ public struct CoreConfig: Sendable {
     public var humanize: Bool?
     /// The agent's memory (routines and notes); nil uses `RoutineStore.shared`, the app's file.
     public var memory: RoutineStore?
+    public var screenHistory: ScreenHistorySource?
 
-    public init(runnerURL: URL = URL(string: "http://127.0.0.1:8100")!, sensitive: SensitivityRules = SensitivityRules(), approvalWait: Double = 115, toolDeadline: Double = 25, actionCap: Double = 6, readTimeout: Double = 4, busyWait: Double = 2, runnerWait: Double = 15, treeFormat: String = "xml", ownApps: [String] = ["nz.zheha.poki"], accessibilityDeadline: Double = 2, taskGap: Double = 300, humanize: Bool? = nil) {
+    public init(runnerURL: URL = URL(string: "http://127.0.0.1:8100")!, sensitive: SensitivityRules = SensitivityRules(), approvalWait: Double = 115, toolDeadline: Double = 25, actionCap: Double = 6, readTimeout: Double = 4, busyWait: Double = 2, runnerWait: Double = 15, treeFormat: String = "xml", ownApps: [String] = ["nz.zheha.poki"], accessibilityDeadline: Double = 2, taskGap: Double = 300, humanize: Bool? = nil, screenHistory: ScreenHistorySource? = nil) {
         self.accessibilityDeadline = accessibilityDeadline
         self.humanize = humanize
         self.runnerURL = runnerURL
@@ -60,6 +64,7 @@ public struct CoreConfig: Sendable {
         self.treeFormat = treeFormat
         self.ownApps = ownApps
         self.taskGap = taskGap
+        self.screenHistory = screenHistory
     }
 
     /// Whether `app` is Poki itself: one of `ownApps`, or its Live Activity widget or tunnel
@@ -293,7 +298,7 @@ public final class PokiCore: @unchecked Sendable {
 
     /// Replaces the app's tools (none: only look, do and status are listed).
     public func setHostTools(_ tools: [HostTool]) {
-        let own: Set<String> = ["look", "do", "routines", "status"]
+        let own: Set<String> = ["look", "do", "routines", "status", "screen_history"]
         hostTools.value = tools.filter { !own.contains($0.name) }
     }
     /// Told when an MCP client's session starts or ends.
@@ -327,6 +332,7 @@ public final class PokiCore: @unchecked Sendable {
         let client = RelayClient(baseURL: address.phoneURL, host: host, factory: socketFactory, handler: { [weak self] request in
             await self?.handle(request) ?? RelayResponse(id: request.id, status: 503, headers: [:], body: "")
         }, emit: { [weak self] in self?.emit(.relay($0)) })
+        client.appVersion = config.relayAppVersion
         client.undelivered = { [weak self] request, response in self?.keepLost(request, response) }
         relay = client
         client.start()
@@ -375,7 +381,9 @@ public final class PokiCore: @unchecked Sendable {
         // No readable text: the rules cannot tell what it does, so the owner is asked.
         let unreadable = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard let reason = unreadable && config.sensitive.enabled ? "a tap on something with no readable text" : config.rules.reason(touching: element, typing: false, app: app, secureOnScreen: false) else { return .clear }
-        let approval = approvals.request(app: app.describe, summary: unreadable ? "Tap something with no text" : "Tap “\(text)”", reason: reason, fingerprint: "tap:\(UUID().uuidString)")
+        // Never Ask would not stop a tap the rules cannot read, nor one they hold back whatever the way of asking.
+        let stopsWhenOff = !unreadable && config.sensitive.asked(.off).reason(touching: element, typing: false, app: app, secureOnScreen: false) == nil
+        let approval = approvals.request(app: app.describe, summary: unreadable ? "Tap something with no text" : "Tap “\(text)”", reason: reason, fingerprint: "tap:\(UUID().uuidString)", stopsWhenOff: stopsWhenOff)
         switch await approvals.wait(id: approval.id, seconds: seconds) {
         case .approved?:
             _ = approvals.consumeGrant(fingerprint: approval.fingerprint)
@@ -488,11 +496,11 @@ public final class PokiCore: @unchecked Sendable {
                 "protocolVersion": .string(version),
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": "poki", "version": "1.0"],
-                "instructions": .string(Self.instructions),
+                "instructions": .string(Self.toolInstructions(includeScreenHistory: isScreenHistoryEnabled)),
             ]), newSession)
         case "notifications/initialized", "notifications/cancelled": return (nil, nil)
         case "ping": return (isNotification ? nil : result(.object([:])), nil)
-        case "tools/list": return (result(["tools": .array(Self.tools + hostTools.value.map(\.listing))]), nil)
+        case "tools/list": return (result(["tools": .array(listedTools + hostTools.value.map(\.listing))]), nil)
         case "tools/call":
             let name = message["params"]?["name"]?.string ?? ""
             let args = message["params"]?["arguments"] ?? .object([:])
@@ -542,9 +550,14 @@ public final class PokiCore: @unchecked Sendable {
         public let isError: Bool
         public let splitView: SplitViewRead?
         public let splitViewNeedsRead: Bool
-        public init(text: String, jpeg: Data?, isError: Bool, splitView: SplitViewRead? = nil, splitViewNeedsRead: Bool = false) {
+        /// The app in front and its element tree as the read behind this answer saw them, free of the
+        /// read's time and of what changed since the read before; nil for an answer with no tree.
+        public let screen: String?
+        /// Handoff, a locked phone, or runner startup requires waiting rather than model progress.
+        public let waitingForOwner: Bool
+        public init(text: String, jpeg: Data?, isError: Bool, splitView: SplitViewRead? = nil, splitViewNeedsRead: Bool = false, screen: String? = nil, waitingForOwner: Bool = false) {
             self.text = text; self.jpeg = jpeg; self.isError = isError; self.splitView = splitView
-            self.splitViewNeedsRead = splitViewNeedsRead
+            self.splitViewNeedsRead = splitViewNeedsRead; self.screen = screen; self.waitingForOwner = waitingForOwner
         }
     }
 
@@ -555,13 +568,21 @@ public final class PokiCore: @unchecked Sendable {
         let args = (try? JSON.parse(arguments)) ?? .object([:])
         let output = await call(name, args, session: localSession, local: true, expectedApps: expectedApps)
         return ToolAnswer(text: output.text, jpeg: output.jpeg, isError: output.isError, splitView: output.splitView,
-                          splitViewNeedsRead: output.splitViewNeedsRead)
+                          splitViewNeedsRead: output.splitViewNeedsRead, screen: output.screen, waitingForOwner: output.waitingForOwner)
     }
 
     /// The tools as MCP lists them (name, description, inputSchema), as a JSON array, and the
     /// instructions MCP clients get, for a model loop inside the app.
-    public static var toolCatalogJSON: String { JSON.array(tools).serialized() }
-    public static var toolInstructions: String { instructions }
+    public static var toolCatalogJSON: String { toolCatalogJSON(includeScreenHistory: false) }
+    public static func toolCatalogJSON(includeScreenHistory: Bool) -> String {
+        JSON.array(includeScreenHistory ? tools + [screenHistoryTool] : tools).serialized()
+    }
+    public static var toolInstructions: String { toolInstructions(includeScreenHistory: false) }
+    public static func toolInstructions(includeScreenHistory: Bool) -> String {
+        includeScreenHistory ? instructions + " " + screenHistoryInstructions : instructions
+    }
+    var isScreenHistoryEnabled: Bool { config.screenHistory?.isEnabled() == true }
+    var listedTools: [JSON] { isScreenHistoryEnabled ? Self.tools + [Self.screenHistoryTool] : Self.tools }
 
     /// A cancelled call answers at once, while the action it had sent may still be running on the
     /// phone. True once the runner is through with it, false if it is not within `timeout`.
@@ -595,6 +616,7 @@ public final class PokiCore: @unchecked Sendable {
 
     func call(_ name: String, _ args: JSON, session: String? = nil, answerBy: Double? = nil, local: Bool = false, expectedApps: Set<String>? = nil) async -> ToolResult {
         if name == "status" { return status() }
+        if name == "screen_history" { return await screenHistoryCall(args) }
         if let tool = hostTools.value.first(where: { $0.name == name }) {
             // Outside the gate: the app's tool makes its own look and do calls, one at a time as any.
             let answer = await tool.run(args.serialized(), session, answerBy.map { max(0, $0 - now() - 3) })
@@ -608,7 +630,7 @@ public final class PokiCore: @unchecked Sendable {
             computer.lastCallTook = now() - received
             return result
         }
-        guard name == "look" || name == "do" else { return ToolResult(text: "unknown tool \(name); the tools are \((["look", "do", "routines", "status"] + hostTools.value.map(\.name)).joined(separator: ", "))", jpeg: nil, isError: true) }
+        guard name == "look" || name == "do" else { return ToolResult(text: "unknown tool \(name); the tools are \((listedTools.compactMap { $0["name"]?.string } + hostTools.value.map(\.name)).joined(separator: ", "))", jpeg: nil, isError: true) }
         let actions = args["actions"]?.array ?? []
         if name == "do", args["actions"]?.array == nil || actions.count > 20 || actions.contains(where: { $0.object == nil }) {
             return ToolResult(text: "error: actions must be an array of 0 to 20 action objects; nothing was sent.", jpeg: nil, isError: true)
@@ -683,12 +705,15 @@ public final class PokiCore: @unchecked Sendable {
     }
 
     func status() -> ToolResult {
-        var lines = ["runner: \(host?.currentRunner.describe ?? "unknown")"]
+        let state = host?.currentRunner
+        var waitingForOwner = computer.handoffWaiting
+        if case .starting? = state { waitingForOwner = true }
+        var lines = ["runner: \(state?.describe ?? "unknown")"]
         if let relay { lines.append("relay: \(relay.stateDescription)") }
         if let p = approvals.pending { lines.append("approval waiting on the phone: \(p.summary) (\(p.reason), id \(p.id))") }
         if let line = computer.handoffLine(clear: false) { lines.append(line) }
         if let current = gate.current { lines.append("running: \(current)") }
-        return ToolResult(text: lines.joined(separator: "\n"), jpeg: nil)
+        return ToolResult(text: lines.joined(separator: "\n"), jpeg: nil, waitingForOwner: waitingForOwner)
     }
 }
 

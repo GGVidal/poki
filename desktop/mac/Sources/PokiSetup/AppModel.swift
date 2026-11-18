@@ -31,6 +31,7 @@ final class AppModel: ObservableObject {
     @Published var page: Page = .setup
     @Published var info: AppInfo?
     @Published var account: AccountState?
+    @Published var accountError: CoreError?
     @Published var teams: [Team] = []
     @Published var phones: [PhoneRow] = []
     @Published var phonesError: CoreError?
@@ -61,6 +62,7 @@ final class AppModel: ObservableObject {
     @Published var banner: String?
 
     let bridge = Bridge.shared
+    private var started = false
     private var pollTask: Task<Void, Never>?
     private var keeperTask: Task<Void, Never>?
     let demo = ProcessInfo.processInfo.environment["POKI_SETUP_DEMO"] == "1"
@@ -76,6 +78,12 @@ final class AppModel: ObservableObject {
             self.logLines.append(contentsOf: lines)
             if self.logLines.count > 5000 { self.logLines.removeFirst(self.logLines.count - 5000) }
         }
+        bridge.onNeedsCode = { [weak self] in
+            Task { @MainActor in await self?.promptForCode() }
+        }
+        bridge.onAccountChanged = { [weak self] in
+            Task { @MainActor in await self?.accountChanged() }
+        }
     }
 
     var selectedPhone: PhoneRow? {
@@ -83,7 +91,11 @@ final class AppModel: ObservableObject {
         return phones.first
     }
 
+    var isRateLimited: Bool { account?.isRateLimited() == true }
+
     func start() {
+        guard !started else { return }
+        started = true
         if demo {
             loadDemo()
             return
@@ -150,13 +162,47 @@ final class AppModel: ObservableObject {
     func refreshAccount() async {
         if demo { return }
         do {
-            account = try await bridge.call("account")
-            if account?.signedIn == true, teams.isEmpty {
-                teams = (try? await bridge.call("teams")) ?? []
+            let state: AccountState = try await bridge.call("account")
+            account = state
+            accountError = nil
+            if state.pendingFactor != nil {
+                codeVia = state.pendingFactor
+                needsCode = true
             }
+            if state.signedIn, state.pendingFactor == nil, !state.isRateLimited(), teams.isEmpty {
+                do {
+                    teams = try await bridge.call("teams")
+                } catch let e as CoreError where e.kind == "needs_code" {
+                    await promptForCode()
+                } catch {}
+            }
+        } catch let e as CoreError {
+            accountError = e
         } catch {
-            report(error)
+            accountError = CoreError(kind: "error", message: error.localizedDescription)
         }
+    }
+
+    /// Another client saved the account: show what it stored now, without asking Apple for anything.
+    func accountChanged() async {
+        guard !demo, let state: AccountState = try? await bridge.call("account") else { return }
+        account = state
+        accountError = nil
+        if state.needsReauth == true, state.pendingFactor == nil {
+            needsCode = false
+            codeVia = nil
+            teams = []
+        }
+    }
+
+    func promptForCode() async {
+        guard !demo else { return }
+        if let state: AccountState = try? await bridge.call("account") {
+            account = state
+            accountError = nil
+            codeVia = state.pendingFactor
+        }
+        needsCode = true
     }
 
     func refreshPhones() async {
@@ -328,12 +374,26 @@ final class AppModel: ObservableObject {
     }
 
     func renewDue() async {
-        guard !demo, account?.passwordKept == true else { return }
-        _ = try? await bridge.call("renew_due", as: [RenewResult].self)
+        guard !demo, !needsCode, !isRateLimited, account?.passwordKept == true else { return }
+        if let state: AccountState = try? await bridge.call("account") {
+            account = state
+            if state.pendingFactor != nil {
+                codeVia = state.pendingFactor
+                needsCode = true
+                return
+            }
+            if state.isRateLimited() || !state.passwordKept { return }
+        }
+        let results = (try? await bridge.call("renew_due", as: [RenewResult].self)) ?? []
+        if results.contains(where: { $0.kind == "needs_code" }) {
+            await promptForCode()
+        } else if results.contains(where: { !$0.ok }), let state: AccountState = try? await bridge.call("account") {
+            account = state
+        }
         await refreshRecords()
     }
 
-    struct RenewResult: Decodable { var udid: String; var ok: Bool; var error: String? }
+    struct RenewResult: Decodable { var udid: String; var ok: Bool; var error: String?; var kind: String? }
 
     struct AgentPrompt: Decodable { var prompt: String }
 
