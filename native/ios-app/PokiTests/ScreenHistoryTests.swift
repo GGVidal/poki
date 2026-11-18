@@ -394,5 +394,16 @@ final class ScreenHistoryTests: XCTestCase {
         XCTAssertTrue(giantParsed.truncated)
         XCTAssertEqual(giantParsed.entries.count, 1)
         XCTAssertTrue(giantParsed.entries[0].text.contains("needle-marker"))
+
+        // A title longer than the whole result is shortened too.
+        let giantTitle = "title-marker " + String(repeating: "t", count: 5000)
+        HistoryStore.shared.add(at: now.addingTimeInterval(-5), app: "com.apple.mobilenotes", title: giantTitle, text: "Short body")
+        let titled = await app.runTool("screen_history", arguments: #"{"period":"last_hour","query":"title-marker"}"#)
+        XCTAssertFalse(titled.isError, titled.text)
+        XCTAssertLessThanOrEqual(titled.text.count, 4000)
+        let titledParsed = try decodeHistoryJSON(titled.text)
+        XCTAssertTrue(titledParsed.truncated)
+        XCTAssertEqual(titledParsed.entries.count, 1)
+        XCTAssertTrue(titledParsed.entries.first?.title?.hasPrefix("title-marker") == true)
     }
 }

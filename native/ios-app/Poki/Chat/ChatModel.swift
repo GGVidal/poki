@@ -744,10 +744,13 @@ final class ChatModel {
 
     private func modelLoop(provider: ModelProvider, model: Model, inSplitView: Bool) -> PiLoop {
         let changedWorkspace = loop.map { $0.inSplitView != inSplitView } ?? false
+        let tools = inSplitView ? Harness.splitViewTools : Harness.tools
+        // Turning Screen History on or off changes the tools; the conversation so far is kept.
+        let changedTools = loop.map { $0.toolNames != tools.map(\.name) } ?? false
         if let loop, loop.provider == provider, loop.model.id == model.id,
-           loop.model.baseUrl == model.baseUrl, !changedWorkspace { return loop }
+           loop.model.baseUrl == model.baseUrl, !changedWorkspace, !changedTools { return loop }
         // A different workspace starts without old screen evidence.
-        let next = PiLoop(provider: provider, model: model, tools: inSplitView ? Harness.splitViewTools : Harness.tools,
+        let next = PiLoop(provider: provider, model: model, tools: tools,
                           inSplitView: inSplitView, carrying: changedWorkspace ? [] : loop?.messages ?? []) { [weak self] call in
             guard let self else { return PokiCore.ToolAnswer(text: "Task stopped. Action not executed.", jpeg: nil, isError: true) }
             return await self.perform(call)

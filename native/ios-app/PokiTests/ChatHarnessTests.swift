@@ -417,6 +417,34 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertTrue(FakeCompletions.system(requests[3]).contains(note), "the second task's prompt has the note the first saved")
     }
 
+    /// Turning Screen History on between two tasks in one conversation gives the next task the
+    /// screen_history tool, and the conversation so far goes with it.
+    func testTurningOnScreenHistoryMidConversationOffersItsToolToTheNextTask() async throws {
+        let before = UserDefaults.standard.object(forKey: HistoryCapture.enabledKey)
+        HistoryCapture.shared.enabled = false
+        addTeardownBlock { @MainActor in
+            HistoryCapture.shared.enabled = false
+            UserDefaults.standard.set(before, forKey: HistoryCapture.enabledKey)
+        }
+        let server = try FakeCompletions(replies: [Self.done, FakeCompletions.text("好的。"), Self.done, FakeCompletions.text("好的。")])
+        let chat = chat(on: server)
+
+        _ = await chat.runDelegated("Open the sample settings page")
+        HistoryCapture.shared.enabled = true
+        _ = await chat.runDelegated("What did I write in Notes a moment ago?")
+
+        func offered(_ request: [String: Any]) -> [String] {
+            (request["tools"] as? [[String: Any]] ?? []).compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+        }
+        let requests = server.requests
+        XCTAssertEqual(requests.count, 4)
+        guard requests.count == 4 else { return }
+        XCTAssertFalse(offered(requests[0]).contains("screen_history"))
+        XCTAssertTrue(offered(requests[2]).contains("screen_history"), "the task after turning it on can read Screen History")
+        let second = String(decoding: try JSONSerialization.data(withJSONObject: requests[2]), as: UTF8.self)
+        XCTAssertTrue(second.contains("Open the sample settings page"), "and still has the conversation so far")
+    }
+
     private static let learnedLine = "The owner's usual music app"
     private static let historyKeys = ["history.enabled", "history.learnHabits", "history.habitsForgottenAt", "history.learnedMusicHabit", "history.habitJudged"]
 
