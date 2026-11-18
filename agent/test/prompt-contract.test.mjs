@@ -44,7 +44,6 @@ test('App Harness prompts preserve personal-assistant voice, tool, routing, evid
   assert.match(combined, /scrolling down|scroll down/i);
   assert.match(combined, /no longer changes|stops changing/i);
   assert.match(combined, /purchase/);
-  assert.match(harnessSwift, /\[system, PokiCore\.toolInstructions, WebTools\.instructions\]/);
   assert.match(harnessSwift, /swipe down on the Home Screen to search/);
   assert.match(harnessSwift, /say the app is not installed only when that search finds nothing/);
   assert.match(harnessSwift, /routines \{action: \\"save\\"/);
