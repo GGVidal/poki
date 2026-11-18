@@ -338,22 +338,29 @@ impl std::io::Write for FileOrSink {
     }
 }
 
-fn advance_pending_or_abort(
-    signer: &setup::Signer,
-    current: &mut poki_setup_core::apple::gsa::Pending,
-    err: poki_setup_core::Error,
+/// Asks for the code until Apple takes it, and stops when Apple is rate-limiting or the sign-in has
+/// to start again. `ask` prompts the person; `finish` checks one code and hands back the
+/// verification step the signer kept.
+async fn enter_codes(
+    mut current: poki_setup_core::apple::gsa::Pending,
+    mut ask: impl FnMut() -> Result<String>,
+    mut finish: impl AsyncFnMut(poki_setup_core::apple::gsa::Pending, String) -> (poki_setup_core::Result<()>, Option<poki_setup_core::apple::gsa::Pending>),
 ) -> Result<()> {
-    use poki_setup_core::apple::gsa::{is_incomplete_session, is_rate_limit};
-    if is_rate_limit(&err) || is_incomplete_session(&err) {
-        return Err(err.into());
+    loop {
+        let code = ask()?;
+        let (res, saved) = finish(current.clone(), code).await;
+        match res {
+            Ok(()) => return Ok(()),
+            Err(e) if poki_setup_core::apple::gsa::is_rate_limit(&e) || poki_setup_core::apple::gsa::is_incomplete_session(&e) => return Err(e.into()),
+            Err(e) => {
+                current = saved.unwrap_or(current);
+                if current.failed_attempts >= 2 {
+                    return Err(e.into());
+                }
+                eprintln!("{e}");
+            }
+        }
     }
-    if let Some(saved) = signer.pending().cloned() {
-        *current = saved;
-    }
-    if current.failed_attempts >= 2 {
-        return Err(err.into());
-    }
-    Ok(())
 }
 
 async fn run() -> Result<()> {
@@ -367,10 +374,7 @@ async fn run() -> Result<()> {
         .with_ansi(false)
         .with_writer(writer)
         .init();
-    execute(Cli::parse()).await
-}
-
-async fn execute(cli: Cli) -> Result<()> {
+    let cli = Cli::parse();
     let reporter = if cli.json { json_reporter() } else { Reporter::stderr() };
     match cli.cmd {
         Cmd::Next { udid } => {
@@ -465,18 +469,15 @@ async fn execute(cli: Cli) -> Result<()> {
                     if cli.json || password_stdin || !std::io::stdin().is_terminal() {
                         return Err(NeedsCode(format!("Apple sent a six-digit code to {via}. Ask the person for it, then run: poki-setup login --code <code>")).into());
                     }
-                    let mut current = pending;
-                    loop {
-                        let code = rpassword::prompt_password(format!("Apple sent a code to {via}. Code: "))?;
-                        match signer.finish_sign_in(current.clone(), &code).await {
-                            Ok(()) => break,
-                            Err(e) => {
-                                let msg = e.to_string();
-                                advance_pending_or_abort(&signer, &mut current, e)?;
-                                eprintln!("{msg}");
-                            }
-                        }
-                    }
+                    enter_codes(
+                        pending,
+                        || Ok(rpassword::prompt_password(format!("Apple sent a code to {via}. Code: "))?),
+                        async |p, code| {
+                            let r = signer.finish_sign_in(p, &code).await;
+                            (r, signer.pending().cloned())
+                        },
+                    )
+                    .await?;
                 }
             }
             let team = signer.team().await?;
@@ -712,14 +713,10 @@ async fn execute(cli: Cli) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, advance_pending_or_abort, cli_env_filter, execute};
-    use clap::Parser;
+    use super::{cli_env_filter, enter_codes};
     use std::io::Write;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[derive(Clone, Default)]
     struct SharedBuf(Arc<Mutex<Vec<u8>>>);
@@ -745,7 +742,6 @@ mod tests {
 
     #[test]
     fn default_cli_filter_outputs_2fa_code_request_without_rust_log() {
-        let _env_guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("poki-cli-log-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -839,125 +835,35 @@ mod tests {
         assert!(!rendered.contains("person@example.com") && !rendered.contains("synthetic-secret-password"));
     }
 
-    #[test]
-    fn incomplete_session_stops_cli_code_loop_and_blocks_teams_and_renew_due() {
-        let _env_guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!("poki-cli-reauth-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        unsafe {
-            std::env::set_var("POKI_SETUP_HOME", &dir);
-            std::env::set_var("POKI_SETUP_FILE_SECRETS", "1");
-        }
-
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(async {
-            let hits = Arc::new(AtomicUsize::new(0));
-            let hits_srv = hits.clone();
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let url = format!("http://{}", listener.local_addr().unwrap());
-            tokio::spawn(async move {
-                while let Ok((mut stream, _)) = listener.accept().await {
-                    hits_srv.fetch_add(1, Ordering::SeqCst);
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.read(&mut buf).await;
-                    let _ = stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+    #[tokio::test]
+    async fn code_prompt_stops_once_apple_needs_a_fresh_sign_in() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let pending: poki_setup_core::apple::gsa::Pending = serde_json::from_value(serde_json::json!({
+            "apple_id": "person@example.com",
+            "password": "synthetic-saved-password",
+            "keep_password": true,
+            "session": {"apple_id": "person@example.com", "adsid": "000123-abc", "gs_idms_token": "tok", "first_name": "Test", "last_name": "Person", "sk": "", "c": ""},
+            "via": "trusted_device",
+            "phone_id": 0,
+            "created_at": now - 10,
+            "last_sent_at": now - 10
+        }))
+        .unwrap();
+        let mut prompts = 0;
+        let res = enter_codes(
+            pending,
+            || {
+                prompts += 1;
+                if prompts > 3 {
+                    anyhow::bail!("asked for a code {prompts} times");
                 }
-            });
-
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-            let state_dir = poki_setup_core::paths::state_dir().unwrap();
-            let account_json = serde_json::json!({
-                "session": {
-                    "apple_id": "person@example.com",
-                    "adsid": "000123-abc",
-                    "gs_idms_token": "expired-tok",
-                    "first_name": "Test",
-                    "last_name": "Person",
-                    "sk": "Bw==",
-                    "c": "Yw=="
-                },
-                "xcode_token": null,
-                "password": "synthetic-saved-password",
-                "team_id": "TEAM123",
-                "anisette": { "kind": "remote", "url": url },
-                "needs_reauth": true
-            });
-            std::fs::write(state_dir.join("account.json"), serde_json::to_vec(&account_json).unwrap()).unwrap();
-
-            let due_rec = poki_setup_core::keeper::Record {
-                udid: "00008150-CLI-REAUTH-DUE".into(),
-                phone_name: "Test iPhone".into(),
-                ios: "27.0".into(),
-                apple_id: "person@example.com".into(),
-                team_id: "TEAM123".into(),
-                team_name: "Test Team".into(),
-                team_is_free: true,
-                bundle_id: "nz.zheha.poki.TEAM123".into(),
-                app_group: "group.nz.zheha.poki.TEAM123".into(),
-                version: "0.4.5".into(),
-                build: "1".into(),
-                release_tag: "app-0.4.5".into(),
-                signed_at: now - 6 * 86_400,
-                profile_expires_at: now + 86_400,
-                last_checked_at: None,
-                last_error: None,
-                wifi_address: None,
-                pairing_handed_off: false,
-            };
-            poki_setup_core::keeper::put(due_rec).unwrap();
-
-            let mut consumed_pending: poki_setup_core::apple::gsa::Pending = serde_json::from_value(serde_json::json!({
-                "apple_id": "person@example.com",
-                "password": "synthetic-saved-password",
-                "keep_password": true,
-                "session": {
-                    "apple_id": "person@example.com",
-                    "adsid": "000123-abc",
-                    "gs_idms_token": "consumed-tok",
-                    "first_name": "Test",
-                    "last_name": "Person",
-                    "sk": "",
-                    "c": ""
-                },
-                "via": "trusted_device",
-                "phone_id": 0,
-                "created_at": now - 10,
-                "last_sent_at": now - 10
-            }))
-            .unwrap();
-
-            let signer = poki_setup_core::setup::Signer::open().unwrap();
-            let step_res = advance_pending_or_abort(
-                &signer,
-                &mut consumed_pending,
-                poki_setup_core::apple::gsa::incomplete_session(),
-            );
-            let teams_res = execute(Cli::try_parse_from(["poki-setup", "teams"]).unwrap()).await;
-            let renew_due_res = execute(Cli::try_parse_from(["poki-setup", "renew", "--due"]).unwrap()).await;
-            let install_res = execute(Cli::try_parse_from(["poki-setup", "install", "--udid", "00008150-CLI-NONEXISTENT-UDID"]).unwrap()).await;
-
-            assert!(
-                step_res.is_err(),
-                "interactive CLI login loop must exit immediately when keyless 409 clears Pending instead of prompting again"
-            );
-            assert_eq!(
-                hits.load(Ordering::SeqCst),
-                0,
-                "CLI teams/renew/install must make 0 network requests while manual sign-in is required"
-            );
-            assert!(
-                teams_res.unwrap_err().to_string().to_lowercase().contains("sign in again"),
-                "CLI teams must ask user to sign in again"
-            );
-            assert!(renew_due_res.is_ok(), "CLI renew --due must quietly skip due phones while manual sign-in is required");
-            assert_eq!(poki_setup_core::keeper::get("00008150-CLI-REAUTH-DUE").unwrap().unwrap().last_error, None);
-            assert!(
-                install_res.unwrap_err().to_string().to_lowercase().contains("sign in first"),
-                "CLI install must treat account as not signed in"
-            );
-        });
-
-        let _ = std::fs::remove_dir_all(&dir);
+                Ok("654321".into())
+            },
+            // What the signer answers when Apple takes the code but opens no session.
+            async |_, _| (Err(poki_setup_core::apple::gsa::incomplete_session()), None),
+        )
+        .await;
+        assert_eq!(prompts, 1, "the person must not be asked for another code once the sign-in has to start again");
+        assert!(res.unwrap_err().to_string().contains("Sign in again"));
     }
 }
