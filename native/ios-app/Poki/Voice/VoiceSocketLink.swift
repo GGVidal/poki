@@ -23,7 +23,8 @@ protocol VoiceSocketAdapter: AnyObject {
     func encodeMicrophonePCM(_ pcm16LE: Data) -> [String: Any]?
     func translateClientEvent(_ event: [String: Any], controls: VoiceSocketControls) -> [[String: Any]]
     func translateServerMessage(_ message: [String: Any], controls: VoiceSocketControls)
-    func mapConnectionError(_ error: Error, httpStatus: Int) -> Error
+    /// `closeCode` is 0 and `closeReason` empty when the server sent no close frame.
+    func mapConnectionError(_ error: Error, httpStatus: Int, closeCode: Int, closeReason: String) -> Error
 }
 
 extension VoiceSocketAdapter {
@@ -138,10 +139,10 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
             )
         } catch {
             if closed || Task.isCancelled { throw CancellationError() }
-            let status = (socket.response as? HTTPURLResponse)?.statusCode ?? 0
+            let failure = mapFailure(error, socket)
             socket.cancel(with: .goingAway, reason: nil)
             self.socket = nil
-            throw adapter.mapConnectionError(error, httpStatus: status)
+            throw failure
         }
         guard !closed, self.socket === socket else { throw CancellationError() }
         try startAudio(microphone: microphone)
@@ -154,9 +155,18 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
                     self.handleServerMessage(message)
                 }
             } catch {
-                self?.reportFailure(socket, reason: "voice WebSocket closed")
+                guard let self else { return }
+                self.reportFailure(socket, reason: "voice WebSocket closed: \(self.mapFailure(error, socket).localizedDescription)")
             }
         }
+    }
+
+    /// The server's reason (a rejected key, a used-up quota) rides on the close frame or the HTTP status.
+    @MainActor
+    private func mapFailure(_ error: Error, _ socket: URLSessionWebSocketTask) -> Error {
+        let status = (socket.response as? HTTPURLResponse)?.statusCode ?? 0
+        let reason = socket.closeReason.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        return adapter.mapConnectionError(error, httpStatus: status, closeCode: socket.closeCode.rawValue, closeReason: reason)
     }
 
     @MainActor
@@ -237,6 +247,8 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
         onClosed(reason)
     }
 
+    // TODO: no observer for AVAudioEngineConfigurationChange or audio session interruptions yet; a route
+    // change (headphones, a call) stops the engine and the talk goes silent until it ends.
     @MainActor
     private func startAudio(microphone: Bool) throws {
         let audio = AVAudioSession.sharedInstance()

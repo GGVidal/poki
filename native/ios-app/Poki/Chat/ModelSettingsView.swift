@@ -496,7 +496,7 @@ struct KeyEntry: View {
                 // Ready at once: chat on this account's first fast model, live voice on where it can.
                 ModelKeys.selectedProvider = provider
                 if let first = ModelCatalog.available(provider).first { ModelKeys.selectedModel = first.id }
-                if ModelAccounts.canTalkLive(provider) { VoiceDirect.setEnabled(true, for: provider) }
+                if provider == .openai { VoiceDirect.enabled = true }
                 Task { _ = try? await ModelCatalog.refresh(provider) }
             }
             key = ""

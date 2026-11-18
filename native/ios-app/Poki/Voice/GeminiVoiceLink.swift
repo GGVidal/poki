@@ -2,7 +2,7 @@ import Foundation
 
 enum GeminiVoiceFailure: LocalizedError {
     case invalidEndpoint
-    case unauthorized(String)
+    case unauthorized
     case rejected(Int, String)
     case connection
 
@@ -10,10 +10,8 @@ enum GeminiVoiceFailure: LocalizedError {
         switch self {
         case .invalidEndpoint:
             AppLocalization.text(LocalizedStringResource("Poki could not connect to Gemini Live."))
-        case .unauthorized(let detail):
-            detail.isEmpty
-                ? AppLocalization.text(LocalizedStringResource("Check your Gemini key in Settings › Models. Gemini rejected it."))
-                : AppLocalization.text(LocalizedStringResource("Gemini answered: \(detail)"))
+        case .unauthorized:
+            AppLocalization.text(LocalizedStringResource("Check your Gemini key in Settings › Models. Gemini rejected it."))
         case .rejected(let code, let detail):
             code > 0
                 ? AppLocalization.text(LocalizedStringResource("Gemini answered \(code): \(detail)"))
@@ -39,6 +37,7 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
 
     private struct TurnState {
         var userSpeaking = false
+        var interruptedTurn = false
         var userTranscript = ""
         var activeResponseID: String?
         var nextResponseSequence = 0
@@ -65,15 +64,20 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
         self.tools = tools
     }
 
+    /// The key goes in a header, as Google's SDK sends it, so no URL in an error or a log carries it.
     func makeRequest(secret: String) throws -> URLRequest {
-        guard var components = URLComponents(string: Self.endpoint) else {
-            throw GeminiVoiceFailure.invalidEndpoint
-        }
-        components.queryItems = [URLQueryItem(name: "key", value: secret)]
-        guard let url = components.url else {
-            throw GeminiVoiceFailure.invalidEndpoint
-        }
-        return URLRequest(url: url, timeoutInterval: 20)
+        guard let url = URL(string: Self.liveURL) else { throw GeminiVoiceFailure.invalidEndpoint }
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.setValue(secret, forHTTPHeaderField: "x-goog-api-key")
+        return request
+    }
+
+    private static var liveURL: String {
+        #if DEBUG && targetEnvironment(simulator)
+        // Simulator runs only: `-pokiGeminiLiveURL ws://127.0.0.1:<port>` talks to a local stand-in for Gemini Live.
+        if let local = UserDefaults.standard.string(forKey: "pokiGeminiLiveURL") { return local }
+        #endif
+        return endpoint
     }
 
     func setupPayload() -> [String: Any] {
@@ -81,11 +85,9 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
         let declarations: [[String: Any]] = tools.compactMap { tool in
             guard let name = tool["name"] as? String,
                   let description = tool["description"] as? String else { return nil }
-            var declaration: [String: Any] = [
-                "name": name,
-                "description": description,
-                "behavior": "NON_BLOCKING",
-            ]
+            // No behavior: each Live model runs calls its own way (3.8 Live without blocking, 3.1 Flash
+            // Live blocking only), and a result is then said once the model is idle.
+            var declaration: [String: Any] = ["name": name, "description": description]
             if let parameters = tool["parameters"] as? [String: Any] {
                 declaration["parametersJsonSchema"] = Self.stripSchemaMeta(parameters)
             }
@@ -117,7 +119,7 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
                 let code = error["code"] as? Int ?? 0
                 let reason = GeminiVoiceFailure.redact(error["message"] as? String ?? "setup rejected")
                 if code == 401 || code == 403 {
-                    throw GeminiVoiceFailure.unauthorized(reason)
+                    throw GeminiVoiceFailure.unauthorized
                 }
                 throw GeminiVoiceFailure.rejected(code, reason)
             }
@@ -178,6 +180,9 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
                     ],
                 ]]
             }
+            // TODO: unverified against a real key. Notes go out as clientContent with turnComplete false and
+            // only complete on the next response.create; a note with no response.create after it (the
+            // carry-over note at the start of a second talk, Stop talking) may leave Gemini waiting.
             if itemType == "message", let content = item["content"] as? [[String: Any]] {
                 let audioFrames: [[String: Any]] = content.compactMap { part in
                     guard part["type"] as? String == "input_audio",
@@ -248,11 +253,14 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
         }
     }
 
-    func mapConnectionError(_ error: Error, httpStatus: Int) -> Error {
+    func mapConnectionError(_ error: Error, httpStatus: Int, closeCode: Int, closeReason: String) -> Error {
         if let known = error as? GeminiVoiceFailure { return known }
-        if httpStatus == 401 || httpStatus == 403 {
-            return GeminiVoiceFailure.unauthorized("")
+        let reason = GeminiVoiceFailure.redact(closeReason)
+        // Gemini closes with 1007 and "API key not valid" for a wrong key, 1008 for a key without access.
+        if httpStatus == 401 || httpStatus == 403 || closeCode == 1007 || closeCode == 1008 {
+            return GeminiVoiceFailure.unauthorized
         }
+        if !reason.isEmpty { return GeminiVoiceFailure.rejected(closeCode, reason) }
         if httpStatus >= 400 {
             return GeminiVoiceFailure.rejected(httpStatus, GeminiVoiceFailure.redact(error.localizedDescription))
         }
@@ -262,6 +270,7 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
 
     private func handleServerContent(_ content: [String: Any], usage: [String: Any]?, controls: VoiceSocketControls) {
         if content["interrupted"] as? Bool == true {
+            state.interruptedTurn = true
             flushOutputTranscript(controls: controls)
             // VoiceModel marks the talk interrupted only when speech_started arrives while phase is .speaking,
             // before output_audio_buffer.cleared moves the phase out of .speaking.
@@ -275,6 +284,8 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
             }
         }
 
+        // TODO: Gemini sends no speech-start event with automatic VAD, so the first transcription chunk
+        // stands in for it; its latency against a real key is unmeasured.
         if let inputTrans = content["inputTranscription"] as? [String: Any],
            let chunk = inputTrans["text"] as? String, !chunk.isEmpty {
             if !state.userSpeaking, state.activeResponseID == nil {
@@ -319,8 +330,11 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
 
         let generationComplete = content["generationComplete"] as? Bool == true
         let turnComplete = content["turnComplete"] as? Bool == true
-        if generationComplete || turnComplete {
-            finishUserSpeechIfNeeded(controls: controls)
+        // An interrupted turn ends interrupted, then turnComplete, while the person is still talking: their
+        // speech ends when the next answer starts.
+        var userTurnWithoutAnswer = false
+        if generationComplete || turnComplete, !state.interruptedTurn {
+            userTurnWithoutAnswer = finishUserSpeechIfNeeded(controls: controls) && state.activeResponseID == nil
             if !state.dropModelAudio {
                 flushOutputTranscript(controls: controls)
             } else {
@@ -328,9 +342,14 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
             }
         }
 
+        // TODO: gemini-3.8-live-extended-thinking can send turnComplete with interactionStatus IN_PROGRESS
+        // while it still reasons; that is read here as the end of the answer.
         if turnComplete {
+            state.interruptedTurn = false
             state.dropModelAudio = false
             state.outputTranscript = ""
+            // The model chose not to answer (proactive audio): an empty answer, so the talk can end in time.
+            if userTurnWithoutAnswer { ensureActiveResponse(controls: controls) }
             if let activeID = state.activeResponseID {
                 state.activeResponseID = nil
                 var response: [String: Any] = ["id": activeID]
@@ -393,8 +412,11 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
         return id
     }
 
-    private func finishUserSpeechIfNeeded(controls: VoiceSocketControls) {
-        if state.userSpeaking {
+    /// Whether the person was speaking until now.
+    @discardableResult
+    private func finishUserSpeechIfNeeded(controls: VoiceSocketControls) -> Bool {
+        let wasSpeaking = state.userSpeaking
+        if wasSpeaking {
             state.userSpeaking = false
             controls.emitEvent(["type": "input_audio_buffer.speech_stopped"])
             controls.emitEvent(["type": "conversation.item.added", "item": ["role": "user"]])
@@ -407,6 +429,7 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
                 "transcript": trimmed,
             ])
         }
+        return wasSpeaking
     }
 
     private func flushOutputTranscript(controls: VoiceSocketControls) {

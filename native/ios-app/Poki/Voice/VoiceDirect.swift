@@ -13,8 +13,10 @@ import Speech
 enum VoiceDirect {
     static let supportedProviders: [ModelProvider] = [.openai, .gemini]
 
+    /// The owner's switch in Accounts › <account> › Live Voice. Gemini starts off while a Mac voice bridge
+    /// is set, so a bridge that talked before keeps talking until the owner turns Gemini on.
     static func isEnabled(_ provider: ModelProvider) -> Bool {
-        UserDefaults.standard.object(forKey: "voice.\(provider.rawValue).enabled") as? Bool ?? true
+        UserDefaults.standard.object(forKey: "voice.\(provider.rawValue).enabled") as? Bool ?? (provider != .gemini || VoiceBridge.saved == nil)
     }
 
     static func setEnabled(_ on: Bool, for provider: ModelProvider) {
@@ -56,9 +58,6 @@ enum VoiceDirect {
     /// Dictation into the chat works with any model the chat can use.
     static var canDictate: Bool { ModelKeys.hasUsableKey }
 
-    static var voiceInstructions: String { instructions }
-    static var voiceTools: [[String: Any]] { tools }
-
     static func sessionToken(for provider: ModelProvider, apiKey: String) async throws -> VoiceBridge.Token {
         if provider == .gemini {
             return VoiceBridge.Token(value: apiKey, model: ModelCatalog.voiceModel(for: .gemini), local_tools: ["get_ios_version", "look", "do"])
@@ -71,14 +70,15 @@ enum VoiceDirect {
                                onEvent: @escaping @MainActor ([String: Any]) -> Void,
                                onClosed: @escaping @MainActor (String) -> Void) -> VoiceConnection {
         if provider == .gemini {
-            let adapter = GeminiVoiceAdapter(
-                model: ModelCatalog.voiceModel(for: .gemini),
-                instructions: instructions,
-                tools: tools
-            )
-            return VoiceSocketLink(adapter: adapter, onEvent: onEvent, onClosed: onClosed)
+            return VoiceSocketLink(adapter: geminiAdapter(), onEvent: onEvent, onClosed: onClosed)
         }
         return VoiceLink(onEvent: onEvent, onClosed: onClosed)
+    }
+
+    /// Gemini Live with the same instructions and tools as OpenAI Realtime.
+    @MainActor
+    static func geminiAdapter() -> GeminiVoiceAdapter {
+        GeminiVoiceAdapter(model: ModelCatalog.voiceModel(for: .gemini), instructions: instructions, tools: tools)
     }
 
     /// This iPhone's first preferred language, named in English ("Chinese, Simplified (China mainland)"):
@@ -115,6 +115,7 @@ enum VoiceDirect {
 
     /// A one-minute Realtime key from OpenAI, made with the owner's API key (sent only to OpenAI).
     static func token(apiKey: String) async throws -> VoiceBridge.Token {
+        let model = ModelCatalog.voiceModel(for: .openai)
         let session: [String: Any] = [
             "type": "realtime", "model": model, "instructions": instructions, "output_modalities": ["audio"],
             "audio": [

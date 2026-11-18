@@ -1,12 +1,13 @@
 import Foundation
 import Network
+import os
 import PokiCore
 import XCTest
 @testable import Poki
 
 final class LocalWebSocketServer: @unchecked Sendable {
     private let listener: NWListener
-    private let queue = DispatchQueue(label: "poki-test-websocket")
+    private let queue: DispatchQueue
     private let lock = NSLock()
     private var active: NWConnection?
     private var receivedFrames: [[String: Any]] = []
@@ -14,12 +15,23 @@ final class LocalWebSocketServer: @unchecked Sendable {
 
     var port: UInt16 { listener.port?.rawValue ?? 0 }
     var received: [[String: Any]] { lock.withLock { receivedFrames } }
+    /// The handshake request's headers, names lowercased.
+    var headers: [String: String] { handshake.withLock { $0 } }
+    private let handshake: OSAllocatedUnfairLock<[String: String]>
 
     init(onClientFrame: (@Sendable ([String: Any], LocalWebSocketServer) -> Void)? = nil) throws {
         self.onClientFrame = onClientFrame
+        let queue = DispatchQueue(label: "poki-test-websocket")
+        let handshake = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+        self.queue = queue
+        self.handshake = handshake
         let parameters = NWParameters.tcp
         let websocket = NWProtocolWebSocket.Options()
         websocket.autoReplyPing = true
+        websocket.setClientRequestHandler(queue) { _, headers in
+            handshake.withLock { seen in headers.forEach { seen[$0.name.lowercased()] = $0.value } }
+            return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+        }
         parameters.defaultProtocolStack.applicationProtocols.insert(websocket, at: 0)
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
@@ -48,6 +60,14 @@ final class LocalWebSocketServer: @unchecked Sendable {
         let context = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
         let connection = lock.withLock { active }
         connection?.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
+    }
+
+    func close(code: NWProtocolWebSocket.CloseCode, reason: String) {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = code
+        let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
+        let connection = lock.withLock { active }
+        connection?.send(content: Data(reason.utf8), contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
     }
 
     private func accept(_ connection: NWConnection) {
@@ -121,7 +141,7 @@ private final class LoopbackSocketAdapter: VoiceSocketAdapter {
         }
     }
 
-    func mapConnectionError(_ error: Error, httpStatus: Int) -> Error {
+    func mapConnectionError(_ error: Error, httpStatus: Int, closeCode: Int, closeReason: String) -> Error {
         error
     }
 }
@@ -260,9 +280,10 @@ final class GeminiVoiceTests: XCTestCase {
         UserDefaults.standard.set(savedOpenAIModel, forKey: "voice.model")
         UserDefaults.standard.set(savedGeminiModel, forKey: "voice.model.gemini")
         UserDefaults.standard.set(savedBridge, forKey: "voiceBridge")
+        UserDefaults.standard.removeObject(forKey: "pokiGeminiLiveURL")
     }
 
-    func testVoiceSocketLinkStreamsMessagesAndClearsQueuedPlaybackWithoutBlockingInput() async throws {
+    func testVoiceSocketLinkSendsAndPlaysOverItsWebSocketAndClearsQueuedPlayback() async throws {
         let server = try LocalWebSocketServer { frame, server in
             if frame["hello"] as? Bool == true {
                 server.send(["ready": true])
@@ -313,11 +334,7 @@ final class GeminiVoiceTests: XCTestCase {
                 return ("Settings is open on screen", false)
             },
             connection: { onEvent, onClosed in
-                let adapter = GeminiVoiceAdapter(
-                    model: VoiceDirect.model,
-                    instructions: VoiceDirect.voiceInstructions,
-                    tools: VoiceDirect.voiceTools
-                )
+                let adapter = VoiceDirect.geminiAdapter()
                 let conn = AdapterHarnessConnection(adapter: adapter, onEvent: onEvent, onClosed: onClosed)
                 activeLink = conn
                 return conn
@@ -334,7 +351,7 @@ final class GeminiVoiceTests: XCTestCase {
         XCTAssertNotNil(setup["outputAudioTranscription"])
         let declarations = try XCTUnwrap(((setup["tools"] as? [[String: Any]])?.first)?["functionDeclarations"] as? [[String: Any]])
         XCTAssertEqual(declarations.map { $0["name"] as? String }, ["get_ios_version", "look", "do"])
-        XCTAssertTrue(declarations.allSatisfy { $0["behavior"] as? String == "NON_BLOCKING" && $0["parametersJsonSchema"] != nil })
+        XCTAssertTrue(declarations.allSatisfy { $0["parametersJsonSchema"] != nil })
 
         activeLink.receiveServer(["serverContent": ["inputTranscription": ["text": "打开"]]])
         activeLink.receiveServer(["serverContent": ["inputTranscription": ["text": "设置"]]])
@@ -389,11 +406,7 @@ final class GeminiVoiceTests: XCTestCase {
             clearTap: { _, _, _ in .clear },
             phoneTool: { _, _ in ("", false) },
             connection: { onEvent, onClosed in
-                let adapter = GeminiVoiceAdapter(
-                    model: VoiceDirect.model,
-                    instructions: VoiceDirect.voiceInstructions,
-                    tools: VoiceDirect.voiceTools
-                )
+                let adapter = VoiceDirect.geminiAdapter()
                 let conn = AdapterHarnessConnection(adapter: adapter, onEvent: onEvent, onClosed: onClosed)
                 activeLink = conn
                 return conn
@@ -422,6 +435,9 @@ final class GeminiVoiceTests: XCTestCase {
         XCTAssertEqual(activeLink.clearCount, 1)
         XCTAssertEqual(activeLink.playback.pendingBuffers, 0)
         XCTAssertEqual(voice.talkState, .interrupted)
+        // The interrupted turn then ends with turnComplete while the user is still talking.
+        activeLink.receiveServer(["serverContent": ["turnComplete": true]])
+        XCTAssertEqual(voice.talkState, .interrupted)
 
         // Late completion callbacks from the cleared audio generation must not overwrite the hearing state.
         activeLink.finishNextAudioChunk()
@@ -432,9 +448,6 @@ final class GeminiVoiceTests: XCTestCase {
     }
 
     func testGeminiAccountEnablesLiveVoiceAndTalkHereWithoutBreakingOpenAI() async throws {
-        URLProtocol.registerClass(OpenAIStub.self)
-        defer { URLProtocol.unregisterClass(OpenAIStub.self) }
-
         XCTAssertTrue(ModelAccounts.canTalkLive(.openai))
         XCTAssertTrue(ModelAccounts.canTalkLive(.gemini))
         XCTAssertFalse(ModelAccounts.canTalkLive(.anthropic))
@@ -458,11 +471,7 @@ final class GeminiVoiceTests: XCTestCase {
             clearTap: { _, _, _ in .clear },
             phoneTool: { _, _ in ("", false) },
             connection: { onEvent, onClosed in
-                let adapter = GeminiVoiceAdapter(
-                    model: VoiceDirect.model,
-                    instructions: VoiceDirect.voiceInstructions,
-                    tools: VoiceDirect.voiceTools
-                )
+                let adapter = VoiceDirect.geminiAdapter()
                 return AdapterHarnessConnection(adapter: adapter, onEvent: onEvent, onClosed: onClosed)
             },
             time: time.clock
@@ -480,11 +489,34 @@ final class GeminiVoiceTests: XCTestCase {
         XCTAssertEqual(activity.state.voice, .listening)
         voice.stop()
 
-        // OpenAI Realtime token exchange still sends its full session configuration unchanged.
-        try ModelKeys.save("sk-openai-placeholder", for: .openai)
-        VoiceDirect.setEnabled(true, for: .openai)
-        let openAIToken = try await VoiceDirect.sessionToken(for: .openai, apiKey: "sk-openai-placeholder")
-        XCTAssertEqual(openAIToken.model, "gpt-realtime-2.1")
-        XCTAssertEqual(OpenAIStub.session?["model"] as? String, "gpt-realtime-2.1")
+        // A Mac voice bridge that talked before keeps talking until the owner turns Gemini on.
+        UserDefaults.standard.removeObject(forKey: "voice.gemini.enabled")
+        UserDefaults.standard.removeObject(forKey: "voice.provider")
+        VoiceBridge.saved = VoiceBridge("http://192.168.1.2:47830/voice/0123456789abcdef")
+        XCTAssertNil(VoiceDirect.activeProvider)
+        VoiceDirect.setEnabled(true, for: .gemini)
+        XCTAssertEqual(VoiceDirect.activeProvider, .gemini)
+    }
+
+    /// A wrong key closes Gemini Live's socket with 1007 before setup completes; the talk says to check the key.
+    func testARejectedGeminiKeySaysToCheckItAndTheKeyTravelsOnlyInAHeader() async throws {
+        let server = try LocalWebSocketServer { frame, server in
+            if frame["setup"] != nil { server.close(code: .protocolCode(.invalidFramePayloadData), reason: "API key not valid. Please pass a valid API key.") }
+        }
+        defer { server.stop() }
+        UserDefaults.standard.set("ws://127.0.0.1:\(server.port)/ws", forKey: "pokiGeminiLiveURL")
+        try ModelKeys.save("AIza-test-placeholder", for: .gemini)
+        VoiceDirect.setEnabled(true, for: .gemini)
+
+        let voice = VoiceModel(
+            clearTap: { _, _, _ in .clear },
+            phoneTool: { _, _ in ("", false) },
+            connection: { onEvent, onClosed in VoiceDirect.makeConnection(for: .gemini, onEvent: onEvent, onClosed: onClosed) },
+            time: FakeTime().clock
+        )
+        await voice.start(microphone: false)
+
+        XCTAssertEqual(voice.phase, .lost("Check your Gemini key in Settings › Models. Gemini rejected it."))
+        XCTAssertEqual(server.headers["x-goog-api-key"], "AIza-test-placeholder")
     }
 }

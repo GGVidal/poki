@@ -101,8 +101,10 @@ enum ModelCatalog {
     /// Chat models only: no embeddings, speech, images or moderation.
     private static func usable(_ id: String, _ provider: ModelProvider) -> Bool {
         let lower = id.lowercased()
-        let skip = ["embed", "audio", "realtime", "live", "transcribe", "tts", "whisper", "image", "dall-e", "moderation", "search", "aqa", "imagen", "veo"]
+        let skip = ["embed", "audio", "realtime", "transcribe", "tts", "whisper", "image", "dall-e", "moderation", "search", "aqa", "imagen", "veo"]
         if skip.contains(where: lower.contains) { return false }
+        // Gemini Live models only take a live conversation, not a chat request.
+        if provider == .gemini, lower.contains("-live") { return false }
         switch provider {
         case .openai: return lower.hasPrefix("gpt-") || lower.hasPrefix("o")
         case .anthropic: return lower.hasPrefix("claude")
@@ -208,15 +210,5 @@ enum ModelCatalog {
     static func setVoiceModel(_ id: String, for provider: ModelProvider) {
         UserDefaults.standard.set(id, forKey: voiceModelKey(provider))
         ModelKeys.saved += 1
-    }
-
-    static var voiceAll: [ChatModelChoice] { voiceAll(for: .openai) }
-    static var voiceEnabled: Set<String> { voiceEnabled(for: .openai) }
-    static func setVoice(_ id: String, on: Bool) { setVoice(id, on: on, for: .openai) }
-    static var voiceAvailable: [ChatModelChoice] { voiceAvailable(for: .openai) }
-
-    static var voiceModel: String {
-        get { voiceModel(for: .openai) }
-        set { setVoiceModel(newValue, for: .openai) }
     }
 }
