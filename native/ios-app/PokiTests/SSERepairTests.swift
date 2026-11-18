@@ -25,6 +25,14 @@ final class SSERepairTests: XCTestCase {
         XCTAssertEqual(text, "data: {\"a\":1}\r\n\r\n")
     }
 
+    func testTwoCRLFEventsInOneChunkAreBothFolded() {
+        let (text, repair) = run(["data:data: {\"a\":1}\r\n\r\ndata:data: [DONE]\r\n\r\n"])
+        XCTAssertEqual(text, "data: {\"a\":1}\r\n\r\ndata: [DONE]\r\n\r\n")
+        XCTAssertEqual(repair.events, 2)
+        XCTAssertEqual(repair.repaired, 2)
+        XCTAssertTrue(repair.sawDone)
+    }
+
     func testLinesSplitAcrossChunks() {
         let (text, repair) = run(["da", "ta:da", "ta: {\"a\":", "1}\n", "\ndata: [DO", "NE]"])
         XCTAssertEqual(text, "data: {\"a\":1}\n\ndata: [DONE]")

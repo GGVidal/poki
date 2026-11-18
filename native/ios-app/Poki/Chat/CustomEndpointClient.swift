@@ -157,7 +157,9 @@ struct SSERepair {
 
     private mutating func repair(_ data: Data) -> Data {
         let text = String(decoding: data, as: UTF8.self)
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        // Split on the scalar, not the Character: Swift reads "\r\n" as one Character, so a Character
+        // split would leave a CRLF stream as one line and fold only its first event.
+        let lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map(Substring.init)
         var folded: [String] = []
         for line in lines { folded.append(fold(line)) }
         return Data(folded.joined(separator: "\n").utf8)
