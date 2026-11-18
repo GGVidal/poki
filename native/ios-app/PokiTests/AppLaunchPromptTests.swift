@@ -92,8 +92,8 @@ final class AppLaunchPromptTests: XCTestCase {
     ]
 
     /// A finder whose phone answers with `list` through the same read the signer's answer takes, or
-    /// whose phone cannot be reached when `list` is nil.
-    private func finder(list: [InstalledApps.App]?, store: [InstalledApps.StoreApp] = [], icons: @escaping (String) -> Bool? = { _ in nil }) -> InstalledApps {
+    /// whose phone cannot be reached when `list` is nil. `store` nil is an App Store that did not answer.
+    private func finder(list: [InstalledApps.App]?, store: [InstalledApps.StoreApp]? = [], icons: @escaping (String) -> Bool? = { _ in nil }) -> InstalledApps {
         let apps = InstalledApps()
         apps.phone = { list == nil ? nil : [:] }
         apps.fetch = { _ in list ?? [] }
@@ -101,6 +101,8 @@ final class AppLaunchPromptTests: XCTestCase {
         apps.search = { _ in store }
         return apps
     }
+
+    private let xianyu: [InstalledApps.StoreApp] = [.init(id: "com.taobao.fleamarket", name: "闲鱼", url: "https://apps.apple.com/cn/app/id510909506")]
 
     func testNamesFindTheInstalledAppExactNameFirst() {
         XCTAssertEqual(InstalledApps.matches("美团", in: phoneList).first?.id, "com.meituan.imeituan", "美团, ahead of 美团外卖 which holds it")
@@ -113,11 +115,29 @@ final class AppLaunchPromptTests: XCTestCase {
         let answer = await finder(list: phoneList).find(name: "淘宝", purpose: nil)
         XCTAssertFalse(answer.isError)
         XCTAssertTrue(answer.text.contains("com.taobao.taobao4iphone (installed)"), answer.text)
+        XCTAssertTrue(answer.text.contains("launch it"), answer.text)
+    }
+
+    /// A name two installed apps share points at neither, in either order of the phone's list.
+    func testANameTwoInstalledAppsShareIsNeverPicked() async {
+        let one = InstalledApps.App(id: "com.strava.stravaride", name: "Strava", bundleName: nil)
+        let two = InstalledApps.App(id: "com.example.strava", name: "Strava", bundleName: nil)
+        for list in [[one, two], [two, one]] {
+            let answer = await finder(list: list).find(name: "Strava", purpose: nil)
+            XCTAssertTrue(answer.text.contains("Do not pick one: ask the owner"), answer.text)
+            XCTAssertFalse(answer.text.contains("launch it"), answer.text)
+            XCTAssertTrue(answer.text.contains("com.strava.stravaride") && answer.text.contains("com.example.strava"), answer.text)
+        }
+        let unique = await finder(list: [one]).find(name: "Strava", purpose: nil)
+        XCTAssertTrue(unique.text.contains("launch it"), unique.text)
+        // Names that only hold what the owner said are offered, never chosen for them.
+        let partial = await finder(list: [.init(id: "com.a.one", name: "Strava Run", bundleName: nil), .init(id: "com.a.two", name: "Strava Ride", bundleName: nil)])
+            .find(name: "Strava", purpose: nil)
+        XCTAssertTrue(partial.text.contains("when more than one could be, ask the owner which"), partial.text)
     }
 
     func testAMissingAppComesWithItsAppStoreLink() async {
-        let apps = finder(list: phoneList, store: [.init(id: "com.taobao.fleamarket", name: "闲鱼", url: "https://apps.apple.com/cn/app/id510909506")])
-        let answer = await apps.find(name: "闲鱼", purpose: nil)
+        let answer = await finder(list: phoneList, store: xianyu).find(name: "闲鱼", purpose: nil)
         XCTAssertTrue(answer.text.contains("NOT installed"), answer.text)
         XCTAssertTrue(answer.text.contains("com.taobao.fleamarket (not installed) https://apps.apple.com/cn/app/id510909506"), answer.text)
     }
@@ -138,25 +158,69 @@ final class AppLaunchPromptTests: XCTestCase {
         XCTAssertEqual(lines.last.map(String.init), "- ParkMe: com.example.park (not installed) https://apps.apple.com/us/app/id1")
     }
 
-    func testWithoutThePhonesListTheIconsDecide() async {
+    func testWithoutThePhonesListAnIconSaysInstalled() async {
         let answer = await finder(list: nil, icons: { $0 == "com.taobao.taobao4iphone" }).find(name: "淘宝", purpose: nil)
         XCTAssertTrue(answer.text.contains("com.taobao.taobao4iphone (installed)"), answer.text)
         XCTAssertTrue(answer.text.contains("could not be read"), answer.text)
     }
 
-    /// A failed lookup is no evidence: with no list and no icons, an App Store match stays unknown and
-    /// the agent is sent to the Home Screen search instead of telling the owner the app is missing.
+    /// A failed lookup is no evidence: with no list, an App Store match stays unknown and the agent is
+    /// sent to the Home Screen search instead of telling the owner the app is missing. A missing icon
+    /// (icons off, or iOS's generic picture) is no evidence either.
     func testAnUnreadableListNeverMakesAnAppMissing() async {
-        let store: [InstalledApps.StoreApp] = [.init(id: "com.taobao.fleamarket", name: "闲鱼", url: "https://apps.apple.com/cn/app/id510909506")]
-        for apps in [finder(list: nil, store: store), finder(list: nil)] {
+        for apps in [finder(list: nil, store: xianyu), finder(list: nil), finder(list: nil, store: xianyu, icons: { _ in false }),
+                     finder(list: nil, store: nil)] {
             let answer = await apps.find(name: "闲鱼", purpose: nil)
             XCTAssertFalse(answer.text.contains("NOT installed"), answer.text)
             XCTAssertFalse(answer.text.contains("(not installed)"), answer.text)
             XCTAssertTrue(answer.text.contains("could not tell whether"), answer.text)
             XCTAssertTrue(answer.text.contains("swipe down on the Home Screen to search"), answer.text)
         }
-        let noIcon = await finder(list: nil, store: store, icons: { _ in false }).find(name: "闲鱼", purpose: nil)
-        XCTAssertTrue(noIcon.text.contains("NOT installed"), "the icons said no: that one is settled")
+    }
+
+    /// A list that was read once and cannot be read again still says what it holds, and proves nothing
+    /// about an app installed since.
+    func testAnOldListAfterAFailedRefreshNeverMakesAnAppMissing() async {
+        var reads = 0
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        let apps = InstalledApps()
+        apps.now = { clock }
+        apps.phone = { [:] }
+        apps.fetch = { [phoneList] _ in
+            reads += 1
+            if reads > 1 { throw URLError(.timedOut) }
+            return phoneList
+        }
+        apps.hasIcon = { _ in nil }
+        apps.search = { [xianyu] _ in xianyu }
+        let fresh = await apps.find(name: "闲鱼", purpose: nil)
+        XCTAssertTrue(fresh.text.contains("NOT installed"), "a fresh list settles it: \(fresh.text)")
+
+        clock += 600
+        let stale = await apps.find(name: "闲鱼", purpose: nil)
+        XCTAssertEqual(reads, 2, "the old list is read again")
+        XCTAssertFalse(stale.text.contains("NOT installed"), stale.text)
+        XCTAssertFalse(stale.text.contains("(not installed)"), stale.text)
+        XCTAssertTrue(stale.text.contains("could not tell whether"), stale.text)
+        XCTAssertTrue(stale.text.contains("reading it again failed"), stale.text)
+        let held = await apps.find(name: "淘宝", purpose: nil)
+        XCTAssertTrue(held.text.contains("com.taobao.taobao4iphone (installed)"), "what the old list holds still counts: \(held.text)")
+        let inventory = await apps.list()
+        XCTAssertEqual(inventory?.fresh, false)
+        XCTAssertEqual(apps.installed("com.taobao.fleamarket", in: inventory), nil)
+    }
+
+    /// An App Store that did not answer is not an App Store with no match.
+    func testAnAppStoreFailureIsNotNoMatch() async {
+        let failed = await finder(list: phoneList, store: nil).find(name: "闲鱼", purpose: nil)
+        XCTAssertFalse(failed.text.contains("found none either"), failed.text)
+        XCTAssertTrue(failed.text.contains("could not be searched"), failed.text)
+        let none = await finder(list: phoneList, store: []).find(name: "闲鱼", purpose: nil)
+        XCTAssertTrue(none.text.contains("found none either"), none.text)
+        let purpose = await finder(list: phoneList, store: nil).find(name: nil, purpose: "parking")
+        XCTAssertTrue(purpose.text.contains("could not search the App Store"), purpose.text)
+        XCTAssertNil(AppStoreSearch.parse(Data("<html>".utf8)), "an answer that is not the search's JSON is a failure")
+        XCTAssertEqual(AppStoreSearch.parse(Data(#"{"resultCount":0,"results":[]}"#.utf8)), [])
     }
 
     func testTheStoreSearchReadsPastControlCharacters() {

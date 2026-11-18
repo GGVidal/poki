@@ -101,11 +101,13 @@ final class AppIconStore {
         KnownApps.find(app)?.name(in: .current)
     }
 
-    /// Whether iOS has a Home Screen icon for `id`, that is whether the app is installed; nil when the
-    /// iPhone's icons are not read (`-pokiSystemIcons off`). InstalledApps' check without the phone's list.
+    /// true when iOS has a Home Screen icon for `id`, so the app is installed; InstalledApps' check
+    /// without a current app list. Never false: with the iPhone's icons off (`-pokiSystemIcons off`)
+    /// there is nothing to read, and iOS draws its generic icon for some installed apps too (build 863
+    /// showed it for Taobao), so a missing icon proves nothing.
     static func installedOnPhone(_ id: String) -> Bool? {
-        guard SystemIcons.enabled else { return nil }
-        return SystemIcons.icon(id, dark: false) != nil
+        guard SystemIcons.enabled, SystemIcons.icon(id, dark: false) != nil else { return nil }
+        return true
     }
 
     /// The bundle IDs of the apps `text` names, in any of their names: "打开美团外卖点下酒菜" names Meituan
