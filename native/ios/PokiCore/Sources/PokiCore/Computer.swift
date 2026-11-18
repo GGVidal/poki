@@ -313,23 +313,27 @@ final class Computer: @unchecked Sendable {
 
         // Numbers: an element still there keeps its number (same text and frame first, then same text).
         let prior = treeRead ? listed : []
-        var exact: [String: [Int]] = [:], ticking: [String: [Int]] = [:], loose: [String: [Int]] = [:]
-        func tickingKey(_ e: Element) -> String { "\(e.type)|\(Self.stableLabel(e.text))@\(e.frame.described)" }
+        var exact: [String: [Int]] = [:], loose: [String: [Int]] = [:]
+        var inPlace: [String: [(ref: Int, text: String)]] = [:]
+        func place(_ e: Element) -> String { "\(e.type)@\(e.frame.described)" }
         for (r, e) in prior where !e.fromPicture {
             exact["\(e.key)@\(e.frame.described)", default: []].append(r)
-            ticking[tickingKey(e), default: []].append(r)
+            inPlace[place(e), default: []].append((r, e.text))
             loose[e.key, default: []].append(r)
         }
+        let sinceRead = lastTreeAt.map { now() - $0 } ?? 0
         var used = Set<Int>()
         var assigned = [Int?](repeating: nil, count: shown.count)
         var moved = Set<Int>()
         for (i, e) in shown.enumerated() where !e.fromPicture {
             if let r = exact["\(e.key)@\(e.frame.described)"]?.first(where: { !used.contains($0) }) { assigned[i] = r; used.insert(r) }
         }
-        // Only a number in its text changed (a countdown, a price) in the same place: the same control,
-        // listed as changed so the model reads the new text.
+        // Only a countdown in its text ran on, in the same place: the same control, listed as changed
+        // so the model reads the new text.
         for (i, e) in shown.enumerated() where !e.fromPicture && assigned[i] == nil {
-            if let r = ticking[tickingKey(e)]?.first(where: { !used.contains($0) }) { assigned[i] = r; used.insert(r); moved.insert(r) }
+            if let r = inPlace[place(e)]?.first(where: { !used.contains($0.ref) && Countdown.sameControl(before: $0.text, after: e.text, elapsed: sinceRead) })?.ref {
+                assigned[i] = r; used.insert(r); moved.insert(r)
+            }
         }
         for (i, e) in shown.enumerated() where !e.fromPicture && assigned[i] == nil {
             if let r = loose[e.key]?.first(where: { !used.contains($0) }) { assigned[i] = r; used.insert(r); moved.insert(r) }
@@ -709,29 +713,22 @@ final class Computer: @unchecked Sendable {
         clearPaneRead()
     }
 
-    private func referencedTargetSignatures(in action: JSON) -> [String] {
+    private func referencedTargets(in action: JSON) -> [ApprovalScope.Target] {
         Self.refs(in: action).sorted().map { n in
-            guard let element = refs[n] else { return "\(n):missing" }
-            return "\(n):\(element.type):\(Self.stableLabel(element.label ?? "")):\(element.identifier ?? "")"
+            guard let element = refs[n] else { return .init(ref: n, type: "missing", label: "", identifier: "") }
+            return .init(ref: n, type: element.type, label: element.label ?? "", identifier: element.identifier ?? "")
         }
     }
 
-    /// A label with its time readings masked, for approval fingerprints and numbering: a countdown
-    /// (0:59, 1:02:03, 59s, 59 秒) that ticks between two reads names the same control. Every other
-    /// number (a count, an amount, an account) is part of what the owner approved.
-    static func stableLabel(_ label: String) -> String {
-        label
-            .replacingOccurrences(of: "(?<![0-9])[0-9]{1,2}(:[0-9]{2}){1,2}(?![0-9])", with: "#:#", options: .regularExpression)
-            .replacingOccurrences(of: "(?<![0-9.,])[0-9]+ ?(s|sec|secs|seconds|秒)(?![A-Za-z])", with: "#s", options: .regularExpression)
-    }
-
-    private func approvalFingerprint(_ actions: [JSON], afterPrefix prefix: [JSON] = []) -> String {
+    /// What an approval for these actions covers: the pane, the app in front, the actions and the
+    /// controls they name now. After actions that change the screen, the controls are not read yet.
+    private func approvalScope(_ actions: [JSON], afterPrefix prefix: [JSON] = []) -> ApprovalScope {
         let steps = JSON.array(actions).serialized()
         let prefixChangesScreen = prefix.contains { ActionKind($0)?.changesScreen($0) == true }
         let app = prefixChangesScreen ? "after_change" : "\(lastForeground?.bundleID ?? "")|\(lastForeground?.name ?? "")"
-        let targets = prefixChangesScreen ? "unread" : actions.flatMap(referencedTargetSignatures).joined(separator: "|")
-        let scope = "\(app)\n\(targets)\n\(steps)"
-        return selectedPane.map { "\($0.identity)\n\(scope)" } ?? scope
+        let key = "\(app)\n\(steps)"
+        return ApprovalScope(actions: selectedPane.map { "\($0.identity)\n\(key)" } ?? key,
+                             targets: prefixChangesScreen ? [] : actions.flatMap(referencedTargets))
     }
 
     /// Drop references on an owner stop without a runner request or a visible app switch.
@@ -930,16 +927,17 @@ final class Computer: @unchecked Sendable {
         let steps = sensitiveSteps(actions)
         let sensitive = firstSensitive(actions)
         let workspaceSession = workspaceOwner.value
-        let matchingFingerprint = sensitive.map { approvalFingerprint(Array(actions[$0.at...]), afterPrefix: Array(actions[..<$0.at])) }
+        let matchingScope = sensitive.map { approvalScope(Array(actions[$0.at...]), afterPrefix: Array(actions[..<$0.at])) }
         // Any other actions withdraw an unconsumed request or grant so stale approvals never carry over.
         // The owner's voice leaves the agent's unused grant in place.
-        approvals.withdrawMismatching(fingerprint: matchingFingerprint, workspaceSession: workspaceSession, keepingGrant: byOwnersVoice)
+        approvals.withdrawMismatching(scope: matchingScope, workspaceSession: workspaceSession, keepingGrant: byOwnersVoice)
         // The controls the gated actions name on the screen the model saw, before anything is sent.
-        let gatedTargets = sensitive.map { Array(actions[$0.at...]).flatMap(referencedTargetSignatures) } ?? []
+        let gatedTargets = sensitive.map { Array(actions[$0.at...]).flatMap(referencedTargets) } ?? []
+        let gatedTargetsAt = now()
         if let (at, reason) = sensitive {
             let tail = Array(actions[at...])
-            let fingerprint = matchingFingerprint!
-            if approvals.consumeGrant(fingerprint: fingerprint, workspaceSession: workspaceSession) != nil {
+            let scope = matchingScope!
+            if approvals.consumeGrant(scope: scope, workspaceSession: workspaceSession) != nil {
                 approvedNote = "approval: approved on the phone (\(reason))"
             } else {
                 if at > 0 {
@@ -948,8 +946,8 @@ final class Computer: @unchecked Sendable {
                         return await readAndReply(until: until, full: full, changes: true, did: did, error: error, extra: ["action \(at + 1) and the actions after it were not sent (they would have needed the owner's approval: \(reason))"])
                     }
                 }
-                let approval = approvals.pending.flatMap { $0.fingerprint == fingerprint && $0.workspaceSession == workspaceSession ? $0 : nil }
-                    ?? approvals.request(app: lastForeground?.describe ?? "unknown", summary: labels(tail), reason: reason, fingerprint: fingerprint, workspaceSession: workspaceSession,
+                let approval = approvals.pending.flatMap { $0.covers(scope, workspaceSession: workspaceSession, now: Date()) ? $0 : nil }
+                    ?? approvals.request(app: lastForeground?.describe ?? "unknown", summary: labels(tail), reason: reason, scope: scope, workspaceSession: workspaceSession,
                                            stopsWhenOff: sensitiveSteps(actions, under: config.sensitive.asked(.off)).isEmpty)
                 // The time the owner takes is not the actions' time: the clock starts again after it.
                 let asked = now()
@@ -974,9 +972,9 @@ final class Computer: @unchecked Sendable {
                 case .approved? where answerBy.map({ now() + timeToFinish(tail, until: until) + Self.relayMargin > $0 }) == true:
                     // Too late for the relay: the actions would run after it answered its caller with a 504, and
                     // the model would send them again. The approval stays; the same actions sent again run at once.
-                    return await refusedAwaitingResend(approval, tail: tail, targets: gatedTargets, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner approved on the phone, but too late for this call to send the actions and read the screen before the relay gives up on it.\(sentFirst) The approval is kept: \(again) and they run at once (within \(Int(approvals.lifetime / 60)) minutes).")
+                    return await refusedAwaitingResend(approval, tail: tail, targets: gatedTargets, targetsAt: gatedTargetsAt, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner approved on the phone, but too late for this call to send the actions and read the screen before the relay gives up on it.\(sentFirst) The approval is kept: \(again) and they run at once (within \(Int(approvals.lifetime / 60)) minutes).")
                 case .approved?:
-                    guard approvals.consumeGrant(fingerprint: fingerprint, workspaceSession: workspaceSession) != nil else {
+                    guard approvals.consumeGrant(scope: scope, workspaceSession: workspaceSession) != nil else {
                         return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The approval went to another call with the same actions, so nothing was sent from this one.\(sentFirst) To run them, \(again) and ask again.")
                     }
                     approvedNote = "approval: approved on the phone after \(Int(waited.rounded())) s (\(reason))"
@@ -986,7 +984,7 @@ final class Computer: @unchecked Sendable {
                 case .expired?:
                     return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): the approval request ended unanswered (\(reason)).\(sentFirst)")
                 case nil:
-                    return await refusedAwaitingResend(approval, tail: tail, targets: gatedTargets, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner was asked on the phone.\(sentFirst) When they approve, \(again) (within \(Int(approvals.lifetime / 60)) minutes); other actions withdraw the request.")
+                    return await refusedAwaitingResend(approval, tail: tail, targets: gatedTargets, targetsAt: gatedTargetsAt, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner was asked on the phone.\(sentFirst) When they approve, \(again) (within \(Int(approvals.lifetime / 60)) minutes); other actions withdraw the request.")
                 }
             }
         }
@@ -1436,11 +1434,11 @@ final class Computer: @unchecked Sendable {
     /// it is matched to those actions on their own against the read this answer makes, so the request
     /// is not withdrawn by the very call it asks for. When their numbers name other controls there
     /// than the ones the owner was shown, the approval is withdrawn instead.
-    private func refusedAwaitingResend(_ approval: Approval, tail: [JSON], targets: [String], at: Int, until: Double, full: Bool, did: [String], text: String) async -> ToolResult {
+    private func refusedAwaitingResend(_ approval: Approval, tail: [JSON], targets: [ApprovalScope.Target], targetsAt: Double, at: Int, until: Double, full: Bool, did: [String], text: String) async -> ToolResult {
         var result = await refused(until: until, full: full, did: did, text: text)
         guard at > 0 else { return result }
-        if tail.flatMap(referencedTargetSignatures) == targets {
-            approvals.rekey(id: approval.id, fingerprint: approvalFingerprint(tail))
+        if ApprovalScope.sameTargets(targets, tail.flatMap(referencedTargets), elapsed: now() - targetsAt) {
+            approvals.rekey(id: approval.id, scope: approvalScope(tail))
         } else {
             approvals.withdraw(id: approval.id)
             result.text += "\napproval: withdrawn (id \(approval.id)); on this screen the numbers from action \(at + 1) name other controls than the owner was asked about. Choose from the elements above; a sensitive action asks again."

@@ -382,10 +382,10 @@ public final class PokiCore: @unchecked Sendable {
         guard let reason = unreadable && config.sensitive.enabled ? "a tap on something with no readable text" : config.rules.reason(touching: element, typing: false, app: app, secureOnScreen: false) else { return .clear }
         // Never Ask would not stop a tap the rules cannot read, nor one they hold back whatever the way of asking.
         let stopsWhenOff = !unreadable && config.sensitive.asked(.off).reason(touching: element, typing: false, app: app, secureOnScreen: false) == nil
-        let approval = approvals.request(app: app.describe, summary: unreadable ? "Tap something with no text" : "Tap “\(text)”", reason: reason, fingerprint: "tap:\(UUID().uuidString)", stopsWhenOff: stopsWhenOff)
+        let approval = approvals.request(app: app.describe, summary: unreadable ? "Tap something with no text" : "Tap “\(text)”", reason: reason, scope: ApprovalScope(actions: "tap:\(UUID().uuidString)"), stopsWhenOff: stopsWhenOff)
         switch await approvals.wait(id: approval.id, seconds: seconds) {
         case .approved?:
-            _ = approvals.consumeGrant(fingerprint: approval.fingerprint)
+            _ = approvals.consumeGrant(scope: approval.scope)
             return .approved(reason)
         case .declined?:
             return .declined(reason)

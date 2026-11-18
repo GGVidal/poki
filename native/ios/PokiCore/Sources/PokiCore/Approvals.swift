@@ -113,9 +113,75 @@ public struct Approval: Sendable, Equatable {
     /// can be offered Don't Ask Again. False where a payment, a deletion, Wallet or a screen not read yet
     /// would still ask.
     public var stopsWhenOff = false
-    /// The actions it covers, as a fingerprint: the same actions sent again run once it is granted.
-    var fingerprint: String
+    /// What it covers: the same actions sent again on the same controls run once it is granted.
+    var scope: ApprovalScope
     var workspaceSession: String?
+
+    func covers(_ other: ApprovalScope, workspaceSession session: String?, now: Date) -> Bool {
+        workspaceSession == session && scope.covers(other, elapsed: now.timeIntervalSince(requested))
+    }
+}
+
+/// What an approval covers: the actions with the pane and app they were for, and the controls they
+/// name as the owner was shown them. A control's label may differ later only by a countdown that ran
+/// on (`Countdown.sameControl`); a count, an amount, an account or a time of day that changed is
+/// another control.
+struct ApprovalScope: Sendable, Equatable {
+    struct Target: Sendable, Equatable {
+        var ref: Int
+        var type: String
+        var label: String
+        var identifier: String
+    }
+    var actions: String
+    var targets: [Target] = []
+
+    func covers(_ other: ApprovalScope, elapsed: Double) -> Bool {
+        actions == other.actions && Self.sameTargets(targets, other.targets, elapsed: elapsed)
+    }
+
+    static func sameTargets(_ before: [Target], _ after: [Target], elapsed: Double) -> Bool {
+        before.count == after.count && zip(before, after).allSatisfy { b, a in
+            b.ref == a.ref && b.type == a.type && b.identifier == a.identifier
+                && Countdown.sameControl(before: b.label, after: a.label, elapsed: elapsed)
+        }
+    }
+}
+
+/// Time readings in a label (0:59, 1:02:03, 59 s, 59 秒) and whether a change in them is a countdown
+/// running on.
+enum Countdown {
+    private static let mark = "\u{23F1}"
+    private static let reading = try! NSRegularExpression(pattern: "(?<![0-9.,:])(?:[0-9]{1,2}(?::[0-9]{2}){1,2}|[0-9]+ ?(?:s|sec|secs|seconds|秒)(?![A-Za-z]))(?![0-9:])")
+    /// Words that say a reading counts down: "in 0:59", "0:59 left", "remaining", 剩余, 还剩, "59秒后".
+    private static let says = try! NSRegularExpression(pattern: "(?i)剩余|还剩|\\b(?:remaining|left)\\b|\\bin ?\u{23F1}|\u{23F1} ?后")
+
+    /// The label with each reading replaced by a mark, and the readings in seconds.
+    static func readings(_ label: String) -> (masked: String, seconds: [Int]) {
+        let ns = label as NSString
+        var masked = "", seconds: [Int] = [], last = 0
+        for match in reading.matches(in: label, range: NSRange(location: 0, length: ns.length)) {
+            masked += ns.substring(with: NSRange(location: last, length: match.range.location - last)) + mark
+            let text = ns.substring(with: match.range)
+            seconds.append(text.contains(":")
+                ? text.split(separator: ":").reduce(0) { $0 * 60 + (Int($1) ?? 0) }
+                : Int(text.prefix { $0.isNumber }) ?? 0)
+            last = match.range.location + match.range.length
+        }
+        return (masked + ns.substring(from: last), seconds)
+    }
+
+    /// The same control read again: the same text, or text that differs only in the readings of a
+    /// countdown. A label that says it counts down may show any time. Otherwise each reading may only
+    /// have gone down, by no more than the time that passed (and a read's slack), so a time of day
+    /// that moved (10:30 to 14:30) is another control.
+    static func sameControl(before: String, after: String, elapsed: Double) -> Bool {
+        guard before != after else { return true }
+        let b = readings(before), a = readings(after)
+        guard b.masked == a.masked, !b.seconds.isEmpty else { return false }
+        if says.firstMatch(in: b.masked, range: NSRange(location: 0, length: (b.masked as NSString).length)) != nil { return true }
+        return zip(b.seconds, a.seconds).allSatisfy { old, new in new <= old && Double(old - new) <= elapsed + 2 }
+    }
 }
 
 /// Pending and granted approvals. At most one approval is pending or granted at a time, and all
@@ -134,12 +200,12 @@ final class Approvals: @unchecked Sendable {
         case request(Approval)
         case withdraw(id: String)
         case withdrawPending
-        case rekey(id: String, fingerprint: String)
-        case withdrawIfMismatch(fingerprint: String?, workspaceSession: String?, keepingGrant: Bool)
+        case rekey(id: String, scope: ApprovalScope)
+        case withdrawIfMismatch(scope: ApprovalScope?, workspaceSession: String?, keepingGrant: Bool)
         case discardWorkspace(session: String)
         case discardAll
         case resolve(id: String, approved: Bool)
-        case consumeGrant(fingerprint: String, workspaceSession: String?)
+        case consumeGrant(scope: ApprovalScope, workspaceSession: String?)
         case registerWaiter(id: String, token: UUID, continuation: CheckedContinuation<Decision?, Never>, cancelled: Bool)
         case cancelWaiter(id: String, token: UUID)
     }
@@ -234,21 +300,21 @@ final class Approvals: @unchecked Sendable {
                 clearCurrent(into: &effects)
             }
 
-        case .rekey(let id, let fingerprint):
+        case .rekey(let id, let scope):
             switch state {
             case .pending(var approval, let waiters) where approval.id == id:
-                approval.fingerprint = fingerprint
+                approval.scope = scope
                 state = .pending(approval: approval, waiters: waiters)
             case .granted(var approval) where approval.id == id:
-                approval.fingerprint = fingerprint
+                approval.scope = scope
                 state = .granted(approval: approval)
             case .idle, .pending, .granted:
                 break
             }
 
-        case .withdrawIfMismatch(let fingerprint, let workspaceSession, let keepingGrant):
+        case .withdrawIfMismatch(let scope, let workspaceSession, let keepingGrant):
             func matches(_ approval: Approval) -> Bool {
-                fingerprint != nil && approval.fingerprint == fingerprint && approval.workspaceSession == workspaceSession
+                scope.map { approval.covers($0, workspaceSession: workspaceSession, now: now) } ?? false
             }
             switch state {
             case .pending(let approval, _) where !matches(approval):
@@ -281,10 +347,9 @@ final class Approvals: @unchecked Sendable {
             effects.resumed.append(contentsOf: waiters.values.map { ($0, decision) })
             effects.events.append(.approvalEnded(id: id, approved: approved))
 
-        case .consumeGrant(let fingerprint, let workspaceSession):
+        case .consumeGrant(let scope, let workspaceSession):
             if case .granted(let approval) = state,
-               approval.fingerprint == fingerprint,
-               approval.workspaceSession == workspaceSession {
+               approval.covers(scope, workspaceSession: workspaceSession, now: now) {
                 state = .idle
                 effects.consumed = approval
             }
@@ -323,11 +388,11 @@ final class Approvals: @unchecked Sendable {
     }
 
     /// A granted approval for these exact actions and screen context, consumed once.
-    func consumeGrant(fingerprint: String, workspaceSession: String? = nil) -> Approval? {
-        apply(.consumeGrant(fingerprint: fingerprint, workspaceSession: workspaceSession)).consumed
+    func consumeGrant(scope: ApprovalScope, workspaceSession: String? = nil) -> Approval? {
+        apply(.consumeGrant(scope: scope, workspaceSession: workspaceSession)).consumed
     }
 
-    func request(app: String, summary: String, reason: String, fingerprint: String, workspaceSession: String? = nil, stopsWhenOff: Bool = false) -> Approval {
+    func request(app: String, summary: String, reason: String, scope: ApprovalScope, workspaceSession: String? = nil, stopsWhenOff: Bool = false) -> Approval {
         let date = Date()
         let approval = Approval(
             id: String(UUID().uuidString.prefix(8)).lowercased(),
@@ -337,7 +402,7 @@ final class Approvals: @unchecked Sendable {
             requested: date,
             expires: date.addingTimeInterval(lifetime),
             stopsWhenOff: stopsWhenOff,
-            fingerprint: fingerprint,
+            scope: scope,
             workspaceSession: workspaceSession
         )
         apply(.request(approval), now: date)
@@ -360,13 +425,13 @@ final class Approvals: @unchecked Sendable {
 
     /// Points an open request or unused grant at the actions as the agent will send them again: on
     /// their own, after the read that follows the actions sent before them.
-    func rekey(id: String, fingerprint: String) {
-        apply(.rekey(id: id, fingerprint: fingerprint))
+    func rekey(id: String, scope: ApprovalScope) {
+        apply(.rekey(id: id, scope: scope))
     }
 
     /// Withdraws a request, and unless `keepingGrant` an unused grant, for other actions than these.
-    func withdrawMismatching(fingerprint: String?, workspaceSession: String?, keepingGrant: Bool = false) {
-        apply(.withdrawIfMismatch(fingerprint: fingerprint, workspaceSession: workspaceSession, keepingGrant: keepingGrant))
+    func withdrawMismatching(scope: ApprovalScope?, workspaceSession: String?, keepingGrant: Bool = false) {
+        apply(.withdrawIfMismatch(scope: scope, workspaceSession: workspaceSession, keepingGrant: keepingGrant))
     }
 
     func discardWorkspaceDecisions(session: String?) {

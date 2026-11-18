@@ -188,8 +188,9 @@ withdraws the pending request, and a grant not used yet, before anything of it i
 the Live Activity's Approve button lands on a request that is already gone. Only the same actions,
 sent again, wait for the decision. An approval covers those actions in the app in front and on the
 controls they named as the owner saw them: another app, or another type or text at the same number,
-asks again. Only time readings in a label (a countdown such as 0:59 or 59 s) may change; a count, an
-amount or an account number that changes asks again. The Voice tab (`clearTap`, and `tool` for its
+asks again. Only a countdown in a label may run on: one the label marks as such (in 0:59, 0:59 left,
+remaining, 剩余, 还剩, 59秒后), or an unmarked m:ss that went down by no more than the time that passed.
+A count, an amount, an account number or a time of day (10:30 to 14:30) that changes asks again. The Voice tab (`clearTap`, and `tool` for its
 own `look` and `do`) withdraws only another request still waiting and leaves the agent's unused grant;
 the same actions it sends again keep their card. Ending the task (`finishTask`) releases any request,
 grant and handoff still open.

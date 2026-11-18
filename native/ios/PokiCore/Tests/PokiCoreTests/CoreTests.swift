@@ -692,7 +692,7 @@ final class ApprovalTests: XCTestCase {
         let approvals = Approvals(lifetime: 0.3) { event in
             if case .approvalEnded(let id, nil) = event { ended.update { $0.append(id) } }
         }
-        let approval = approvals.request(app: "Photos", summary: "Tap “Delete Photo”", reason: "deleting (\"delete\")", fingerprint: "f")
+        let approval = approvals.request(app: "Photos", summary: "Tap “Delete Photo”", reason: "deleting (\"delete\")", scope: ApprovalScope(actions: "f"))
         let heard = await eventually(1.5) { ended.value == [approval.id] }
         XCTAssertTrue(heard, "no approvalEnded for a request whose time ran out")
     }
@@ -1096,27 +1096,45 @@ final class ApprovalTests: XCTestCase {
     }
 
     /// An approval covers the count, the amount and the account it showed: any other number asks again.
-    func testAGrantIsVoidOnceACountAmountOrAccountChanges() async throws {
-        let cases = [("Delete 3 Photos", "Delete 300 Photos", "Photos"),
-                     ("Pay $5", "Pay $500", "Shop"),
-                     ("Transfer $10 to account 1234", "Transfer $10 to account 5678", "Bank")]
-        for (approved, shown, app) in cases {
+    /// An approval covers the count, the amount, the account and the time of day it showed. Only a
+    /// countdown may run on: one that says so (in, left, remaining, 剩余, 还剩, …后) or an m:ss that
+    /// went down.
+    func testAGrantCoversAChangedLabelOnlyWhenACountdownRanOn() async throws {
+        let cases: [(approved: String, shown: String, covered: Bool)] = [
+            ("Delete 3 Photos", "Delete 300 Photos", false),
+            ("Pay $5", "Pay $500", false),
+            ("Pay $12.30", "Pay $12.31", false),
+            ("Transfer $10 to account 1234", "Transfer $10 to account 5678", false),
+            ("Pay $20 for the 10:30 table", "Pay $20 for the 14:30 table", false),
+            ("支付 20 元 预订 10:30", "支付 20 元 预订 14:30", false),
+            ("Pay $5, offer ends in 0:59", "Pay $5, offer ends in 0:58", true),
+            ("Pay $5 (1:00 left)", "Pay $5 (0:58 left)", true),
+            ("支付 5 元，剩余 0:59", "支付 5 元，剩余 0:58", true),
+            ("支付 5 元，59秒后失效", "支付 5 元，58秒后失效", true),
+            ("Confirm payment 04:59", "Confirm payment 04:58", true),
+        ]
+        for c in cases {
             let wda = FakeWDA()
-            wda.source([("Button", approved), ("Button", "Cancel")], app: app)
+            wda.source([("Button", c.approved), ("Button", "Cancel")], app: "Shop")
             let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
             _ = await core.call("look", [:])
             _ = await core.call("do", ["actions": [["tap": 1]]])
-            let approval = try XCTUnwrap(core.pendingApproval, approved)
+            let approval = try XCTUnwrap(core.pendingApproval, c.approved)
             core.resolveApproval(id: approval.id, approved: true)
 
-            wda.source([("Button", shown), ("Button", "Cancel")], app: app)
+            wda.source([("Button", c.shown), ("Button", "Cancel")], app: "Shop")
             let read = await core.call("look", [:])
-            // The number the read gives the new label (a new number when only the old one was approved).
-            let line = try XCTUnwrap(read.text.split(separator: "\n").first { $0.contains("Button \"\(shown)\"") }, read.text)
+            // The number the read gives the new label (a new number when it is another control).
+            let line = try XCTUnwrap(read.text.split(separator: "\n").first { $0.contains("Button \"\(c.shown)\"") }, read.text)
             let ref = try XCTUnwrap(Int(line.drop { !$0.isNumber }.prefix { $0.isNumber }), String(line))
             let run = await core.call("do", ["actions": [["tap": .number(Double(ref))]]])
-            XCTAssertTrue(run.text.contains("approval_required"), "\(approved) -> \(shown): \(run.text)")
-            XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, "the grant for \(approved) pressed \(shown)")
+            if c.covered {
+                XCTAssertFalse(run.isError, "\(c.approved) -> \(c.shown): \(run.text)")
+                XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the grant for \(c.approved) was lost when it read \(c.shown)")
+            } else {
+                XCTAssertTrue(run.text.contains("approval_required"), "\(c.approved) -> \(c.shown): \(run.text)")
+                XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, "the grant for \(c.approved) pressed \(c.shown)")
+            }
         }
     }
 
