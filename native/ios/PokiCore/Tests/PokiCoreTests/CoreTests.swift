@@ -1074,25 +1074,81 @@ final class ApprovalTests: XCTestCase {
         XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the voice tap withdrew the owner's approval")
     }
 
-    func testAnApprovalOutlivesANumberThatChangesInTheLabel() async throws {
+    func testAnApprovalOutlivesACountdownInTheLabel() async throws {
         let wda = FakeWDA()
-        wda.source([("Button", "Pay $12.30 in 0:59"), ("Button", "Cancel")], app: "Shop")
+        wda.source([("Button", "Pay $5.00, offer ends in 0:59"), ("Button", "Cancel")], app: "Shop")
         let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
         _ = await core.call("look", [:])
         _ = await core.call("do", ["actions": [["tap": 1]]])
         let asked = try XCTUnwrap(core.pendingApproval)
 
-        wda.source([("Button", "Pay $12.31 in 0:58"), ("Button", "Cancel")], app: "Shop")
+        wda.source([("Button", "Pay $5.00, offer ends in 0:58"), ("Button", "Cancel")], app: "Shop")
         _ = await core.call("look", [:])
         _ = await core.call("do", ["actions": [["tap": 1]]])
-        XCTAssertEqual(core.pendingApproval?.id, asked.id, "the card was withdrawn and asked again when the label ticked")
+        XCTAssertEqual(core.pendingApproval?.id, asked.id, "the card was withdrawn and asked again when the countdown ticked")
         core.resolveApproval(id: asked.id, approved: true)
 
-        wda.source([("Button", "Pay $12.31 in 0:57"), ("Button", "Cancel")], app: "Shop")
+        wda.source([("Button", "Pay $5.00, offer ends in 0:57"), ("Button", "Cancel")], app: "Shop")
         _ = await core.call("look", [:])
         let paid = await core.call("do", ["actions": [["tap": 1]]])
         XCTAssertFalse(paid.isError, paid.text)
-        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the grant was lost when the label ticked")
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the grant was lost when the countdown ticked")
+    }
+
+    /// An approval covers the count, the amount and the account it showed: any other number asks again.
+    func testAGrantIsVoidOnceACountAmountOrAccountChanges() async throws {
+        let cases = [("Delete 3 Photos", "Delete 300 Photos", "Photos"),
+                     ("Pay $5", "Pay $500", "Shop"),
+                     ("Transfer $10 to account 1234", "Transfer $10 to account 5678", "Bank")]
+        for (approved, shown, app) in cases {
+            let wda = FakeWDA()
+            wda.source([("Button", approved), ("Button", "Cancel")], app: app)
+            let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+            _ = await core.call("look", [:])
+            _ = await core.call("do", ["actions": [["tap": 1]]])
+            let approval = try XCTUnwrap(core.pendingApproval, approved)
+            core.resolveApproval(id: approval.id, approved: true)
+
+            wda.source([("Button", shown), ("Button", "Cancel")], app: app)
+            let read = await core.call("look", [:])
+            // The number the read gives the new label (a new number when only the old one was approved).
+            let line = try XCTUnwrap(read.text.split(separator: "\n").first { $0.contains("Button \"\(shown)\"") }, read.text)
+            let ref = try XCTUnwrap(Int(line.drop { !$0.isNumber }.prefix { $0.isNumber }), String(line))
+            let run = await core.call("do", ["actions": [["tap": .number(Double(ref))]]])
+            XCTAssertTrue(run.text.contains("approval_required"), "\(approved) -> \(shown): \(run.text)")
+            XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, "the grant for \(approved) pressed \(shown)")
+        }
+    }
+
+    func testAVoiceResendKeepsItsWaitingCard() async throws {
+        let wda = screenWithDelete()
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        let events = LockedBox<[CoreEvent]>([])
+        Task { for await e in core.events { events.update { $0.append(e) } } }
+        _ = await core.tool("look", arguments: "{}")
+        _ = await core.tool("do", arguments: #"{"actions":[{"tap":1}]}"#)
+        let card = try XCTUnwrap(core.pendingApproval)
+
+        _ = await core.tool("do", arguments: #"{"actions":[{"tap":1}]}"#)
+        XCTAssertEqual(core.pendingApproval?.id, card.id, "the voice resend withdrew its own card and asked again")
+        let ended = await eventually(0.5) { events.value.contains(.approvalEnded(id: card.id, approved: nil)) }
+        XCTAssertFalse(ended, "the waiting card ended on the voice resend")
+    }
+
+    /// Next opens another screen before the gated tap: the grant for Delete Photo must not press what
+    /// the same number names there.
+    func testAGrantAfterASafeActionDoesNotPressAnotherControl() async throws {
+        let wda = FakeWDA()
+        wda.source([("Button", "Next"), ("Button", "Delete Photo")], app: "Shop")
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        _ = await core.call("look", [:])
+        wda.source([("Button", "Back"), ("Button", "Pay $500")], app: "Shop")  // the screen Next opens
+        _ = await core.call("do", ["actions": [["tap": 1], ["tap": 2]]])
+        if let card = core.pendingApproval { core.resolveApproval(id: card.id, approved: true) }
+
+        let again = await core.call("do", ["actions": [["tap": 2]]])
+        XCTAssertTrue(again.text.contains("approval_required"), again.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the grant for Delete Photo pressed Pay $500")
     }
 }
 

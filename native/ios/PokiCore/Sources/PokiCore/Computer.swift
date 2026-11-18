@@ -716,10 +716,13 @@ final class Computer: @unchecked Sendable {
         }
     }
 
-    /// A label with its numbers masked, for approval fingerprints: a countdown or a price that ticks
-    /// between two reads names the same control, so the request and its grant stay valid.
+    /// A label with its time readings masked, for approval fingerprints and numbering: a countdown
+    /// (0:59, 1:02:03, 59s, 59 秒) that ticks between two reads names the same control. Every other
+    /// number (a count, an amount, an account) is part of what the owner approved.
     static func stableLabel(_ label: String) -> String {
-        label.replacingOccurrences(of: "[0-9]+([.,:'][0-9]+)*", with: "#", options: .regularExpression)
+        label
+            .replacingOccurrences(of: "(?<![0-9])[0-9]{1,2}(:[0-9]{2}){1,2}(?![0-9])", with: "#:#", options: .regularExpression)
+            .replacingOccurrences(of: "(?<![0-9.,])[0-9]+ ?(s|sec|secs|seconds|秒)(?![A-Za-z])", with: "#s", options: .regularExpression)
     }
 
     private func approvalFingerprint(_ actions: [JSON], afterPrefix prefix: [JSON] = []) -> String {
@@ -929,12 +932,10 @@ final class Computer: @unchecked Sendable {
         let workspaceSession = workspaceOwner.value
         let matchingFingerprint = sensitive.map { approvalFingerprint(Array(actions[$0.at...]), afterPrefix: Array(actions[..<$0.at])) }
         // Any other actions withdraw an unconsumed request or grant so stale approvals never carry over.
-        // The owner's voice withdraws only a request still waiting, as its taps do (`PokiCore.clearTap`).
-        if byOwnersVoice {
-            approvals.withdrawPending()
-        } else {
-            approvals.withdrawMismatching(fingerprint: matchingFingerprint, workspaceSession: workspaceSession)
-        }
+        // The owner's voice leaves the agent's unused grant in place.
+        approvals.withdrawMismatching(fingerprint: matchingFingerprint, workspaceSession: workspaceSession, keepingGrant: byOwnersVoice)
+        // The controls the gated actions name on the screen the model saw, before anything is sent.
+        let gatedTargets = sensitive.map { Array(actions[$0.at...]).flatMap(referencedTargetSignatures) } ?? []
         if let (at, reason) = sensitive {
             let tail = Array(actions[at...])
             let fingerprint = matchingFingerprint!
@@ -973,7 +974,7 @@ final class Computer: @unchecked Sendable {
                 case .approved? where answerBy.map({ now() + timeToFinish(tail, until: until) + Self.relayMargin > $0 }) == true:
                     // Too late for the relay: the actions would run after it answered its caller with a 504, and
                     // the model would send them again. The approval stays; the same actions sent again run at once.
-                    return await refusedAwaitingResend(approval, tail: tail, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner approved on the phone, but too late for this call to send the actions and read the screen before the relay gives up on it.\(sentFirst) The approval is kept: \(again) and they run at once (within \(Int(approvals.lifetime / 60)) minutes).")
+                    return await refusedAwaitingResend(approval, tail: tail, targets: gatedTargets, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner approved on the phone, but too late for this call to send the actions and read the screen before the relay gives up on it.\(sentFirst) The approval is kept: \(again) and they run at once (within \(Int(approvals.lifetime / 60)) minutes).")
                 case .approved?:
                     guard approvals.consumeGrant(fingerprint: fingerprint, workspaceSession: workspaceSession) != nil else {
                         return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The approval went to another call with the same actions, so nothing was sent from this one.\(sentFirst) To run them, \(again) and ask again.")
@@ -985,7 +986,7 @@ final class Computer: @unchecked Sendable {
                 case .expired?:
                     return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): the approval request ended unanswered (\(reason)).\(sentFirst)")
                 case nil:
-                    return await refusedAwaitingResend(approval, tail: tail, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner was asked on the phone.\(sentFirst) When they approve, \(again) (within \(Int(approvals.lifetime / 60)) minutes); other actions withdraw the request.")
+                    return await refusedAwaitingResend(approval, tail: tail, targets: gatedTargets, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner was asked on the phone.\(sentFirst) When they approve, \(again) (within \(Int(approvals.lifetime / 60)) minutes); other actions withdraw the request.")
                 }
             }
         }
@@ -1431,17 +1432,24 @@ final class Computer: @unchecked Sendable {
         }
     }
 
-    /// The answer when the sensitive part was not sent: text only when nothing went, else the read
-    /// after what did go.
     /// The approval stays open for the actions the model sends again. After actions before them ran,
     /// it is matched to those actions on their own against the read this answer makes, so the request
-    /// is not withdrawn by the very call it asks for.
-    private func refusedAwaitingResend(_ approval: Approval, tail: [JSON], at: Int, until: Double, full: Bool, did: [String], text: String) async -> ToolResult {
-        let result = await refused(until: until, full: full, did: did, text: text)
-        if at > 0 { approvals.rekey(id: approval.id, fingerprint: approvalFingerprint(tail)) }
+    /// is not withdrawn by the very call it asks for. When their numbers name other controls there
+    /// than the ones the owner was shown, the approval is withdrawn instead.
+    private func refusedAwaitingResend(_ approval: Approval, tail: [JSON], targets: [String], at: Int, until: Double, full: Bool, did: [String], text: String) async -> ToolResult {
+        var result = await refused(until: until, full: full, did: did, text: text)
+        guard at > 0 else { return result }
+        if tail.flatMap(referencedTargetSignatures) == targets {
+            approvals.rekey(id: approval.id, fingerprint: approvalFingerprint(tail))
+        } else {
+            approvals.withdraw(id: approval.id)
+            result.text += "\napproval: withdrawn (id \(approval.id)); on this screen the numbers from action \(at + 1) name other controls than the owner was asked about. Choose from the elements above; a sensitive action asks again."
+        }
         return result
     }
 
+    /// The answer when the sensitive part was not sent: text only when nothing went, else the read
+    /// after what did go.
     func refused(until: Double, full: Bool, did: [String], text: String) async -> ToolResult {
         guard !did.isEmpty else {
             // The screen it was refused on, so the model sees what it asked for (gym: the declined

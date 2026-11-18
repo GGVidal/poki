@@ -135,7 +135,7 @@ final class Approvals: @unchecked Sendable {
         case withdraw(id: String)
         case withdrawPending
         case rekey(id: String, fingerprint: String)
-        case withdrawIfMismatch(fingerprint: String?, workspaceSession: String?)
+        case withdrawIfMismatch(fingerprint: String?, workspaceSession: String?, keepingGrant: Bool)
         case discardWorkspace(session: String)
         case discardAll
         case resolve(id: String, approved: Bool)
@@ -246,18 +246,17 @@ final class Approvals: @unchecked Sendable {
                 break
             }
 
-        case .withdrawIfMismatch(let fingerprint, let workspaceSession):
+        case .withdrawIfMismatch(let fingerprint, let workspaceSession, let keepingGrant):
+            func matches(_ approval: Approval) -> Bool {
+                fingerprint != nil && approval.fingerprint == fingerprint && approval.workspaceSession == workspaceSession
+            }
             switch state {
-            case .idle:
+            case .pending(let approval, _) where !matches(approval):
+                clearCurrent(into: &effects)
+            case .granted(let approval) where !keepingGrant && !matches(approval):
+                state = .idle
+            case .idle, .pending, .granted:
                 break
-            case .pending(let approval, _):
-                if fingerprint == nil || approval.fingerprint != fingerprint || approval.workspaceSession != workspaceSession {
-                    clearCurrent(into: &effects)
-                }
-            case .granted(let approval):
-                if fingerprint == nil || approval.fingerprint != fingerprint || approval.workspaceSession != workspaceSession {
-                    state = .idle
-                }
             }
 
         case .discardWorkspace(let session):
@@ -365,8 +364,9 @@ final class Approvals: @unchecked Sendable {
         apply(.rekey(id: id, fingerprint: fingerprint))
     }
 
-    func withdrawMismatching(fingerprint: String?, workspaceSession: String?) {
-        apply(.withdrawIfMismatch(fingerprint: fingerprint, workspaceSession: workspaceSession))
+    /// Withdraws a request, and unless `keepingGrant` an unused grant, for other actions than these.
+    func withdrawMismatching(fingerprint: String?, workspaceSession: String?, keepingGrant: Bool = false) {
+        apply(.withdrawIfMismatch(fingerprint: fingerprint, workspaceSession: workspaceSession, keepingGrant: keepingGrant))
     }
 
     func discardWorkspaceDecisions(session: String?) {
