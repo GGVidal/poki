@@ -129,7 +129,7 @@ struct MemoryChange: Identifiable, Equatable {
 @MainActor @Observable
 final class MemoryLibrary {
     static let shared = MemoryLibrary()
-    static let sampleKey = "pokiMemorySample"
+    nonisolated static let sampleKey = "pokiMemorySample"
     static let noteLimit = 300
 
     private(set) var items: [MemoryItem] = []

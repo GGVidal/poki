@@ -247,12 +247,12 @@ struct MemoryPill: View {
             .foregroundStyle(solid ? Color.white : tint)
             .frame(maxWidth: .infinity, minHeight: 42)
             // A solid pill that cannot be pressed pales its ground only, as the design draws it: faded
-            // whole, its white words all but vanished into the pale blue. The system halves a disabled
-            // plain button on top of this, so 0.5 lands on the design's quarter-strength blue.
-            .background(solid ? Tint.blue.opacity(isEnabled ? 1 : 0.5) : Color(.tertiarySystemFill), in: .capsule)
+            // whole, its white words all but vanished into the pale blue.
+            .background(solid ? Tint.blue.opacity(isEnabled ? 1 : 0.25) : Color(.tertiarySystemFill), in: .capsule)
             .opacity(solid || isEnabled ? 1 : 0.3)
         }
-        .buttonStyle(.plain)
+        // Not `.plain`: that halves a disabled button whole, words and all.
+        .buttonStyle(PressedDimStyle())
     }
 }
 
