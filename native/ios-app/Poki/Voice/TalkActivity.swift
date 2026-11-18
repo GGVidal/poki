@@ -15,17 +15,21 @@ final class TalkActivity {
     private let keepsActivity: @MainActor () -> Bool
     /// The talk went off.
     private let ended: @MainActor () -> Void
+    /// End on the Live Activity: what stops with the talk.
+    private let endFromLiveActivityAction: (@MainActor () -> Void)?
     private var shown: PokiState.Voice?
     /// What EndTalkIntent's notification reaches; it holds this weakly, so an ended TalkActivity hears nothing.
     private let mailbox: Mailbox
 
     init(voice: VoiceModel, activity: ActivityController, deviceName: @escaping @MainActor () -> String,
-         keepsActivity: @escaping @MainActor () -> Bool, ended: @escaping @MainActor () -> Void = {}) {
+         keepsActivity: @escaping @MainActor () -> Bool, ended: @escaping @MainActor () -> Void = {},
+         endFromLiveActivity: (@MainActor () -> Void)? = nil) {
         self.voice = voice
         self.activity = activity
         self.deviceName = deviceName
         self.keepsActivity = keepsActivity
         self.ended = ended
+        endFromLiveActivityAction = endFromLiveActivity
         mailbox = Mailbox()
         mailbox.owner = self
         mailbox.listen()
@@ -80,7 +84,7 @@ final class TalkActivity {
     fileprivate func endFromLiveActivity() {
         guard voice.isOn else { return }
         AppLog.shared.add("voice", "the talk was ended from the Live Activity")
-        voice.stop()
+        if let endFromLiveActivityAction { endFromLiveActivityAction() } else { voice.stop() }
     }
 
     private final class Mailbox {

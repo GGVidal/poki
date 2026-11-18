@@ -3,7 +3,8 @@ import AVFAudio
 
 /// Talk with Poki without leaving the app you're in: from the Action Button, Shortcuts or Siri, Poki
 /// stays in the background, so the app in front stays in front, and Poki looks at it and works in it
-/// while you talk. The Live Activity shows the talk and carries End; running this again ends it too.
+/// while you talk. The Live Activity shows the talk and carries End; running this again stops the
+/// talk and what Poki is doing, as End does.
 ///
 /// iOS opens the microphone for an app in the background only from an AudioRecordingIntent, and only
 /// with a Live Activity up: LiveActivityIntent lets this intent start one from the background. When
@@ -26,8 +27,8 @@ struct TalkHereIntent: AudioRecordingIntent, LiveActivityIntent, ForegroundConti
             return try await openPoki(LocalizedStringResource("Poki wasn’t ready. Try again in a moment.", table: "Entry"))
         }
         if app.voice.isOn {
-            AppLog.shared.add("voice", "Talk Here ended the talk")
-            app.voice.stop()
+            AppLog.shared.add("voice", "Poki Anytime ended the talk")
+            app.stopFromOutside("Poki Anytime ended the talk")
             return .result()
         }
         if let why = Self.whyPokiOpens(app, chat) { return try await openPoki(why) }

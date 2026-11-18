@@ -419,7 +419,8 @@ final class AppModel {
         listenForApprovals()
         talkActivity = TalkActivity(voice: voice, activity: self.activity, deviceName: { UIDevice.current.name },
                                     keepsActivity: { [weak self] in self?.sessionOn == true },
-                                    ended: { [weak self] in self?.talkEnded() })
+                                    ended: { [weak self] in self?.talkEnded() },
+                                    endFromLiveActivity: { [weak self] in self?.stopFromOutside("Ended from the Live Activity") })
         // One pump for the app's whole life. Cancelling a task that reads an AsyncStream ends the
         // stream for good, so a pump per session would go silent after the first Turn off (no steps,
         // no approvals, no relay state in the log, which is what happened on the phone).
@@ -1252,6 +1253,29 @@ final class AppModel {
 
     /// Stops the runner, and with it iOS's automation banner, while the relay stays connected; the
     /// next agent request starts it again. From the Stop runner button, the Live Activity, or idle.
+    static let liveActivityStop = "Stopped from the Live Activity"
+
+    private func isApprovalTapEcho(_ reason: String) -> Bool {
+        guard reason == Self.liveActivityStop, let answered = lastApprovalAnswered else { return false }
+        return Date().timeIntervalSince(answered) < 4
+    }
+
+    /// The owner's Stop from outside Poki: Stop or End on the Live Activity, or Poki Anytime run again.
+    /// The talk, the chat's task, a waiting approval and the agent's steps all stop at once, and the
+    /// Live Activity ends with them.
+    func stopFromOutside(_ reason: String) {
+        if isApprovalTapEcho(reason) {
+            log.add("runner", "a Stop from the Live Activity right after an approval was ignored")
+            return
+        }
+        log.add("session", "\(reason): the talk, the task and the Live Activity stop")
+        if voice.isOn { voice.stop() }
+        if let chat = AskPoki.chat, chat.running { chat.stop() }
+        for approval in approvals { resolve(approval, approved: false) }
+        pauseRunner(reason: reason)
+        activity.end()
+    }
+
     func pauseRunner(reason: String = "Stopped", byOwner: Bool = true) {
         let splitChat = byOwner && AskPoki.app === self && AskPoki.chat?.isRunningInSplitView == true ? AskPoki.chat : nil
         splitChat?.stop()
@@ -1260,7 +1284,7 @@ final class AppModel {
         // that lands within a few seconds of an answered approval is that same tap (build 144: an
         // Allow, then "Stopped from the Live Activity" 0.7 s after the approval ended). A running
         // Split View task still needs an immediate Stop, including during and just after approval.
-        if splitChat == nil, reason == "Stopped from the Live Activity", let answered = lastApprovalAnswered, Date().timeIntervalSince(answered) < 4 {
+        if splitChat == nil, isApprovalTapEcho(reason) {
             log.add("runner", "a Stop from the Live Activity right after an approval was ignored")
             return
         }
@@ -2034,7 +2058,7 @@ final class AppModel {
         CFNotificationCenterAddObserver(center, observer, { _, observer, _, _, _ in
             guard let observer else { return }
             let model = Unmanaged<AppModel>.fromOpaque(observer).takeUnretainedValue()
-            Task { @MainActor in model.pauseRunner(reason: "Stopped from the Live Activity") }
+            Task { @MainActor in model.stopFromOutside(AppModel.liveActivityStop) }
         }, ApprovalMailbox.stopRunner as CFString, nil, .deliverImmediately)
         CFNotificationCenterAddObserver(center, observer, { _, observer, _, _, _ in
             guard let observer else { return }

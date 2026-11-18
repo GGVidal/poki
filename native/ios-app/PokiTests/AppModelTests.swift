@@ -1112,6 +1112,21 @@ final class InProcessPasscodeTests: XCTestCase {
         await waitFor("the end of the talk closes automation") { !self.session.isOpen && self.model.runnerPaused }
     }
 
+    /// Stop or End on the Live Activity, or Poki Anytime run again during a talk: the talk stops with
+    /// the steps, not only the steps, and the automation session closes.
+    func testAStopFromOutsidePokiEndsTheTalkAndTheSteps() async {
+        UserDefaults.standard.set("1", forKey: "pokiTalkRehearsal")
+        defer { UserDefaults.standard.removeObject(forKey: "pokiTalkRehearsal") }
+        await openSessionForATask()
+        model.wentToBackground()
+        await model.voice.start(microphone: false)
+        XCTAssertTrue(model.voice.isOn)
+
+        model.stopFromOutside(AppModel.liveActivityStop)
+        XCTAssertFalse(model.voice.isOn, "the talk stops at once")
+        await waitFor("the steps stop and automation closes") { self.model.runnerPaused && !self.session.isOpen }
+    }
+
     func testRemotePhoneReadWaitsForSessionWithoutInputPreparation() async throws {
         session.holdNextOpen()
         let transport = SessionScreenTransport(session: session)
@@ -1226,7 +1241,7 @@ final class InProcessPasscodeTests: XCTestCase {
             var update: Task<Void, Never>?
             switch action {
             case "owner stop": model.pauseByOwner()
-            case "Live Activity stop": model.pauseRunner(reason: "Stopped from the Live Activity")
+            case "Live Activity stop": model.stopFromOutside(AppModel.liveActivityStop)
             case "turn off": model.stopSession()
             default:
                 let updating = expectation(description: "update requested during the pause")
