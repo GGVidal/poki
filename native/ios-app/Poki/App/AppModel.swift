@@ -327,8 +327,9 @@ final class AppModel {
     init(launcher: RunnerLauncher = RustLauncher(), pairer: DevicePairing = RustPairing(),
          automation: InProcessAutomation = PKInProcess.shared(), transport: HTTPTransport? = nil,
          systemVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
-         requiresDiskImageCheck: Bool? = nil) {
+         requiresDiskImageCheck: Bool? = nil, imageMounted: @escaping () -> Bool = { AppModel.localDDIMounted }) {
         ActivityController.endAll()
+        self.imageMounted = imageMounted
         self.activity = ActivityController()
         self.automation = automation
         self.idleSessionPolicy = .forSystem(systemVersion)
@@ -2336,7 +2337,7 @@ final class AppModel {
 
     /// Home offers Start although the loopback is not answering: the image is mounted and the
     /// pairing is Poki's own, so a new task can open Poki's session on cellular (ESP-448).
-    var canStartFromHome: Bool { canStartFromHome(localDDIAvailable: diskImage.isReady && Self.localDDIMounted) }
+    var canStartFromHome: Bool { canStartFromHome(localDDIAvailable: diskImage.isReady && imageMounted()) }
 
     /// Poki can start a task: setup looks complete, or on cellular the mounted image stands in for the
     /// loopback, because the launcher already handed a task to it or Home can start one there (ESP-448).
@@ -2353,10 +2354,13 @@ final class AppModel {
     }
 
     /// A file the mounted developer disk image puts on the phone (the XCTest framework Poki loads).
-    static let ddiMarker = "/System/Developer/Library/Frameworks/XCUIAutomation.framework/XCUIAutomation"
+    nonisolated static let ddiMarker = "/System/Developer/Library/Frameworks/XCUIAutomation.framework/XCUIAutomation"
+
+    /// Whether the developer disk image is mounted now: `localDDIMounted`, or a fake in tests.
+    private let imageMounted: () -> Bool
 
     /// The developer disk image is mounted, as the launcher checks it (`ddi_marker`).
-    static var localDDIMounted: Bool {
+    nonisolated static var localDDIMounted: Bool {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: ddiMarker, isDirectory: &isDirectory) && !isDirectory.boolValue
     }
@@ -2388,7 +2392,7 @@ final class AppModel {
 
     /// On cellular a new task can still start on the mounted image; otherwise it waits for Wi-Fi.
     var cellularNeedsWiFi: Bool {
-        loopback.cellularRefused && !hasOpenInProcessSession && !(automationPath == .inProcess && Self.localDDIMounted)
+        loopback.cellularRefused && !hasOpenInProcessSession && !(automationPath == .inProcess && imageMounted())
     }
 
     var activityProblem: String? { activity.lastError }
