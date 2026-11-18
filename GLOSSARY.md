@@ -159,7 +159,7 @@ _Related_: Global memory, To-do
 _Avoid_: contacts, relationships, social graph
 
 **Source**:
-How a memory or habit was created or updated, whether stated directly by the owner, learned during a conversation, discovered in the nightly review, or edited manually.
+How a memory or habit was created or updated, whether stated directly by the owner, learned during a conversation, discovered in a Dream, or edited manually.
 _Related_: Reason, Locked
 _Avoid_: origin, provenance
 
@@ -175,7 +175,7 @@ _Avoid_: pinned, protected, frozen
 
 **Recent updates**:
 A view on the Memory page listing the latest items Poki learned or modified, accessible by tapping "Memory updated" in a conversation.
-_Related_: Memory page, Nightly review
+_Related_: Memory page, Dream
 _Avoid_: changelog, history, activity
 
 **Memory page**:
@@ -183,10 +183,10 @@ The dedicated screen in the Poki app where the owner views, edits, and deletes s
 _Related_: Memory library, Recent updates
 _Avoid_: notes page, memory list
 
-**Nightly review**:
+**Dream**:
 An automated maintenance pass that runs overnight while the iPhone charges, analyzing the behavior log and recent tasks to add, update, or remove memories, habits, and skills.
 _Related_: Behavior log, Habit, Recent updates
-_Avoid_: consolidation, background review, sync
+_Avoid_: Nightly review, consolidation, background review, sync
 
 **Screen history**:
 The owner's private record on the iPhone of what was on screen and when, kept behind its own PIN.
@@ -205,7 +205,7 @@ _Avoid_: blocklist, private apps
 
 **Behavior log**:
 A concise daily summary distilled from screen history that captures when the owner used an app and what they did inside it.
-_Related_: Screen history, Nightly review, Habit
+_Related_: Screen history, Dream, Habit
 _Avoid_: activity log, usage log
 
 **Activity log**:
