@@ -96,10 +96,19 @@ final class AppLaunchPromptTests: XCTestCase {
     private func finder(list: [InstalledApps.App]?, store: [InstalledApps.StoreApp]? = [], icons: @escaping (String) -> Bool? = { _ in nil }) -> InstalledApps {
         let apps = InstalledApps()
         apps.phone = { list == nil ? nil : [:] }
-        apps.fetch = { _ in list ?? [] }
+        apps.call = { _ in try Self.signerAnswer(list ?? []) }
         apps.hasIcon = { icons($0) }
         apps.search = { _ in store }
         return apps
+    }
+
+    /// The signer's answer to `apps` as it comes over the bridge: {"v": {"apps": [...]}}.
+    static func signerAnswer(_ list: [InstalledApps.App]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["v": ["apps": list.map { app in
+            var entry: [String: Any] = ["id": app.id]
+            entry["name"] = app.name; entry["bundle_name"] = app.bundleName; entry["type"] = app.type
+            return entry
+        }]])
     }
 
     private let xianyu: [InstalledApps.StoreApp] = [.init(id: "com.taobao.fleamarket", name: "闲鱼", url: "https://apps.apple.com/cn/app/id510909506")]
@@ -186,10 +195,10 @@ final class AppLaunchPromptTests: XCTestCase {
         let apps = InstalledApps()
         apps.now = { clock }
         apps.phone = { [:] }
-        apps.fetch = { [phoneList] _ in
+        apps.call = { [phoneList] _ in
             reads += 1
             if reads > 1 { throw URLError(.timedOut) }
-            return phoneList
+            return try Self.signerAnswer(phoneList)
         }
         apps.hasIcon = { _ in nil }
         apps.search = { [xianyu] _ in xianyu }

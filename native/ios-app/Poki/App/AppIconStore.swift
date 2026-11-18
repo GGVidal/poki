@@ -20,7 +20,8 @@ import UIKit
 // 2. The App Store artwork Poki carries for common apps (Poki/AppIcons, see AppIcons.md).
 // 3. An icon fetched earlier from the App Store and kept in Caches/AppIcons.
 // 4. The App Store's public lookup by bundle ID (itunes.apple.com/lookup), on a view's `.task`. The
-//    request carries the bundle ID and the store's country only. A miss is remembered for a day.
+//    request carries the bundle ID and the store's country only. A miss the store answered is remembered
+//    for a day; a lookup that could not reach the store is asked again.
 // Without any of these the view draws Poki's carried bear icon.
 
 /// Icons of apps, found once and kept for the app's run.
@@ -70,12 +71,16 @@ final class AppIconStore {
               !fetching.contains(id), !DiskCache.missedRecently(id) else { return }
         fetching.insert(id)
         defer { fetching.remove(id) }
-        if let image = await AppStoreLookup.icon(id) {
+        switch await AppStoreLookup.icon(id) {
+        case .found(let image):
             DiskCache.write(image, id)
             memory[key] = image
             arrivals += 1
-        } else {
+        case .absent:
             DiskCache.missed(id)
+        case .unreachable:
+            // Offline or a store that did not answer: nothing is remembered, so the next view asks again.
+            break
         }
     }
 
@@ -86,19 +91,29 @@ final class AppIconStore {
         return key.isEmpty ? nil : key
     }
 
-    /// The bundle ID for an app's name, or `app` itself when it already is one.
+    /// The bundle ID for an app's name, or `app` itself when it already is one. Past KnownApps, any app
+    /// installed on this iPhone is found by its Home Screen name (DynamicApps, from the phone's list).
     static func bundleID(_ app: String) -> String? {
         let name = app.trimmingCharacters(in: .whitespacesAndNewlines)
         if let known = KnownApps.find(name) { return known.id }
+        if DynamicApps.name(forID: name) != nil { return name }
         // "com.tencent.xin": a reverse-DNS name with no spaces.
         if !name.contains(" "), name.split(separator: ".").count >= 3 { return name }
-        return nil
+        return DynamicApps.id(forName: name)
     }
 
     /// The name an app goes by on this iPhone, in its first language (English, Simplified or
-    /// Traditional Chinese), from a bundle ID or any of its names; nil for an app not listed here.
+    /// Traditional Chinese), from a bundle ID or any of its names; for an app not listed here, its
+    /// Home Screen name when it is installed.
     static func name(_ app: String) -> String? {
-        KnownApps.find(app)?.name(in: .current)
+        KnownApps.find(app)?.name(in: .current) ?? DynamicApps.name(forID: app)
+    }
+
+    /// The phone's app list changed (InstalledApps): names that found no app may find one now, and the
+    /// views that drew a placeholder draw again.
+    func directoryChanged() {
+        unknown.removeAll()
+        arrivals += 1
     }
 
     /// true when iOS has a Home Screen icon for `id`, so the app is installed; InstalledApps' check
@@ -274,22 +289,32 @@ private enum AppStoreLookup {
         return URLSession(configuration: configuration)
     }()
 
-    static func icon(_ id: String) async -> UIImage? {
+    enum Answer {
+        case found(UIImage)
+        /// A store answered and has no app with this id.
+        case absent
+        /// No store could be reached or its picture did not arrive: worth asking again.
+        case unreachable
+    }
+
+    static func icon(_ id: String) async -> Answer {
         let country = (Locale.current.region?.identifier ?? "US").lowercased()
+        var unreachable = false
         for store in country == "us" ? ["us"] : [country, "us"] {
             var lookup = URLComponents(string: "https://itunes.apple.com/lookup")!
             lookup.queryItems = [URLQueryItem(name: "bundleId", value: id), URLQueryItem(name: "country", value: store)]
+            guard let url = lookup.url, let (data, response) = try? await session.data(from: url),
+                  (response as? HTTPURLResponse)?.statusCode == 200, let text = String(data: data, encoding: .utf8),
+                  text.contains("\"resultCount\"") else { unreachable = true; continue }
             // Read the one field by pattern: the answer's descriptions carry raw control characters,
             // which a strict JSON parser refuses.
-            guard let url = lookup.url, let (data, _) = try? await session.data(from: url),
-                  let text = String(data: data, encoding: .utf8),
-                  let match = text.firstMatch(of: #/"artworkUrl100"\s*:\s*"([^"]+)"/#) else { continue }
+            guard let match = text.firstMatch(of: #/"artworkUrl100"\s*:\s*"([^"]+)"/#) else { continue }
             let art = String(match.1)
             // The artwork's address names its size; 180 pixels is the Home Screen's 60 points at 3x.
             guard let big = URL(string: art.replacingOccurrences(of: "100x100bb", with: "180x180bb")),
-                  let (image, _) = try? await session.data(from: big), let icon = UIImage(data: image) else { continue }
-            return icon
+                  let (image, _) = try? await session.data(from: big), let icon = UIImage(data: image) else { unreachable = true; continue }
+            return .found(icon)
         }
-        return nil
+        return unreachable ? .unreachable : .absent
     }
 }

@@ -760,6 +760,8 @@ final class ChatModel {
         taskCalls.removeAll()
         app.prepareForTask()
         app.chatTaskBegan(splitViewSession: splitViewSession)
+        // find_app and the task's icons see the phone's current apps.
+        InstalledApps.shared.refreshSoon()
         AppLog.shared.add("chat", "task started: \(engine), \(provider.rawValue)/\(model)")
     }
 
