@@ -475,6 +475,8 @@ struct RootView: View {
             openDetails([DetailsRoute.voice])
         case "conversations":
             openDetails([DetailsRoute.conversations])
+        case "screenHistory":
+            openDetails([DetailsRoute.screenHistory])
         case "updates":
             openDetails([DetailsRoute.updates])
         case "steps":
