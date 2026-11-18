@@ -290,6 +290,11 @@ fn status(response: &plist::Value) -> Status {
 
 fn apple_error(st: &Status) -> Error {
     tracing::warn!("Apple sign-in status ec={} hsc={} em={:?}", st.ec, st.hsc, st.em);
+    // -22411 is a rate limit only with 503. With 401 Apple turned the session away: after a
+    // verified code, an app token asked for with the 409 session from before the code gets this.
+    if st.ec == -22411 && st.hsc != 503 {
+        return Error::NeedsPerson(SESSION_REJECTED.into());
+    }
     if is_rate_limit_code_or_text(st.ec, &st.em) {
         return rate_limited();
     }
@@ -386,59 +391,8 @@ impl Client {
         password: &str,
         caller: CodeCaller,
     ) -> Result<Outcome> {
-        let apple_id_clean = apple_id.trim().to_lowercase();
         let anisette = self.anisette.headers().await?;
-        let mut client = srp::Client::new();
-
-        let mut init = plist::Dictionary::new();
-        init.insert("A2k".into(), plist::Value::Data(client.a_pub.clone()));
-        init.insert("cpd".into(), plist::Value::Dictionary(anisette.cpd()));
-        init.insert("o".into(), "init".into());
-        init.insert("ps".into(), plist::Value::Array(vec!["s2k".into(), "s2k_fo".into()]));
-        init.insert("u".into(), apple_id_clean.clone().into());
-        let r1 = self.gs_request(&anisette, init).await?;
-        let st = status(&r1);
-        if st.ec != 0 {
-            return Err(apple_error(&st));
-        }
-        let sp = s(&r1, "sp").unwrap_or("s2k");
-        let salt = data(&r1, "s").ok_or_else(|| Error::msg("sign-in: no salt"))?.to_vec();
-        let iterations = dict(&r1, "i").and_then(|v| v.as_signed_integer()).ok_or_else(|| Error::msg("sign-in: no iteration count"))? as u32;
-        let b_pub = data(&r1, "B").ok_or_else(|| Error::msg("sign-in: no B"))?.to_vec();
-        let c_value = dict(&r1, "c").cloned().unwrap_or(plist::Value::String(String::new()));
-
-        let derived = srp::Client::derive_password(password, &salt, iterations, sp == "s2k_fo");
-        let m1 = client.process(&apple_id_clean, &derived, &salt, &b_pub).map_err(Error::msg)?;
-
-        let mut complete = plist::Dictionary::new();
-        complete.insert("c".into(), c_value);
-        complete.insert("M1".into(), plist::Value::Data(m1));
-        complete.insert("cpd".into(), plist::Value::Dictionary(anisette.cpd()));
-        complete.insert("o".into(), "complete".into());
-        complete.insert("u".into(), apple_id_clean.clone().into());
-        let r2 = self.gs_request(&anisette, complete).await?;
-        let st = status(&r2);
-        if st.ec != 0 {
-            return Err(apple_error(&st));
-        }
-        let m2 = data(&r2, "M2").ok_or_else(|| Error::msg("sign-in: no M2"))?;
-        if !client.verify_server(m2) {
-            return Err(Error::msg("Apple's sign-in answer did not verify (M2 mismatch). Check the clock on this computer and try again."));
-        }
-        let spd = data(&r2, "spd").ok_or_else(|| Error::msg("sign-in: no spd"))?;
-        let spd = decrypt_spd(client.key(), spd)?;
-        let session = Session {
-            apple_id: apple_id.trim().to_string(),
-            adsid: s(&spd, "adsid").unwrap_or("").to_string(),
-            gs_idms_token: s(&spd, "GsIdmsToken").unwrap_or("").to_string(),
-            first_name: s(&spd, "fn").unwrap_or("").to_string(),
-            last_name: s(&spd, "ln").unwrap_or("").to_string(),
-            sk: data(&spd, "sk").unwrap_or(&[]).to_vec(),
-            c: data(&spd, "c").unwrap_or(&[]).to_vec(),
-        };
-        if session.adsid.is_empty() || session.gs_idms_token.is_empty() {
-            return Err(Error::msg("Apple's sign-in answer had no account token."));
-        }
+        let (session, st) = self.srp_sign_in(apple_id, password, &anisette).await?;
         tracing::info!("sign-in answered hsc {} au {:?}", st.hsc, st.au);
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         let make_pending = |via: Factor, phone_id: u64, session: Session| Pending {
@@ -481,6 +435,64 @@ impl Client {
             Step::Repair => Err(Error::NeedsPerson("Apple wants something on this Apple Account fixed before it can be used here. Sign in at account.apple.com, turn on two-factor authentication and accept any new terms, then sign in again.".into())),
             Step::Unsupported(other) => Err(Error::msg(format!("Apple asked for a verification step this app does not support ({other})."))),
         }
+    }
+
+    /// The password step (SRP init and complete) with the given anisette headers. It only reads
+    /// Apple's answer and never asks for a code.
+    async fn srp_sign_in(&self, apple_id: &str, password: &str, anisette: &Anisette) -> Result<(Session, Status)> {
+        let apple_id_clean = apple_id.trim().to_lowercase();
+        let mut client = srp::Client::new();
+
+        let mut init = plist::Dictionary::new();
+        init.insert("A2k".into(), plist::Value::Data(client.a_pub.clone()));
+        init.insert("cpd".into(), plist::Value::Dictionary(anisette.cpd()));
+        init.insert("o".into(), "init".into());
+        init.insert("ps".into(), plist::Value::Array(vec!["s2k".into(), "s2k_fo".into()]));
+        init.insert("u".into(), apple_id_clean.clone().into());
+        let r1 = self.gs_request(anisette, init).await?;
+        let st = status(&r1);
+        if st.ec != 0 {
+            return Err(apple_error(&st));
+        }
+        let sp = s(&r1, "sp").unwrap_or("s2k");
+        let salt = data(&r1, "s").ok_or_else(|| Error::msg("sign-in: no salt"))?.to_vec();
+        let iterations = dict(&r1, "i").and_then(|v| v.as_signed_integer()).ok_or_else(|| Error::msg("sign-in: no iteration count"))? as u32;
+        let b_pub = data(&r1, "B").ok_or_else(|| Error::msg("sign-in: no B"))?.to_vec();
+        let c_value = dict(&r1, "c").cloned().unwrap_or(plist::Value::String(String::new()));
+
+        let derived = srp::Client::derive_password(password, &salt, iterations, sp == "s2k_fo");
+        let m1 = client.process(&apple_id_clean, &derived, &salt, &b_pub).map_err(Error::msg)?;
+
+        let mut complete = plist::Dictionary::new();
+        complete.insert("c".into(), c_value);
+        complete.insert("M1".into(), plist::Value::Data(m1));
+        complete.insert("cpd".into(), plist::Value::Dictionary(anisette.cpd()));
+        complete.insert("o".into(), "complete".into());
+        complete.insert("u".into(), apple_id_clean.clone().into());
+        let r2 = self.gs_request(anisette, complete).await?;
+        let st = status(&r2);
+        if st.ec != 0 {
+            return Err(apple_error(&st));
+        }
+        let m2 = data(&r2, "M2").ok_or_else(|| Error::msg("sign-in: no M2"))?;
+        if !client.verify_server(m2) {
+            return Err(Error::msg("Apple's sign-in answer did not verify (M2 mismatch). Check the clock on this computer and try again."));
+        }
+        let spd = data(&r2, "spd").ok_or_else(|| Error::msg("sign-in: no spd"))?;
+        let spd = decrypt_spd(client.key(), spd)?;
+        let session = Session {
+            apple_id: apple_id.trim().to_string(),
+            adsid: s(&spd, "adsid").unwrap_or("").to_string(),
+            gs_idms_token: s(&spd, "GsIdmsToken").unwrap_or("").to_string(),
+            first_name: s(&spd, "fn").unwrap_or("").to_string(),
+            last_name: s(&spd, "ln").unwrap_or("").to_string(),
+            sk: data(&spd, "sk").unwrap_or(&[]).to_vec(),
+            c: data(&spd, "c").unwrap_or(&[]).to_vec(),
+        };
+        if session.adsid.is_empty() || session.gs_idms_token.is_empty() {
+            return Err(Error::msg("Apple's sign-in answer had no account token."));
+        }
+        Ok((session, st))
     }
 
     fn twofa_request(&self, rb: reqwest::RequestBuilder, pending: &Pending, anisette: &Anisette) -> reqwest::RequestBuilder {
@@ -667,10 +679,29 @@ impl Client {
             }
             return Err(err);
         }
-        if !pending.session.sk.is_empty() && !pending.session.c.is_empty() {
-            return Ok(pending.session.clone());
+        if pending.session.sk.is_empty() || pending.session.c.is_empty() {
+            return Err(incomplete_session());
         }
-        Err(incomplete_session())
+        // Apple has checked the code, so this anisette identity is trusted now. Sign in once more
+        // with it to get the full session: Apple turns away app-token requests made with the 409
+        // session from before the code (hsc 401, ec -22411). This sign-in only reads Apple's
+        // answer and never asks for a code, so a sign-in still costs at most one code.
+        let anisette = self.anisette.headers_pinned().await?;
+        match self.srp_sign_in(&pending.apple_id, &pending.password, &anisette).await {
+            Ok((session, st)) if signed_in_with_keys(&session, &st) => {
+                tracing::info!("signed in again after the code: hsc {}", st.hsc);
+                Ok(session)
+            }
+            Ok((_, st)) => {
+                tracing::warn!("Apple still asked for a second factor after the code (hsc {} au {:?}); using the session from before the code", st.hsc, st.au);
+                Ok(pending.session.clone())
+            }
+            Err(e) if is_rate_limit(&e) => Err(e),
+            Err(e) => {
+                tracing::warn!("signing in again after the code failed ({e}); using the session from before the code");
+                Ok(pending.session.clone())
+            }
+        }
     }
 
     /// The app token for Xcode's services, which the developer portal wants.
@@ -727,6 +758,16 @@ enum Step<'a> {
     Unsupported(&'a str),
 }
 
+/// A password step that opened a session good for app tokens: signed in, or the repair answer
+/// that still carries the session keys.
+fn signed_in_with_keys(session: &Session, st: &Status) -> bool {
+    let keys = !session.sk.is_empty() && !session.c.is_empty();
+    match next_step(st.hsc, st.au.as_deref()) {
+        Step::SignedIn | Step::Repair => keys,
+        _ => false,
+    }
+}
+
 fn next_step(hsc: i64, au: Option<&str>) -> Step<'_> {
     match au {
         Some("trustedDeviceSecondaryAuth") => Step::AskTrustedDevice,
@@ -744,6 +785,8 @@ const WRONG_CODE_MARKER: &str = "That verification code is incorrect.";
 pub const WRONG_CODE_FIRST: &str = "That verification code is incorrect. Check the 6-digit code and enter the newest code you received.";
 pub const WRONG_CODE_WAIT: &str = "That verification code is incorrect. Stop and wait a few minutes before trying again so Apple does not lock this Apple Account, then enter the newest 6-digit code.";
 pub const EXPIRED_CODE: &str = "That verification code has expired. Enter the newest 6-digit code, or request a new code.";
+/// Apple's -22411 with any status but 503: it turned this session away, which is not a rate limit.
+pub const SESSION_REJECTED: &str = "Apple did not accept this sign-in (error -22411). Sign out, then sign in again.";
 pub const INCOMPLETE_SESSION: &str = "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session.";
 
 pub fn rate_limited() -> Error { Error::NeedsPerson(RATE_LIMITED.into()) }
