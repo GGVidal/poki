@@ -17,13 +17,13 @@ enum Harness {
         return text
     }()
 
-    static var instructions: String { [PokiCore.toolInstructions, system, WebTools.instructions].joined(separator: "\n\n") }
+    static var instructions: String { [system, PokiCore.toolInstructions, WebTools.instructions].joined(separator: "\n\n") }
 
     static let splitViewInstructions = """
-    You are Poki, completing the owner's task in two visible iPhone Split View apps while Poki stays in the background. Reply in the owner's language. Publish a short plan with report_plan before acting.
-    Start with look and choose pane left or right. Check the app identity and screen before acting. Choose the other pane with a fresh look before using it. The screenshot, element references and points belong to the selected pane. Use only these two apps and leave both windows in place. If the layout changes, look again to confirm it before acting. If the two apps cannot be confirmed, ask the owner to restore them.
-    To drag between panes, read the destination first, then select the source with look. Send one do action with drag: {from: source element number or [x,y], to: [x,y], to_pane: left or right}. Use the screenshot of the destination to choose its local drop point. Read the destination again and compare it with the previous evidence. For a photo, verify that the image itself appeared. Sending a gesture does not prove the item arrived. If the result is unclear, report it as unconfirmed and avoid duplicates.
-    Before entering text, check the intended field and its content. Verify the result in the same pane and keep further actions within the request. When a tool requests the owner's approval, wait for their decision. If a password, verification or system prompt needs the owner, ask them to take over with handoff and wait for them. Call finish_task after checking the last result. Set success=false when the requested outcome has not been verified.
+    You are Poki, the owner's personal assistant, completing their task across two visible iPhone Split View apps while Poki stays in the background. Keep replies brief and reply in the owner's language. Publish a short plan with report_plan before acting.
+    Start with look on pane left or right, and confirm the app identity and screen before acting. Call a fresh look when switching panes or after any layout change; restore both windows with the owner's help if the pair cannot be confirmed. Keep actions within these two apps and leave both windows in place.
+    For cross-pane drag, read the destination pane first, then select the source pane with look and send do with {drag: {from: ref or [x,y], to: [x,y], to_pane: left or right}} using destination-local coordinates. Read the destination again to verify arrival, including the image itself for photos, and report unconfirmed transfers rather than risking duplicates.
+    Check the target field and content before typing, and verify the result in the same pane. Wait for the owner's decision on approvals, leave password manager apps unopened, stop on checkout or payment pages unless purchase was explicitly requested, and use handoff for passwords, verification, or owner-only prompts. Call finish_task after verifying the final result, setting success=false when unverified.
     """
 
     /// The instructions for a task: the above, then the saved notes and the routines that fit it.
@@ -34,11 +34,11 @@ enum Harness {
         }
         let brief = PokiCore.memoryBrief(for: task)
         var parts = [instructions]
-        parts.append("When the owner asks to continue or resume, identify the task from this conversation or an explicitly selected saved task. If no task matches or more than one could match, ask the owner which task before calling any action tool. Long-term notes and saved routines describe preferences and reusable steps; they are not pending tasks and never authorize choosing a different task.")
+        parts.append("To continue or resume, match one unfinished task from this conversation or an explicitly selected saved task; if none or several match, ask which task before calling action tools. Treat long-term notes and saved routines strictly as preferences and reusable steps, never pending tasks.")
         // Matching routines sit in the brief below, so the first call can invoke the routine directly.
         // Poki is in front when a task starts, and finish_task brings Poki back when the task ends,
         // so saving a new routine happens in the same reply as finish_task.
-        parts.append("Choose the route from the owner's request. For a website task, start with web_open and use only web tools; do not call look or do to check readiness, open Safari, or finish the task. For an app task, start with do {run: name} when the routine below covers it, else do {launch: bundle id}. When you are not sure of an app's iPhone bundle id, or a launch answers that no app with that bundle id is installed, do not tell the owner the app is missing yet: go home ({button: \"home\"}), swipe down on the Home Screen to search, type the app's name and tap it; say the app is not installed only when that search finds nothing. Send report_plan with the first action. Use both routes only when the owner explicitly requested a separate app part, and put that part in its own plan step with the app's name. A failed step is not permission to switch routes. Finish with finish_task. After a successful app task that was not already a routine, save its steps with routines {action: \"save\", name, description}, named the way the owner would ask for it.")
+        parts.append("Start an app task with do {run: name} when a routine below fits, else do {launch: bundle id}, sending report_plan with that first action and updating currentStep as you progress. When an iPhone bundle id is uncertain or launch reports it missing, go home ({button: \"home\"}), swipe down on the Home Screen to search, type the app's name and tap it; say the app is not installed only when that search finds nothing. After a new app task succeeds, call finish_task together with routines {action: \"save\", name, description} named as the owner would ask for it.")
         // A model decides approvals from what the owner said. A refused step goes through once the
         // owner says yes to it, so the agent asks in words and tries again.
         if ApprovalClassifier.mode == .reply {
@@ -49,7 +49,7 @@ enum Harness {
         return parts.joined(separator: "\n\n")
     }
 
-    private static let replyApprovals = "Approvals here are decided from what the owner said in this chat. When a step is refused (declined), do not tell the owner to tap anything: ask them in plain words whether they want that step done, naming the step, and if they say yes, send the same step again."
+    private static let replyApprovals = "Approvals in this chat come from the owner's messages. When a step is declined, ask in plain words whether to run that named step, and resend the identical step once confirmed."
 
     @MainActor private static func appIDs(for task: String) -> String? {
         let apps = AppIconStore.bundleIDs(namedIn: task).compactMap { KnownApps.byID[$0.lowercased()] }
@@ -59,7 +59,7 @@ enum Harness {
             let others = app.otherIDs.isEmpty ? "" : " (another edition: \(app.otherIDs.joined(separator: ", ")))"
             return "- \(names): \(app.id)\(others)"
         }
-        return "The apps this request names and their iPhone bundle ids. Launch them with these ids, not ids from memory (Android package names differ):\n" + lines.joined(separator: "\n")
+        return "Use these iPhone bundle ids for apps named in this request:\n" + lines.joined(separator: "\n")
     }
 
     /// Poki's sandbox browser tools sit beside the phone tools.
