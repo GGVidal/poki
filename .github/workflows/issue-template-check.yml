@@ -6,7 +6,7 @@ name: Issue template check
 # already labeled needs-template, to take the label off once they match a form.
 #
 # The label and the comment come from the Poki Repo Bot GitHub App (secrets POKI_BOT_APP_ID and
-# POKI_BOT_PRIVATE_KEY; it needs Issues write). If its token cannot be made or is refused, the
+# POKI_BOT_PRIVATE_KEY; it needs Issues write). If its token cannot be made or GitHub rejects it, the
 # workflow's own token is used and they come from github-actions.
 on:
   issues:
@@ -36,7 +36,8 @@ jobs:
           private-key: ${{ secrets.POKI_BOT_PRIVATE_KEY }}
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /.github/
           persist-credentials: false
       - run: node .github/scripts/check-issue-template.mjs
         env:
