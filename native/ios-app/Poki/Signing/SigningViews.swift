@@ -138,7 +138,7 @@ struct SigningSection: View {
 
     var body: some View {
         Section {
-            SettingsRow(title: "Version", symbol: "info.circle", value: "\(signer.installedVersion) (\(signer.installedBuild))")
+            SettingsRow(title: "Version", symbol: "info", value: "\(signer.installedVersion) (\(signer.installedBuild))")
             if let latest = signer.latest {
                 let newer = signer.isNewer(latest)
                 SettingsRow(title: "Latest Version", symbol: "sparkles",
@@ -161,10 +161,10 @@ struct SigningSection: View {
         Section {
             switch signer.updateStep {
             case .download:
-                SignerAction(signer: signer, title: "Download and Install Update", systemImage: "arrow.down.circle") { await signer.downloadAndInstallUpdate() }
+                SignerAction(signer: signer, title: "Download and Install Update", systemImage: "arrow.down") { await signer.downloadAndInstallUpdate() }
             case .signIn:
                 NavigationLink { AppleAccountPage() } label: {
-                    SettingsLabel("Sign In to Download the Update", systemImage: "person.crop.circle.badge.plus")
+                    SettingsLabel("Sign In to Download the Update", systemImage: "person.badge.plus")
                 }
             case .install, nil:
                 if let next = signer.next {
@@ -191,7 +191,7 @@ struct SigningSection: View {
 
         Section {
             NavigationLink { AppleAccountPage() } label: {
-                SettingsRow(title: "Apple Account", symbol: "person.crop.circle",
+                SettingsRow(title: "Apple Account", symbol: "person",
                             value: signer.signedIn ? signer.status?.apple_id : AppLocalization.text(LocalizedStringResource("Not Signed In")))
             }
             NavigationLink { SigningOptionsPage() } label: {
