@@ -12,16 +12,72 @@ import Foundation
 /// Only a list read in the last five minutes can say an app is missing. An older list, iOS's icons
 /// and the App Store can only say an app is there: a failed read, a missing icon or a store that did
 /// not answer is no evidence that it is not.
+///
+/// The shared finder also gives the list to the app's names, icons and capsules (DynamicApps) and keeps
+/// it in a file (`cacheFile`). What leaves the phone: nothing from that file. The App Store fallbacks
+/// do send something to itunes.apple.com, one request at a time: find_app's search sends the name or
+/// purpose asked for, and an icon the phone lacks is looked up by its one bundle id (AppIconStore).
 @MainActor
 final class InstalledApps {
-    static let shared = InstalledApps()
+    static let shared = InstalledApps(publishes: true)
 
-    struct App: Equatable, Decodable {
+    struct App: Equatable, Codable {
         var id: String
         var name: String?
         var bundleName: String?
-        enum CodingKeys: String, CodingKey { case id, name, bundleName = "bundle_name" }
+        /// installation_proxy's ApplicationType: "User" or "System" (nil from an older answer).
+        var type: String? = nil
+        enum CodingKeys: String, CodingKey { case id, name, bundleName = "bundle_name", type }
     }
+
+    /// The last list read, so the app's icons and capsules know the installed apps from launch on,
+    /// before the loopback is up. Each successful read replaces it; one older than 30 days is removed
+    /// unread at launch; it goes with the app when the app is deleted. It is kept out of iCloud and
+    /// computer backups, and never leaves the phone.
+    static var cacheFile: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("installed-apps.json")
+    }
+    static let cacheMaxAge: TimeInterval = 30 * 86_400
+
+    /// Whether this finder feeds the app's names, icons and capsules and keeps the file: the shared one does.
+    private let publishes: Bool
+
+    init(publishes: Bool = false) {
+        self.publishes = publishes
+        guard publishes, let saved = Self.savedList() else { return }
+        publish(saved)
+    }
+
+    private static func savedList() -> [App]? {
+        let file = cacheFile
+        guard let written = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else { return nil }
+        guard Date().timeIntervalSince(written) < cacheMaxAge else { try? FileManager.default.removeItem(at: file); return nil }
+        return (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([App].self, from: $0) }
+    }
+
+    /// The list goes to the names, icons and capsules (DynamicApps), and to the file when `save`.
+    private func publish(_ list: [App], save: Bool = false) {
+        DynamicApps.set(list.compactMap { app in
+            (app.name ?? app.bundleName).map { DynamicApps.Entry(id: app.id, name: $0, user: app.type == "User") }
+        })
+        AppIconStore.shared.directoryChanged()
+        guard save, let data = try? JSONEncoder().encode(list) else { return }
+        var file = Self.cacheFile
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard (try? data.write(to: file, options: .atomic)) != nil else { return }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? file.setResourceValues(values)
+    }
+
+    /// Reads the list again in the background when it is older than five minutes (the loopback just
+    /// came up, a chat task began).
+    func refreshSoon() {
+        guard !refreshing else { return }
+        refreshing = true
+        Task { _ = await list(); refreshing = false }
+    }
+    private var refreshing = false
 
     /// The phone's list as last read. `fresh` when it was read in the last five minutes; an older one
     /// misses any app installed since, so it only proves what it holds.
@@ -33,12 +89,18 @@ final class InstalledApps {
 
     /// The signer's way to the phone (AppModel sets it with the signer's): nil while the loopback is down.
     var phone: () -> [String: Any]? = { nil }
-    /// Reads the list over that way: the signer's `apps` request.
-    var fetch: ([String: Any]) async throws -> [App] = { phone in
+    /// Sends one request to the signer and gives its answer as it came ({"v": value}).
+    var call: ([String: Any]) async throws -> Data = { try await SignerBridge.call($0) }
+
+    /// Reads the list over the phone's way: the signer's `apps` request.
+    private func fetch(_ phone: [String: Any]) async throws -> [App] {
         var request = phone
         request["op"] = "apps"
-        struct Answer: Decodable { let apps: [App] }
-        return try await SignerBridge.decode(Answer.self, request).apps
+        struct Answer: Decodable {
+            struct Value: Decodable { let apps: [App] }
+            let v: Value
+        }
+        return try JSONDecoder().decode(Answer.self, from: await call(request)).v.apps
     }
     /// true when iOS has an icon for an id, nil when it cannot say (never a confirmed no).
     var hasIcon: @MainActor (String) -> Bool? = { AppIconStore.installedOnPhone($0) }
@@ -60,6 +122,7 @@ final class InstalledApps {
                 let read = try await fetch(request)
                 let at = now()
                 last = (apps: read, at: at); lastProblem = nil
+                if publishes { publish(read, save: true) }
                 return Inventory(apps: read, fresh: true, readAt: at)
             } catch {
                 lastProblem = error.localizedDescription
