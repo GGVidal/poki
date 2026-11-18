@@ -314,7 +314,7 @@ struct SigningOptionsPage: View {
     @State private var address = ""
     /// Custom was tapped, so the address field shows before the signer has an address to keep.
     @State private var entering = false
-    /// The address last handed to the signer, so leaving the field does not hand it over twice.
+    /// The address last handed to the signer, so leaving the page does not hand it over twice.
     @State private var sent: String?
     @FocusState private var typing: Bool
     private var signer: SelfSigner { model.signer }
@@ -372,10 +372,7 @@ struct SigningOptionsPage: View {
         .onChange(of: saved, initial: true) { _, saved in
             if let saved { address = saved }
         }
-        // An address typed and left (a tap elsewhere, or back) is kept like one sent with Done.
-        .onChange(of: typing) { _, typing in
-            if !typing { save() }
-        }
+        // An address typed and left with Back is kept like one sent with Done.
         .onDisappear { save() }
     }
 

@@ -89,6 +89,68 @@ final class SigningPageTests: XCTestCase {
             }
         }
     }
+
+    /// An address typed on Advanced and then left with Back reaches the signer, as one sent with Done
+    /// does. Going back used to drop it without a word.
+    func testAnAddressTypedAndLeftWithBackReachesTheSigner() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.screen.bounds
+        defer { window.isHidden = true }
+        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
+        let core = AnisetteCore()
+        app.signer.transport = { request, _ in try await core.answer(request) }
+        await app.signer.reload()
+        window.rootViewController = UIHostingController(rootView: NavigationStack { SigningOptionsPage() }.environment(app))
+        window.makeKeyAndVisible()
+        let field = try await settle("the address field shows") { window.textFields.first }
+
+        _ = try await settle("the field takes the typing") { field.becomeFirstResponder() ? true : nil }
+        field.selectAll(nil)
+        field.insertText("https://ani.second.example")
+        field.sendActions(for: .editingChanged)
+        window.rootViewController = UIViewController()
+        _ = try await settle("going back hands the address over") { core.received.last }
+        XCTAssertEqual(core.received, ["https://ani.second.example"])
+    }
+
+    /// The first non-nil answer, asked again as the page settles, for at most five seconds.
+    private func settle<T>(_ what: String, _ answer: () -> T?) async throws -> T {
+        let deadline = CACurrentMediaTime() + 5
+        while CACurrentMediaTime() < deadline {
+            if let value = answer() { return value }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return try XCTUnwrap(answer(), what)
+    }
+}
+
+/// The core's sign-in server, as the launcher keeps it: set_anisette changes what status says.
+@MainActor
+private final class AnisetteCore {
+    private var anisette = "https://ani.first.example"
+    private(set) var received: [String] = []
+
+    func answer(_ request: [String: Any]) throws -> Data {
+        switch request["op"] as? String {
+        case "set_anisette":
+            let url = request["url"] as? String ?? ""
+            received.append(url)
+            anisette = url
+            return try JSONSerialization.data(withJSONObject: ["v": ["anisette": url]])
+        case "status":
+            return try JSONSerialization.data(withJSONObject: ["v": [
+                "signed_in": false, "needs_code": false, "keeps_password": false, "anisette": anisette,
+                "channel": "beta", "channels": [["id": "beta", "title": "Beta"]],
+            ] as [String: Any]])
+        default:
+            return try JSONSerialization.data(withJSONObject: ["v": [String: Any]()])
+        }
+    }
+}
+
+private extension UIView {
+    var textFields: [UITextField] { (self as? UITextField).map { [$0] } ?? subviews.flatMap(\.textFields) }
 }
 
 private struct SigningReviewView: View {
