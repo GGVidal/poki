@@ -14,9 +14,10 @@ struct LinkAskAlert: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.alert(title, isPresented: Binding(get: { active && model.linkAsk != nil }, set: { if !$0 { model.answerLink(false) } }), presenting: model.linkAsk) { _ in
-            Button("Don’t Allow", role: .cancel) { model.answerLink(false) }
-            Button("Allow") { model.answerLink(true) }
+        // Each answer names the request the alert shows (`AppModel.answerLink(_:to:)`).
+        content.alert(title, isPresented: Binding(get: { active && model.linkAsk != nil }, set: { if !$0 { model.answerLink(false, to: model.linkAsk?.id) } }), presenting: model.linkAsk) { ask in
+            Button("Don’t Allow", role: .cancel) { model.answerLink(false, to: ask.id) }
+            Button("Allow") { model.answerLink(true, to: ask.id) }
         } message: { ask in
             switch ask.kind {
             case .relay:

@@ -2157,7 +2157,13 @@ final class AppModel {
     }
     private(set) var linkAsk: LinkAsk?
 
+    /// While one link waits for the owner, another is turned away, not queued and not put in its place:
+    /// the alert on screen keeps the request it shows, so Allow never applies a link the owner did not see.
     private func ask(_ kind: LinkAsk.Kind, host: String) {
+        guard linkAsk == nil else {
+            log.add("app", "a link came while another waits for the owner; it was not used")
+            return
+        }
         linkAsk = LinkAsk(kind: kind, host: host)
         if case .relay = kind {
             log.add("app", "a link asks to change the relay to \(host), waiting for the owner")
@@ -2166,9 +2172,10 @@ final class AppModel {
         }
     }
 
-    /// The owner's answer to `linkAsk`.
-    func answerLink(_ allow: Bool) {
-        guard let ask = linkAsk else { return }
+    /// The owner's answer to `linkAsk`. `id` is the request the alert showed: an answer to any other
+    /// request does nothing.
+    func answerLink(_ allow: Bool, to id: LinkAsk.ID? = nil) {
+        guard let ask = linkAsk, id == nil || id == ask.id else { return }
         linkAsk = nil
         guard allow else {
             log.add("app", "the owner declined the link")
