@@ -133,6 +133,8 @@ final class Approvals: @unchecked Sendable {
         case inspectPending
         case request(Approval)
         case withdraw(id: String)
+        case withdrawPending
+        case rekey(id: String, fingerprint: String)
         case withdrawIfMismatch(fingerprint: String?, workspaceSession: String?)
         case discardWorkspace(session: String)
         case discardAll
@@ -225,6 +227,23 @@ final class Approvals: @unchecked Sendable {
                 clearCurrent(into: &effects)
             } else if case .granted(let approval) = state, approval.id == id {
                 state = .idle
+            }
+
+        case .withdrawPending:
+            if case .pending = state {
+                clearCurrent(into: &effects)
+            }
+
+        case .rekey(let id, let fingerprint):
+            switch state {
+            case .pending(var approval, let waiters) where approval.id == id:
+                approval.fingerprint = fingerprint
+                state = .pending(approval: approval, waiters: waiters)
+            case .granted(var approval) where approval.id == id:
+                approval.fingerprint = fingerprint
+                state = .granted(approval: approval)
+            case .idle, .pending, .granted:
+                break
             }
 
         case .withdrawIfMismatch(let fingerprint, let workspaceSession):
@@ -332,6 +351,18 @@ final class Approvals: @unchecked Sendable {
 
     func withdraw(id: String) {
         apply(.withdraw(id: id))
+    }
+
+    /// Withdraws the request still waiting for the owner, if any. A granted approval that has not
+    /// been used stays: it belongs to the agent's next `do`, not to whoever asks next.
+    func withdrawPending() {
+        apply(.withdrawPending)
+    }
+
+    /// Points an open request or unused grant at the actions as the agent will send them again: on
+    /// their own, after the read that follows the actions sent before them.
+    func rekey(id: String, fingerprint: String) {
+        apply(.rekey(id: id, fingerprint: fingerprint))
     }
 
     func withdrawMismatching(fingerprint: String?, workspaceSession: String?) {

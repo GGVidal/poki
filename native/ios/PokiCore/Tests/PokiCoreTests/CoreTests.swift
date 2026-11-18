@@ -961,9 +961,6 @@ final class ApprovalTests: XCTestCase {
         XCTAssertFalse(handed.isError, handed.text)
         let id = try XCTUnwrap(core.handoff?.id)
 
-        let voiceTap = await core.clearTap(on: "Continue", inApp: "com.example.shop", named: "Shop", waiting: 0.2)
-        XCTAssertFalse(voiceTap.mayTap, "\(voiceTap)")
-
         _ = await core.finishTask(switching: false)
         XCTAssertNil(core.handoff, "task end left the unfinished handoff active")
         let ended = await eventually { events.value.contains(.handoffEnded(id: id, how: "taskEnded")) }
@@ -973,6 +970,129 @@ final class ApprovalTests: XCTestCase {
         XCTAssertFalse(nextTask.isError, nextTask.text)
         XCTAssertFalse(nextTask.text.contains("not_sent: a step is handed to the owner"), nextTask.text)
         XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1)
+    }
+
+    func testTheVoiceTabStillTapsWhileAStepIsHandedToTheOwner() async throws {
+        let wda = FakeWDA()
+        wda.source([("Button", "Continue")], app: "Shop")
+        let (core, _, _) = makeCore(wda)
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["handoff": ["kind": "password", "text": "Enter account password"]]]])
+        let id = try XCTUnwrap(core.handoff?.id)
+
+        // Voice through the Mac's bridge: Poki only clears the tap.
+        let bridged = await core.clearTap(on: "Continue", inApp: "com.example.shop", named: "Shop", waiting: 0.2)
+        XCTAssertTrue(bridged.mayTap, "\(bridged)")
+        // Live Voice on the phone: its own look and do.
+        _ = await core.tool("look", arguments: "{}")
+        let spoken = await core.tool("do", arguments: #"{"actions":[{"tap":1}]}"#)
+        XCTAssertFalse(spoken.isError, spoken.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the voice tap was held back by the handoff")
+
+        // The agent itself still waits for the owner.
+        let agent = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertTrue(agent.text.contains("not_sent: a step is handed to the owner"), agent.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1)
+        XCTAssertEqual(core.handoff?.id, id, "a voice tap ended the handoff")
+    }
+
+    func testAGrantIsVoidOnceAnotherAppIsInFront() async throws {
+        let wda = screenWithDelete()
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let approval = try XCTUnwrap(core.pendingApproval)
+        core.resolveApproval(id: approval.id, approved: true)
+
+        // The same screen, the same button and number, but another app in front.
+        wda.set("GET /wda/activeAppInfo") { _ in (200, ["value": ["bundleId": "com.example.files", "name": "Files"]]) }
+        _ = await core.call("look", [:])
+        let elsewhere = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertTrue(elsewhere.text.contains("approval_required"), elsewhere.text)
+        XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, "the grant from one app pressed Delete in another")
+    }
+
+    func testEndingATaskReleasesItsPendingAndGrantedApprovals() async throws {
+        let wda = screenWithDelete()
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        let events = LockedBox<[CoreEvent]>([])
+        Task { for await e in core.events { events.update { $0.append(e) } } }
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let stale = try XCTUnwrap(core.pendingApproval)
+
+        _ = await core.finishTask(switching: false)
+        XCTAssertNil(core.pendingApproval, "the ended task left its request waiting")
+        let ended = await eventually { events.value.contains(.approvalEnded(id: stale.id, approved: nil)) }
+        XCTAssertTrue(ended, "no approvalEnded for the request of the ended task")
+
+        // The next task asks afresh; a grant it does not use ends with it too.
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let fresh = try XCTUnwrap(core.pendingApproval)
+        XCTAssertNotEqual(fresh.id, stale.id)
+        core.resolveApproval(id: fresh.id, approved: true)
+        _ = await core.finishTask()
+
+        _ = await core.call("look", [:])
+        let later = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertTrue(later.text.contains("approval_required"), later.text)
+        XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, "a grant from an ended task pressed Delete")
+    }
+
+    func testANewHandoffReplacesTheOneStillWaiting() async throws {
+        let wda = FakeWDA()
+        wda.source([("Button", "Continue")], app: "Shop")
+        let (core, _, _) = makeCore(wda)
+        let events = LockedBox<[CoreEvent]>([])
+        Task { for await e in core.events { events.update { $0.append(e) } } }
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["handoff": ["kind": "password", "text": "Enter account password"]]]])
+        let first = try XCTUnwrap(core.handoff?.id)
+        _ = await core.call("do", ["actions": [["handoff": ["kind": "verification", "text": "Enter the code from SMS"]]]])
+        let second = try XCTUnwrap(core.handoff?.id)
+        XCTAssertNotEqual(first, second)
+
+        let replaced = await eventually { events.value.contains(.handoffEnded(id: first, how: "replaced")) }
+        XCTAssertTrue(replaced, "the first handoff never ended, so its Live Activity stays")
+        core.handoffDone(id: first)  // a late Done on the old card does not end the new step
+        XCTAssertEqual(core.handoff?.id, second)
+    }
+
+    func testAVoiceTapLeavesTheAgentsUnusedGrant() async throws {
+        let wda = screenWithDelete()
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let approval = try XCTUnwrap(core.pendingApproval)
+        core.resolveApproval(id: approval.id, approved: true)
+
+        let voice = await core.clearTap(on: "Display & Brightness", inApp: "com.apple.Preferences", named: "Settings", waiting: 0.2)
+        XCTAssertEqual(voice, .clear)
+        let run = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertFalse(run.isError, run.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the voice tap withdrew the owner's approval")
+    }
+
+    func testAnApprovalOutlivesANumberThatChangesInTheLabel() async throws {
+        let wda = FakeWDA()
+        wda.source([("Button", "Pay $12.30 in 0:59"), ("Button", "Cancel")], app: "Shop")
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let asked = try XCTUnwrap(core.pendingApproval)
+
+        wda.source([("Button", "Pay $12.31 in 0:58"), ("Button", "Cancel")], app: "Shop")
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertEqual(core.pendingApproval?.id, asked.id, "the card was withdrawn and asked again when the label ticked")
+        core.resolveApproval(id: asked.id, approved: true)
+
+        wda.source([("Button", "Pay $12.31 in 0:57"), ("Button", "Cancel")], app: "Shop")
+        _ = await core.call("look", [:])
+        let paid = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertFalse(paid.isError, paid.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the grant was lost when the label ticked")
     }
 }
 

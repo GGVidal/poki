@@ -370,11 +370,12 @@ public final class PokiCore: @unchecked Sendable {
     /// is refused.
     public func clearTap(on text: String, inApp bundleID: String?, named name: String?, waiting seconds: Double) async -> TapClearance {
         guard !computer.hasLocalWorkspace else { return .refused("Another task is using Split View.") }
-        guard !computer.handoffWaiting else { return .refused("A step is handed to the owner.") }
         let app = Foreground(bundleID: bundleID, name: name)
         // The approval card is in Poki: a tap there is refused, and the request waiting stays for the owner.
         if config.isPoki(app) { return .refused(CoreConfig.ownAppRefusal) }
-        approvals.withdrawMismatching(fingerprint: nil, workspaceSession: nil)
+        // Like `do`: a tap withdraws the request still waiting, so two taps never wait side by side. A
+        // granted approval the agent has not used yet stays for the agent's own `do`.
+        approvals.withdrawPending()
         let element = Element(type: "Other", label: text, value: nil, identifier: nil, frame: Rect(x: 0, y: 0, width: 0, height: 0), depth: 0)
         // No readable text: the rules cannot tell what it does, so the owner is asked.
         let unreadable = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -398,11 +399,12 @@ public final class PokiCore: @unchecked Sendable {
 
     /// look, do or status for another part of the app (the Voice tab), run here on the phone exactly as a
     /// relay call: same gate, approvals, Live Activity and deadlines. `arguments` is the call's JSON object.
+    /// The Voice tab acts for the owner, so a step handed to the owner does not hold its input back.
     public func tool(_ name: String, arguments: String) async -> ToolResult {
         guard let args = try? JSON.parse(arguments.isEmpty ? "{}" : arguments) else {
             return ToolResult(text: "error: the arguments are not JSON; nothing was sent", jpeg: nil, isError: true)
         }
-        return await call(name, args)
+        return await call(name, args, byOwnersVoice: true)
     }
 
     /// The task is over (the app stops an idle runner, or its chat's turn ended): the phone goes back
@@ -604,7 +606,7 @@ public final class PokiCore: @unchecked Sendable {
         return try await runner.call("POST", "/poki/workspace-launcher", request, timeout: 12, countsAsMiss: false)
     }
 
-    func call(_ name: String, _ args: JSON, session: String? = nil, answerBy: Double? = nil, local: Bool = false, expectedApps: Set<String>? = nil) async -> ToolResult {
+    func call(_ name: String, _ args: JSON, session: String? = nil, answerBy: Double? = nil, local: Bool = false, expectedApps: Set<String>? = nil, byOwnersVoice: Bool = false) async -> ToolResult {
         if name == "status" { return status() }
         if let tool = hostTools.value.first(where: { $0.name == name }) {
             // Outside the gate: the app's tool makes its own look and do calls, one at a time as any.
@@ -655,7 +657,7 @@ public final class PokiCore: @unchecked Sendable {
                     }
                     return await computer.look(full: args["full"]?.bool ?? false, pane: args["pane"]?.string, session: session, local: local, expectedApps: expectedApps)
                 }
-                return await computer.act(actions: actions, full: args["full"]?.bool ?? false, finish: args["finish"]?.bool ?? false, session: session, answerBy: answerBy)
+                return await computer.act(actions: actions, full: args["full"]?.bool ?? false, finish: args["finish"]?.bool ?? false, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice)
             }
         } catch {
             // Never reached in practice (every step has its own deadline), but a call always answers.

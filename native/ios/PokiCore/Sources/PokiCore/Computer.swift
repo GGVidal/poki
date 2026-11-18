@@ -313,9 +313,11 @@ final class Computer: @unchecked Sendable {
 
         // Numbers: an element still there keeps its number (same text and frame first, then same text).
         let prior = treeRead ? listed : []
-        var exact: [String: [Int]] = [:], loose: [String: [Int]] = [:]
+        var exact: [String: [Int]] = [:], ticking: [String: [Int]] = [:], loose: [String: [Int]] = [:]
+        func tickingKey(_ e: Element) -> String { "\(e.type)|\(Self.stableLabel(e.text))@\(e.frame.described)" }
         for (r, e) in prior where !e.fromPicture {
             exact["\(e.key)@\(e.frame.described)", default: []].append(r)
+            ticking[tickingKey(e), default: []].append(r)
             loose[e.key, default: []].append(r)
         }
         var used = Set<Int>()
@@ -323,6 +325,11 @@ final class Computer: @unchecked Sendable {
         var moved = Set<Int>()
         for (i, e) in shown.enumerated() where !e.fromPicture {
             if let r = exact["\(e.key)@\(e.frame.described)"]?.first(where: { !used.contains($0) }) { assigned[i] = r; used.insert(r) }
+        }
+        // Only a number in its text changed (a countdown, a price) in the same place: the same control,
+        // listed as changed so the model reads the new text.
+        for (i, e) in shown.enumerated() where !e.fromPicture && assigned[i] == nil {
+            if let r = ticking[tickingKey(e)]?.first(where: { !used.contains($0) }) { assigned[i] = r; used.insert(r); moved.insert(r) }
         }
         for (i, e) in shown.enumerated() where !e.fromPicture && assigned[i] == nil {
             if let r = loose[e.key]?.first(where: { !used.contains($0) }) { assigned[i] = r; used.insert(r); moved.insert(r) }
@@ -705,8 +712,14 @@ final class Computer: @unchecked Sendable {
     private func referencedTargetSignatures(in action: JSON) -> [String] {
         Self.refs(in: action).sorted().map { n in
             guard let element = refs[n] else { return "\(n):missing" }
-            return "\(n):\(element.type):\(element.label ?? ""):\(element.identifier ?? "")"
+            return "\(n):\(element.type):\(Self.stableLabel(element.label ?? "")):\(element.identifier ?? "")"
         }
+    }
+
+    /// A label with its numbers masked, for approval fingerprints: a countdown or a price that ticks
+    /// between two reads names the same control, so the request and its grant stay valid.
+    static func stableLabel(_ label: String) -> String {
+        label.replacingOccurrences(of: "[0-9]+([.,:'][0-9]+)*", with: "#", options: .regularExpression)
     }
 
     private func approvalFingerprint(_ actions: [JSON], afterPrefix prefix: [JSON] = []) -> String {
@@ -810,11 +823,13 @@ final class Computer: @unchecked Sendable {
         return min(max(0, until - now()), actions.reduce(0) { $0 + actionCap($1) } + longestPause + config.readTimeout)
     }
 
-    func act(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil) async -> ToolResult {
-        restartNote(await actNow(actions: actions, full: full, finish: finish, session: session, answerBy: answerBy))
+    /// `byOwnersVoice`: the Voice tab's model acting for the owner, not the agent: it is not held back
+    /// by a step handed to the owner, and it leaves the agent's unused approval in place.
+    func act(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, byOwnersVoice: Bool = false) async -> ToolResult {
+        restartNote(await actNow(actions: actions, full: full, finish: finish, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice))
     }
 
-    func actNow(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil) async -> ToolResult {
+    func actNow(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, byOwnersVoice: Bool = false) async -> ToolResult {
         scrollFound = nil
         typedInto = nil
         var started = now()
@@ -854,7 +869,7 @@ final class Computer: @unchecked Sendable {
             return ToolResult(text: "not_sent: \(Self.repeatedDrop)",
                               jpeg: nil, isError: true)
         }
-        if !harmless, let h = handoff.active {
+        if !harmless, !byOwnersVoice, let h = handoff.active {
             var result = await withPicture("not_sent: a step is handed to the owner (\(h.kind): \"\(h.text.prefix(80))\"), so no input is sent until they tap Done on the phone or you send {handoff: false}. Keep polling with look, or {wait_until: {handoff_done: true, ms: 10000}}.", timeout: until - now() - 0.5, isErrorWithoutPicture: false)
             result.waitingForOwner = true
             return result
@@ -879,7 +894,7 @@ final class Computer: @unchecked Sendable {
             var scan = SensitiveScan(front: lastForeground, secureOnScreen: lastElements.contains(where: \.isSecure))
             for (at, action) in actions.enumerated() {
                 if scan.moved, let kind = ActionKind(action), presses(kind, action, scan, unread: false).contains(where: \.atPoint) {
-                    var result = await actNow(actions: Array(actions[..<at]), full: full, finish: false, session: session, answerBy: answerBy)
+                    var result = await actNow(actions: Array(actions[..<at]), full: full, finish: false, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice)
                     result.text += "\nnot_sent from action \(at + 1): a coordinate action needs a fresh read after an earlier action that could change the screen. This check runs before the final screen comparison. Choose the remaining actions from the screen above and send them in a new do call. Do not repeat actions already sent."
                     return result
                 }
@@ -914,7 +929,12 @@ final class Computer: @unchecked Sendable {
         let workspaceSession = workspaceOwner.value
         let matchingFingerprint = sensitive.map { approvalFingerprint(Array(actions[$0.at...]), afterPrefix: Array(actions[..<$0.at])) }
         // Any other actions withdraw an unconsumed request or grant so stale approvals never carry over.
-        approvals.withdrawMismatching(fingerprint: matchingFingerprint, workspaceSession: workspaceSession)
+        // The owner's voice withdraws only a request still waiting, as its taps do (`PokiCore.clearTap`).
+        if byOwnersVoice {
+            approvals.withdrawPending()
+        } else {
+            approvals.withdrawMismatching(fingerprint: matchingFingerprint, workspaceSession: workspaceSession)
+        }
         if let (at, reason) = sensitive {
             let tail = Array(actions[at...])
             let fingerprint = matchingFingerprint!
@@ -953,7 +973,7 @@ final class Computer: @unchecked Sendable {
                 case .approved? where answerBy.map({ now() + timeToFinish(tail, until: until) + Self.relayMargin > $0 }) == true:
                     // Too late for the relay: the actions would run after it answered its caller with a 504, and
                     // the model would send them again. The approval stays; the same actions sent again run at once.
-                    return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner approved on the phone, but too late for this call to send the actions and read the screen before the relay gives up on it.\(sentFirst) The approval is kept: \(again) and they run at once (within \(Int(approvals.lifetime / 60)) minutes).")
+                    return await refusedAwaitingResend(approval, tail: tail, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner approved on the phone, but too late for this call to send the actions and read the screen before the relay gives up on it.\(sentFirst) The approval is kept: \(again) and they run at once (within \(Int(approvals.lifetime / 60)) minutes).")
                 case .approved?:
                     guard approvals.consumeGrant(fingerprint: fingerprint, workspaceSession: workspaceSession) != nil else {
                         return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The approval went to another call with the same actions, so nothing was sent from this one.\(sentFirst) To run them, \(again) and ask again.")
@@ -965,7 +985,7 @@ final class Computer: @unchecked Sendable {
                 case .expired?:
                     return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): the approval request ended unanswered (\(reason)).\(sentFirst)")
                 case nil:
-                    return await refused(until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner was asked on the phone.\(sentFirst) When they approve, \(again) (within \(Int(approvals.lifetime / 60)) minutes); other actions withdraw the request.")
+                    return await refusedAwaitingResend(approval, tail: tail, at: at, until: until, full: full, did: did, text: "not_sent from action \(at + 1): approval_required (id \(approval.id)): \(reason). The owner was asked on the phone.\(sentFirst) When they approve, \(again) (within \(Int(approvals.lifetime / 60)) minutes); other actions withdraw the request.")
                 }
             }
         }
@@ -1413,6 +1433,15 @@ final class Computer: @unchecked Sendable {
 
     /// The answer when the sensitive part was not sent: text only when nothing went, else the read
     /// after what did go.
+    /// The approval stays open for the actions the model sends again. After actions before them ran,
+    /// it is matched to those actions on their own against the read this answer makes, so the request
+    /// is not withdrawn by the very call it asks for.
+    private func refusedAwaitingResend(_ approval: Approval, tail: [JSON], at: Int, until: Double, full: Bool, did: [String], text: String) async -> ToolResult {
+        let result = await refused(until: until, full: full, did: did, text: text)
+        if at > 0 { approvals.rekey(id: approval.id, fingerprint: approvalFingerprint(tail)) }
+        return result
+    }
+
     func refused(until: Double, full: Bool, did: [String], text: String) async -> ToolResult {
         guard !did.isEmpty else {
             // The screen it was refused on, so the model sees what it asked for (gym: the declined
