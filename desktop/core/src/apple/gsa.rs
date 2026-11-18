@@ -1971,76 +1971,81 @@ mod rate_limit_regressions {
         });
     }
 
+    thread_local! {
+        static CODE_REQUESTS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Code requests logged on this test's thread. Unlike a scoped tracing subscriber, the hook
+    /// never depends on callsite interest that tests running in parallel cache for each other.
+    fn code_requests_on_this_thread() -> Vec<String> {
+        super::set_code_request_hook(|line| CODE_REQUESTS.with(|c| c.borrow_mut().push(line.to_string())));
+        CODE_REQUESTS.with(|c| c.borrow().clone())
+    }
+
     #[test]
     fn cancel_sign_in_and_resend_code_respect_cooldown_and_rate_limits() {
-        let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sub = LogLines(logs.clone());
-        tracing::subscriber::with_default(sub, || {
-            // Another test thread may have cached "never" for the code-request callsite before
-            // this subscriber existed; recompute it with this one in place.
-            tracing::callsite::rebuild_interest_cache();
-            run_in_vault(async {
-                let mock = start_mock_gsa(MockBehavior::default()).await;
-                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let mut p = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1);
+        run_in_vault(async {
+            code_requests_on_this_thread();
+            let mock = start_mock_gsa(MockBehavior::default()).await;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let mut p = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1);
 
-                let cooldown_err = signer.resend_code().await.unwrap_err().to_string();
-                assert!(cooldown_err.contains("seconds"), "expected 60s cooldown refusal, got: {cooldown_err}");
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1, "60s cooldown must prevent resend");
+            let cooldown_err = signer.resend_code().await.unwrap_err().to_string();
+            assert!(cooldown_err.contains("seconds"), "expected 60s cooldown refusal, got: {cooldown_err}");
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 1, "60s cooldown must prevent resend");
 
-                // Failed resend must also record timestamp BEFORE sending, persisting across Signer reload.
-                p.created_at -= 61;
-                p.last_sent_at -= 61;
-                store::save_pending(&p).unwrap();
-                mock.behavior.lock().unwrap().trusted_device_status = 500;
-                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                assert!(signer.resend_code().await.is_err(), "HTTP 500 resend must fail");
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "failed resend hit endpoint once");
+            // Failed resend must also record timestamp BEFORE sending, persisting across Signer reload.
+            p.created_at -= 61;
+            p.last_sent_at -= 61;
+            store::save_pending(&p).unwrap();
+            mock.behavior.lock().unwrap().trusted_device_status = 500;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            assert!(signer.resend_code().await.is_err(), "HTTP 500 resend must fail");
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "failed resend hit endpoint once");
 
-                let mut reopened = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let retry_after_fail = reopened.resend_code().await.unwrap_err().to_string();
-                assert!(retry_after_fail.contains("seconds"), "failed resend must still enforce 60s cooldown after reload, got: {retry_after_fail}");
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "cooldown after failed resend must block immediate retry");
+            let mut reopened = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let retry_after_fail = reopened.resend_code().await.unwrap_err().to_string();
+            assert!(retry_after_fail.contains("seconds"), "failed resend must still enforce 60s cooldown after reload, got: {retry_after_fail}");
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 2, "cooldown after failed resend must block immediate retry");
 
-                // Successful resend after 61s sends 1 code on same channel and logs without secrets.
-                let mut p_after_fail = store::load_pending().unwrap();
-                p_after_fail.created_at -= 61;
-                p_after_fail.last_sent_at -= 61;
-                store::save_pending(&p_after_fail).unwrap();
-                mock.behavior.lock().unwrap().trusted_device_status = 200;
-                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let resent = signer.resend_code().await.unwrap();
-                assert!(resent.resend_wait_secs(time::OffsetDateTime::now_utc().unix_timestamp()) > 0);
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 3, "one manual resend sends exactly 1 code");
-                assert_eq!(mock.counts.lock().unwrap().sms_send, 0, "resend must never cross channels");
-                assert!(logs.lock().unwrap().iter().any(|l| l.contains("2fa-code-request path=ask_trusted_device caller=resend_code")));
+            // Successful resend after 61s sends 1 code on same channel and logs without secrets.
+            let mut p_after_fail = store::load_pending().unwrap();
+            p_after_fail.created_at -= 61;
+            p_after_fail.last_sent_at -= 61;
+            store::save_pending(&p_after_fail).unwrap();
+            mock.behavior.lock().unwrap().trusted_device_status = 200;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let resent = signer.resend_code().await.unwrap();
+            assert!(resent.resend_wait_secs(time::OffsetDateTime::now_utc().unix_timestamp()) > 0);
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 3, "one manual resend sends exactly 1 code");
+            assert_eq!(mock.counts.lock().unwrap().sms_send, 0, "resend must never cross channels");
+            assert!(code_requests_on_this_thread().iter().any(|l| l.contains("2fa-code-request path=ask_trusted_device caller=resend_code")));
 
-                // Rate-limited resend enters 1h cooldown and blocks further resends even after 61s, while cancel_sign_in still clears Pending.
-                let mut p_for_rl = store::load_pending().unwrap();
-                p_for_rl.created_at -= 61;
-                p_for_rl.last_sent_at -= 61;
-                store::save_pending(&p_for_rl).unwrap();
-                mock.behavior.lock().unwrap().trusted_device_status = 429;
-                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let rl_err = signer.resend_code().await.unwrap_err();
-                assert!(is_rate_limit(&rl_err), "429 on resend must return rate limit, got: {rl_err}");
-                assert!(signer.is_rate_limited(), "429 on resend must mark account rate-limited");
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 4);
+            // Rate-limited resend enters 1h cooldown and blocks further resends even after 61s, while cancel_sign_in still clears Pending.
+            let mut p_for_rl = store::load_pending().unwrap();
+            p_for_rl.created_at -= 61;
+            p_for_rl.last_sent_at -= 61;
+            store::save_pending(&p_for_rl).unwrap();
+            mock.behavior.lock().unwrap().trusted_device_status = 429;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let rl_err = signer.resend_code().await.unwrap_err();
+            assert!(is_rate_limit(&rl_err), "429 on resend must return rate limit, got: {rl_err}");
+            assert!(signer.is_rate_limited(), "429 on resend must mark account rate-limited");
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 4);
 
-                let mut p_aged = store::load_pending().unwrap();
-                p_aged.created_at -= 61;
-                p_aged.last_sent_at -= 61;
-                store::save_pending(&p_aged).unwrap();
-                let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let blocked_err = signer.resend_code().await.unwrap_err();
-                assert!(is_rate_limit(&blocked_err), "account rate-limit cooldown must block resend even after 60s");
-                assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 4, "no HTTP request when account is rate-limited");
+            let mut p_aged = store::load_pending().unwrap();
+            p_aged.created_at -= 61;
+            p_aged.last_sent_at -= 61;
+            store::save_pending(&p_aged).unwrap();
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let blocked_err = signer.resend_code().await.unwrap_err();
+            assert!(is_rate_limit(&blocked_err), "account rate-limit cooldown must block resend even after 60s");
+            assert_eq!(mock.counts.lock().unwrap().trusted_device_push, 4, "no HTTP request when account is rate-limited");
 
-                signer.cancel_sign_in().unwrap();
-                assert!(signer.pending().is_none(), "cancel_sign_in must clear Pending in memory even during rate limit");
-                assert!(store::load_pending().is_none(), "cancel_sign_in must clear Pending in vault even during rate limit");
-            });
+            signer.cancel_sign_in().unwrap();
+            assert!(signer.pending().is_none(), "cancel_sign_in must clear Pending in memory even during rate limit");
+            assert!(store::load_pending().is_none(), "cancel_sign_in must clear Pending in vault even during rate limit");
         });
     }
 
