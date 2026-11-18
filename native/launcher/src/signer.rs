@@ -122,6 +122,9 @@ async fn signer(state: &mut State) -> std::result::Result<&mut Signer, Failure> 
     if state.signer.is_none() {
         state.signer = Some(Signer::open()?);
     }
+    if state.signer.as_mut().unwrap().sync_account() {
+        state.pending = None;
+    }
     Ok(state.signer.as_mut().unwrap())
 }
 
@@ -156,8 +159,9 @@ async fn handle_inner(request: Value, emit_arc: EmitFn) -> Out {
         }
         "status" => {
             let mut state = STATE.lock().await;
+            signer(&mut state).await?;
             let mem_pending = state.pending.clone();
-            let s = signer(&mut state).await?;
+            let s = state.signer.as_mut().unwrap();
             let active_pending = mem_pending.or_else(|| s.pending().cloned());
             let pending = active_pending.is_some();
             let resend_available_at = active_pending.as_ref().map(|p| p.resend_available_at());
@@ -195,8 +199,9 @@ async fn handle_inner(request: Value, emit_arc: EmitFn) -> Out {
         "finish_sign_in" => {
             let mut state = STATE.lock().await;
             let code = str_of(&request, "code")?.to_string();
+            signer(&mut state).await?;
             let mem_pending = state.pending.take();
-            let s = signer(&mut state).await?;
+            let s = state.signer.as_mut().unwrap();
             let pending = mem_pending.or_else(|| s.pending().cloned()).ok_or_else(|| fail("Sign in again. The verification step has expired.", "needs_person"))?;
             let result = s.finish_sign_in(pending, &code).await;
             if let Err(e) = result {
@@ -317,8 +322,9 @@ async fn import_identity(request: &Value) -> Out {
 async fn prepare(request: &Value, reporter: &Reporter) -> Out {
     {
         let mut state = STATE.lock().await;
+        signer(&mut state).await?;
         let mem_pending = state.pending.clone();
-        let s = signer(&mut state).await?;
+        let s = state.signer.as_mut().unwrap();
         if s.needs_reauth() {
             return Err(core::apple::gsa::incomplete_session().into());
         }

@@ -68,6 +68,7 @@ export default function Account({ info }: { info: AppInfo | null }) {
         </Card>
       ) : (
         <Card>
+          {acct?.needs_reauth ? <p className="small" style={{ marginTop: 0 }}>{t("Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session.")}</p> : null}
           <form className="stack" onSubmit={(e) => { e.preventDefault(); signIn(); }}>
             <Field label={t("Apple ID")}><input className="input" value={appleId} onChange={(e) => setAppleId(e.target.value)} autoComplete="username" placeholder="you@example.com" /></Field>
             <Field label={t("Password")}><input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></Field>

@@ -28,6 +28,7 @@ struct AnisetteSource: Codable, Equatable {
 
 struct AccountState: Decodable {
     var signedIn: Bool
+    var needsReauth: Bool? = nil
     var appleId: String?
     var name: String?
     var teamId: String?
