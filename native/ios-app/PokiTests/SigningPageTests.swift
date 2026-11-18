@@ -201,7 +201,9 @@ private final class PageWords: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
                 qualifiedName: String?, attributes: [String: String]) {
         // iOS names its own parts (the toolbar, the scroll bar) in the iPhone's language, not Poki's.
-        let systemParts = ["XCUIElementTypeApplication", "XCUIElementTypeWindow", "XCUIElementTypeToolbar"]
+        // A symbol's label is iOS's name for it, and the settings icons are hidden from VoiceOver (this
+        // tree still lists them, as it lists Advanced's hidden ticks).
+        let systemParts = ["XCUIElementTypeApplication", "XCUIElementTypeWindow", "XCUIElementTypeToolbar", "XCUIElementTypeImage"]
         guard !systemParts.contains(elementName), attributes["label"]?.contains("scroll bar") != true else { return }
         for key in ["label", "value", "placeholderValue"] {
             if let text = attributes[key], !text.isEmpty, !all.contains(text) { all.append(text) }
