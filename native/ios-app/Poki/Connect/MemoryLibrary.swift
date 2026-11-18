@@ -2,11 +2,14 @@ import PokiCore
 import SwiftUI
 
 // What the Memory page shows, in one shape for the three kinds the memory system plan names: memories,
-// habits and skills. The page reads only this model. Today the routines and notes in RoutineStore are
-// all there is: notes are global memories (About You), routines are skills under their app (no app:
-// Other). App tags, locks, habits and the change log behind Recent Updates are not in the store yet; the
-// sample library (`-pokiMemorySample YES`) carries them so every state of the page can be shown and
-// tried, and the store-backed library leaves them out (no lock actions, an empty Recent Updates).
+// habits and skills. The page reads only this model, made from RoutineStore: notes are memories (under
+// their app, or About You when they have none), routines are skills under their app (no app: Other),
+// and the store's change log is Recent Updates. A note from before apps and conversations were kept has
+// neither: it is in About You (used in every app, as before), and an agent's reads "No source".
+//
+// Habits come from Screen History's learned habits, which are not on main yet: until they are, the
+// library has none, and the page shows no habit group. The sample library (`-pokiMemorySample YES`) is
+// the design's "used for a week" data, for screenshots only.
 
 enum MemoryKind: String, Hashable, CaseIterable {
     case memory, habit, skill
@@ -30,6 +33,9 @@ enum MemorySource: Hashable {
     case task
     /// It came in with an imported memory file.
     case imported
+    /// An agent kept it but no conversation was recorded with it: every memory from before the Memory
+    /// page, and an outside agent's.
+    case unknown
 
     /// The owner's own words or changes: shown in ink, Poki's in blue (the design's rule).
     var isOwners: Bool { [.said, .wrote, .edited, .card].contains(self) }
@@ -44,6 +50,7 @@ enum MemorySource: Hashable {
         case .dream: "Dream"
         case .task: "Saved by Poki after a task"
         case .imported: "Imported"
+        case .unknown: "No source"
         }
     }
 
@@ -56,6 +63,7 @@ enum MemorySource: Hashable {
         case .dream: "moon"
         case .task: "bolt"
         case .imported: "square.and.arrow.down"
+        case .unknown: "circle.dashed"
         }
     }
 }
@@ -72,7 +80,8 @@ struct MemoryItem: Identifiable, Equatable {
     /// one is under Other.
     var app: String?
     var source: MemorySource
-    /// The conversation it was heard in, when known: Source links back to it (decided 2026-11-18).
+    /// The conversation it was heard in, when the store kept it: Source links back to it (decided
+    /// 2026-11-18).
     var heard: MemoryOrigin?
     var updated: Date
     var locked = false
@@ -94,7 +103,7 @@ struct MemoryItem: Identifiable, Equatable {
 struct MemoryOrigin: Hashable {
     var app: String?
     var at: Date
-    /// A conversation in SessionStore. The store does not keep it yet, so only the sample library has one.
+    /// A conversation in SessionStore.
     var session: String?
 }
 
@@ -133,20 +142,17 @@ final class MemoryLibrary {
     var message: String?
 
     @ObservationIgnored private let store: RoutineStore?
-    /// Routines by item id, to put a forgotten skill back exactly.
-    @ObservationIgnored private var routines: [String: Routine] = [:]
-    /// Forgotten routines by item id, kept apart so a reload in between cannot lose what undo puts back.
-    @ObservationIgnored private var forgottenRoutines: [String: Routine] = [:]
 
     var isSample: Bool { store == nil }
-    /// Locks, app tags and Recent Updates need fields the store does not have yet.
-    var keepsLocks: Bool { isSample }
-    var keepsAppTags: Bool { isSample }
-    var keepsChanges: Bool { isSample }
+    /// When the owner last opened Recent Updates: Poki's changes after it light the dot.
+    @ObservationIgnored private let seenKey = "memory.recentSeen"
 
     init(store: RoutineStore? = UserDefaults.standard.bool(forKey: MemoryLibrary.sampleKey) ? nil : .shared) {
         self.store = store
-        if store == nil { loadSample() } else { reload() }
+        if store == nil { loadSample(); return }
+        reload()
+        // What Poki keeps or forgets in a conversation shows up here while the page is open.
+        store?.onChange = { Task { @MainActor in MemoryLibrary.shared.reload() } }
     }
 
     // MARK: Reading
@@ -186,7 +192,7 @@ final class MemoryLibrary {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean.count <= Self.noteLimit else { return }
         if let store {
-            _ = store.remember(clean, by: "owner")
+            store.remember(clean, by: RoutineStore.owner, app: app, locked: true)
             reload()
             return
         }
@@ -199,11 +205,13 @@ final class MemoryLibrary {
     func edit(_ id: String, text: String, app: String?) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean.count <= Self.noteLimit, let i = items.firstIndex(where: { $0.id == id }) else { return }
-        let before = items[i].text
+        let before = items[i]
+        // Saving the same words again changes nothing (a skill keeps its name; a memory its app too).
+        guard clean != before.text || (before.kind == .memory && app != before.app) else { return }
         if let store {
-            switch items[i].kind {
-            case .memory: store.editNote(id, text: clean)
-            case .skill: _ = store.rename(before, to: clean)
+            switch before.kind {
+            case .memory: store.editNote(id, text: clean, app: .some(app))
+            case .skill: store.rename(before.text, to: clean, by: RoutineStore.owner)
             case .habit: break
             }
             reload()
@@ -216,49 +224,49 @@ final class MemoryLibrary {
         items[i].heard = nil
         items[i].locked = true
         items[i].updated = Date()
-        log(.edited, .owner, items[i], previous: before == clean ? nil : before)
+        log(.edited, .owner, items[i], previous: before.text == clean ? nil : before.text)
     }
 
     func setLocked(_ id: String, _ locked: Bool) {
-        guard keepsLocks, let i = items.firstIndex(where: { $0.id == id }) else { return }
-        items[i].locked = locked
-    }
-
-    /// Forgets an item. It can come back from the toast, and in the sample also from Recent Updates.
-    func forget(_ id: String) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-        let item = items.remove(at: i)
         if let store {
-            switch item.kind {
-            case .memory: _ = store.forgetNote(item.id)
-            case .skill:
-                forgottenRoutines[item.id] = routines[item.id]
-                _ = store.forget(item.text)
-            case .habit: break
-            }
-        }
-        lastForgotten = MemoryChange(id: UUID().uuidString, at: Date(), action: .forgot, actor: .owner, item: item)
-        if keepsChanges, let change = lastForgotten { changes.insert(change, at: 0) }
-    }
-
-    /// Puts back what a change took away or changed. What comes back locks (the design's rule).
-    func undo(_ change: MemoryChange) {
-        defer {
-            if lastForgotten?.id == change.id { lastForgotten = nil }
-            if let i = changes.firstIndex(where: { $0.id == change.id }) { changes[i].undone = true }
-        }
-        if let store {
-            guard change.action == .forgot else { return }
-            switch change.item.kind {
-            case .memory: _ = store.remember(change.item.text, by: by(change.item.source))
-            case .skill: if let routine = forgottenRoutines.removeValue(forKey: change.item.id) { store.save(routine) }
-            case .habit: break
-            }
+            store.setLocked(items[i].kind == .skill ? items[i].text : id, locked)
             reload()
             return
         }
-        // Undoing Poki's or Dream's change locks the item, so it is not made again; what you forgot comes
-        // back as it was.
+        items[i].locked = locked
+    }
+
+    /// Forgets an item. It can come back from the toast, and from Recent Updates.
+    func forget(_ id: String) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        if let store {
+            let item = items[i]
+            let done = switch item.kind {
+            case .memory: store.forgetNote(item.id, by: RoutineStore.owner)
+            case .skill: store.forget(item.text, by: RoutineStore.owner)
+            case .habit: false
+            }
+            reload()
+            // The toast undoes the store's own entry for this forget.
+            if done, let change = changes.first, change.action == .forgot, change.item.id == item.id { lastForgotten = change }
+            return
+        }
+        let item = items.remove(at: i)
+        lastForgotten = MemoryChange(id: UUID().uuidString, at: Date(), action: .forgot, actor: .owner, item: item)
+        if let change = lastForgotten { changes.insert(change, at: 0) }
+    }
+
+    /// Puts back what a change took away or changed. Undoing Poki's or Dream's change locks the item,
+    /// so it is not made again; what you forgot comes back as it was.
+    func undo(_ change: MemoryChange) {
+        if lastForgotten?.id == change.id { lastForgotten = nil }
+        if let store {
+            store.undo(change.id)
+            reload()
+            return
+        }
+        if let i = changes.firstIndex(where: { $0.id == change.id }) { changes[i].undone = true }
         let locks = change.actor != .owner
         var back = change.item
         if locks { back.locked = true }
@@ -276,6 +284,12 @@ final class MemoryLibrary {
 
     /// Lets the toast's item go: it stays forgotten.
     func settleForgotten() { lastForgotten = nil }
+
+    /// Recent Updates was opened: its dot goes out until Poki changes something again.
+    func markSeen() {
+        unread = false
+        UserDefaults.standard.set(Date(), forKey: seenKey)
+    }
 
     func clearAll() {
         store?.clearAll()
@@ -303,7 +317,6 @@ final class MemoryLibrary {
     }
 
     private func log(_ action: MemoryChange.Action, _ actor: MemoryChange.Actor, _ item: MemoryItem, previous: String? = nil) {
-        guard keepsChanges else { return }
         changes.insert(MemoryChange(id: UUID().uuidString, at: Date(), action: action, actor: actor, item: item, previous: previous), at: 0)
     }
 
@@ -312,37 +325,76 @@ final class MemoryLibrary {
     /// Reads the store again.
     func reload() {
         guard let store else { return }
-        var next: [MemoryItem] = store.notes.map { note in
-            MemoryItem(id: note.id, kind: .memory, text: note.text, source: Self.source(note.by), updated: note.at)
-        }
-        routines = [:]
-        for routine in store.routines {
-            let id = "routine:" + routine.name
-            routines[id] = routine
-            next.append(MemoryItem(
-                id: id, kind: .skill, text: routine.name, detail: routine.description, app: routine.app,
-                source: .task, updated: routine.updated, steps: routine.steps.count, ok: routine.ok, runs: routine.runs,
-                lastMs: routine.lastMs, stale: routine.stale,
-                stop: routine.lastStop.map { AppLocalization.text(LocalizedStringResource("Step \($0.step): \($0.why)")) },
-                params: routine.params.keys.sorted(), savedBy: routine.savedBy))
-        }
+        let routines = store.routines
+        var next: [MemoryItem] = store.notes.map(Self.item)
+        next += routines.map(Self.item)
+        next += Self.habits()
         items = next
+        changes = store.changes.compactMap { Self.change($0, routines: routines) }
+        let seen = UserDefaults.standard.object(forKey: seenKey) as? Date ?? .distantPast
+        unread = changes.contains { $0.actor != .owner && $0.at > seen && !$0.undone }
     }
 
-    /// The note's `by`: "owner" from this page, "import" and "restore" from a file, an agent's name otherwise.
-    private static func source(_ by: String) -> MemorySource {
+    /// Screen History's learned habits go here once they are on main; until then there are none.
+    private static func habits() -> [MemoryItem] { [] }
+
+    private static func item(_ note: MemoryNote) -> MemoryItem {
+        MemoryItem(id: note.id, kind: .memory, text: note.text, app: note.app,
+                   source: note.edited != nil ? .edited : source(note.by, heard: note.heard != nil),
+                   heard: note.heard.map { MemoryOrigin(app: $0.app, at: note.at, session: $0.session) },
+                   updated: note.edited ?? note.at, locked: note.isLocked)
+    }
+
+    private static func item(_ routine: Routine) -> MemoryItem {
+        MemoryItem(
+            id: "routine:" + routine.name, kind: .skill, text: routine.name, detail: routine.description, app: routine.app,
+            source: .task, updated: routine.updated, locked: routine.isLocked, steps: routine.steps.count, ok: routine.ok, runs: routine.runs,
+            lastMs: routine.lastMs, stale: routine.stale,
+            stop: routine.lastStop.map { AppLocalization.text(LocalizedStringResource("Step \($0.step): \($0.why)")) },
+            params: routine.params.keys.sorted(), savedBy: routine.savedBy)
+    }
+
+    /// A line of Recent Updates from the store's log. The item is the one on the page when it is
+    /// still there, so a tap opens it as it is now.
+    private static func change(_ record: MemoryChangeRecord, routines: [Routine]) -> MemoryChange? {
+        let action: MemoryChange.Action
+        switch record.action {
+        case MemoryChangeRecord.added: action = .added
+        case MemoryChangeRecord.edited: action = .edited
+        case MemoryChangeRecord.forgot: action = .forgot
+        default: return nil
+        }
+        let item: MemoryItem
+        if let note = record.note {
+            item = Self.item(note)
+        } else if let name = record.routineName {
+            item = routines.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }.map(Self.item)
+                ?? record.routine.map(Self.item).map { var i = $0; i.id = "routine:" + name; i.text = name; return i }
+                ?? MemoryItem(id: "routine:" + name, kind: .skill, text: name, app: record.routineApp, source: .task, updated: record.at)
+        } else {
+            return nil
+        }
+        return MemoryChange(id: record.id, at: record.at, action: action, actor: actor(record.by), item: item,
+                            previous: record.previous, undone: record.undone == true)
+    }
+
+    private static func actor(_ by: String) -> MemoryChange.Actor {
         switch by {
-        case "owner": .wrote
-        case "import", "restore": .imported
-        default: .chat
+        case RoutineStore.owner, "import", "restore": .owner
+        case "Dream": .dream
+        default: .poki
         }
     }
 
-    private func by(_ source: MemorySource) -> String {
-        switch source {
-        case .wrote, .edited, .said, .card: "owner"
-        case .imported: "import"
-        default: "poki"
+    /// The note's `by`: "owner" from this page, "import" and "restore" from a file, "Dream" for the
+    /// overnight pass, an agent's name otherwise.
+    /// An agent's note is "noted in a conversation" only when that conversation was recorded with it.
+    private static func source(_ by: String, heard: Bool) -> MemorySource {
+        switch by {
+        case RoutineStore.owner: .wrote
+        case "import", "restore": .imported
+        case "Dream": .dream
+        default: heard ? .chat : .unknown
         }
     }
 }

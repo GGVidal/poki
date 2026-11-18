@@ -87,15 +87,16 @@ struct MemoryView: View {
         }
         .navigationTitle(AppLocalization.text("Memory"))
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: apps.count > 8 ? .always : .automatic))
+        .modifier(MemorySearch(query: $query, shown: apps.count > 8))
+        .headerlessTop(library.items.isEmpty && page.editing != "")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: SettingsRoute.memoryPage(.recent())) {
-                    HStack(spacing: 6) {
+                    // No padding of its own: with the dot, a wider pill pushed the title off the centre.
+                    HStack(spacing: 5) {
                         Text("Recent Updates").font(.subheadline.weight(.semibold)).fixedSize()
                         if library.unread { Circle().fill(Tint.blueText).frame(width: 7, height: 7) }
                     }
-                    .padding(.horizontal, 4)
                 }
                 .accessibilityIdentifier("memory.recent")
             }
@@ -292,6 +293,7 @@ struct MemoryScopeView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .headerlessTop(scope.isHeaderless)
         .toolbar {
             ToolbarItem(placement: .principal) { title }
         }
@@ -391,9 +393,10 @@ struct MemoryRecentView: View {
         }
         .navigationTitle(AppLocalization.text("Recent Updates"))
         .navigationBarTitleDisplayMode(.inline)
+        .headerlessTop(library.changes.isEmpty)
         .animation(.easeInOut(duration: 0.2), value: filter)
         .environment(library)
-        .onAppear { library.unread = false }
+        .onAppear { library.markSeen() }
         // Once you have gone on from here, the change you came for is no longer lit.
         .onDisappear { seen = highlight }
     }
@@ -442,12 +445,46 @@ extension View {
                 .tint(Color(.systemGray))
         }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            if library.keepsLocks {
-                Button { withAnimation { library.setLocked(item.id, !item.locked) } } label: {
-                    Label(item.locked ? "Unlock" : "Lock", systemImage: item.locked ? "lock.open" : "lock.fill")
-                }
-                .tint(Tint.blue)
+            Button { withAnimation { library.setLocked(item.id, !item.locked) } } label: {
+                Label(item.locked ? "Unlock" : "Lock", systemImage: item.locked ? "lock.open" : "lock.fill")
+            }
+            .tint(Tint.blue)
+        }
+    }
+}
+
+/// The search field, only past 8 apps (the design's rule): with fewer, the system's drawer would show
+/// it whenever the page comes back into view.
+private struct MemorySearch: ViewModifier {
+    @Binding var query: String
+    var shown: Bool
+
+    func body(content: Content) -> some View {
+        Group {
+            if shown {
+                content.searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always))
+            } else {
+                content
             }
         }
+        .onChange(of: shown) { _, now in if !now { query = "" } }
+    }
+}
+
+extension MemoryScope {
+    /// About You's page and an "All" page list one card with no heading over it.
+    var isHeaderless: Bool {
+        switch self {
+        case .about, .all: true
+        case .app: false
+        }
+    }
+}
+
+extension View {
+    /// A list whose first card has no heading starts that card just under the bar, as the design draws it,
+    /// instead of under the room a heading would take.
+    func headerlessTop(_ headerless: Bool) -> some View {
+        contentMargins(.top, headerless ? 4 : nil, for: .scrollContent)
     }
 }

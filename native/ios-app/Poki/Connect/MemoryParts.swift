@@ -28,12 +28,13 @@ struct MemoryItemRow: View {
     var lines = 2
     var page: MemoryPageState
     @Environment(MemoryLibrary.self) private var library
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var isOpen: Bool { page.open == item.id }
 
     var body: some View {
         if page.editing == item.id {
-            MemoryEditor(page: page, onSave: { library.edit(item.id, text: page.draft, app: page.draftApp); close() }, onCancel: close)
+            MemoryEditor(page: page, picksApp: item.kind == .memory, onSave: { library.edit(item.id, text: page.draft, app: page.draftApp); close() }, onCancel: close)
         } else {
             VStack(alignment: .leading, spacing: 10) {
                 summary
@@ -65,7 +66,7 @@ struct MemoryItemRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Group {
                 if item.locked {
-                    Image(systemName: "lock.fill").font(.system(size: 14, weight: .semibold)).foregroundStyle(Color(.label))
+                    Image(systemName: "lock.fill").font(.subheadline.weight(.semibold)).foregroundStyle(Color(.label))
                         .accessibilityLabel(Text("Locked"))
                 }
             }
@@ -92,18 +93,26 @@ struct MemoryItemRow: View {
         switch item.kind {
         case .skill:
             if item.stale {
-                Text("Needs redoing: stopped twice in a row, \(item.steps) steps").font(.footnote).foregroundStyle(Tint.red).lineLimit(1)
+                Text("Needs redoing: stopped twice in a row, \(item.steps) steps").font(.footnote).foregroundStyle(Tint.red)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
             } else {
-                Text(MemoryFormat.record(item)).font(.footnote).foregroundStyle(Color(.secondaryLabel)).lineLimit(1)
+                Text(MemoryFormat.record(item)).font(.footnote).foregroundStyle(Color(.secondaryLabel))
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
             }
         case .memory, .habit:
-            HStack(spacing: 4) {
-                Image(systemName: item.source.symbol).font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(item.source.isOwners ? Color(.label) : Tint.blueText)
+            // caption2 is the 11 points of the design at the default size, and grows with the text.
+            let source = HStack(spacing: 4) {
+                Image(systemName: item.source.symbol).font(.caption2.weight(.semibold))
+                    .foregroundStyle(item.source.isOwners ? Color(.label) : item.source == .unknown ? Color(.secondaryLabel) : Tint.blueText)
                 Text(item.source.label).font(.footnote.weight(.semibold)).foregroundStyle(Color(.secondaryLabel)).fixedSize()
-                Text(verbatim: item.kind == .habit ? item.reason ?? "" : MemoryFormat.day(item.updated))
-                    .font(.footnote).foregroundStyle(Color(.secondaryLabel)).lineLimit(1)
-                    .padding(.leading, 4)
+            }
+            let when = Text(verbatim: item.kind == .habit ? item.reason ?? "" : MemoryFormat.day(item.updated))
+                .font(.footnote).foregroundStyle(Color(.secondaryLabel))
+            // At the largest text sizes the date goes under the source instead of being cut.
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 2) { source; when }
+            } else {
+                HStack(spacing: 4) { source; when.lineLimit(1).padding(.leading, 4) }
             }
         }
     }
@@ -136,12 +145,10 @@ struct MemoryItemDetail: View {
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { page.editing = item.id }
                 }
                 .accessibilityIdentifier("memory.edit")
-                if library.keepsLocks {
-                    MemoryPill(title: item.locked ? "Unlock" : "Lock", symbol: item.locked ? "lock.open" : "lock.fill") {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { library.setLocked(item.id, !item.locked) }
-                    }
-                    .accessibilityIdentifier("memory.lock")
+                MemoryPill(title: item.locked ? "Unlock" : "Lock", symbol: item.locked ? "lock.open" : "lock.fill") {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { library.setLocked(item.id, !item.locked) }
                 }
+                .accessibilityIdentifier("memory.lock")
                 MemoryPill(title: "Forget", symbol: "trash", tint: Tint.red) { MemoryForget.run(item.id, library: library) }
                     .accessibilityIdentifier("memory.forget")
             }
@@ -250,6 +257,7 @@ struct MemoryPill: View {
 struct MemoryEditor: View {
     var page: MemoryPageState
     var placeholder: LocalizedStringKey? = nil
+    var picksApp = true
     var onSave: () -> Void
     var onCancel: () -> Void
     @Environment(MemoryLibrary.self) private var library
@@ -282,7 +290,7 @@ struct MemoryEditor: View {
             Group {
                 if over {
                     Text("Up to \(MemoryLibrary.noteLimit) characters. Remove \(count - MemoryLibrary.noteLimit) to save.").foregroundStyle(Tint.red)
-                } else if library.keepsLocks {
+                } else {
                     Text("Saving locks it: Poki won’t change this memory again.").foregroundStyle(Color(.secondaryLabel))
                 }
             }
@@ -291,18 +299,19 @@ struct MemoryEditor: View {
         .onAppear { focused = true }
     }
 
-    /// Where the memory is used: a menu of All Apps and the apps on the page, when the store keeps app tags.
+    /// Where the memory is used: a menu of All Apps and the apps on the page. A skill's app is where it
+    /// was recorded, so it is shown, not picked.
     @ViewBuilder private var scope: some View {
         let row = HStack(spacing: 12) {
             Text("Used in").font(.subheadline).foregroundStyle(Color(.secondaryLabel)).frame(width: 44, alignment: .leading)
             UsedIn(app: page.draftApp).frame(maxWidth: .infinity, alignment: .leading)
-            if library.keepsAppTags {
+            if picksApp {
                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Color(.tertiaryLabel))
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Color(.tertiarySystemGroupedBackground), in: .rect(cornerRadius: 14, style: .continuous))
-        if library.keepsAppTags {
+        if picksApp {
             Menu {
                 Picker(selection: Binding(get: { page.draftApp }, set: { page.draftApp = $0 })) {
                     Text("All Apps").tag(String?.none)
@@ -376,42 +385,74 @@ struct MemoryChangeRow: View {
     var change: MemoryChange
     var highlighted = false
     @Environment(MemoryLibrary.self) private var library
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                Group {
-                    if let app = change.item.app { AppIconView(app: app, size: 30) }
-                    else if change.item.kind == .memory { AboutTile(size: 30) }
-                    else { OtherTile(size: 30) }
-                }
-                .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        chip
-                        Text(kindName).font(.footnote.weight(.semibold)).foregroundStyle(Color(.secondaryLabel))
-                        Text("\(Text(actor)) \(MemoryFormat.time(change.at))").font(.footnote).foregroundStyle(Color(.secondaryLabel)).padding(.leading, 2)
+        Group {
+            if typeSize.isAccessibilitySize {
+                // The largest sizes: one column, the words in full, Undo under them.
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        icon
+                        if highlighted { Circle().fill(Tint.blueText).frame(width: 8, height: 8) }
                     }
-                    .lineLimit(1)
-                    Text(verbatim: text).font(.body)
-                        .foregroundStyle(change.action == .forgot && !change.undone ? Color(.secondaryLabel) : Color(.label))
-                        .lineLimit(2)
-                    if let previous = change.previous {
-                        Text("Before: \(previous)").font(.footnote).foregroundStyle(Color(.secondaryLabel)).lineLimit(1)
-                    }
+                    meta
+                    words
+                    undo
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if highlighted { Circle().fill(Tint.blueText).frame(width: 8, height: 8) }
-            if change.undone {
-                Text("Undone").font(.subheadline).foregroundStyle(Color(.secondaryLabel))
-            } else if change.canUndo {
-                Button("Undo") { withAnimation { library.undo(change) } }
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(Tint.blueText).buttonStyle(.borderless)
-                    .accessibilityIdentifier("memory.change.undo")
+            } else {
+                HStack(alignment: .center, spacing: 12) {
+                    HStack(alignment: .top, spacing: 12) {
+                        icon.padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 4) {
+                            meta
+                            words
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if highlighted { Circle().fill(Tint.blueText).frame(width: 8, height: 8) }
+                    undo
+                }
             }
         }
         .accessibilityIdentifier("memory.change.\(change.id)")
+    }
+
+    @ViewBuilder private var icon: some View {
+        if let app = change.item.app { AppIconView(app: app, size: 30) }
+        else if change.item.kind == .memory { AboutTile(size: 30) }
+        else { OtherTile(size: 30) }
+    }
+
+    /// What happened, to which kind, by whom and when: one line, or one under another when they do not fit.
+    private var meta: some View {
+        let kind = Text(kindName).font(.footnote.weight(.semibold)).foregroundStyle(Color(.secondaryLabel))
+        let who = Text("\(Text(actor)) \(MemoryFormat.time(change.at))").font(.footnote).foregroundStyle(Color(.secondaryLabel))
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { chip; kind; who.padding(.leading, 2) }.lineLimit(1)
+            VStack(alignment: .leading, spacing: 4) { chip; kind; who }
+        }
+    }
+
+    @ViewBuilder private var words: some View {
+        let full = typeSize.isAccessibilitySize
+        Text(verbatim: text).font(.body)
+            .foregroundStyle(change.action == .forgot && !change.undone ? Color(.secondaryLabel) : Color(.label))
+            .lineLimit(full ? nil : 2)
+        if let previous = change.previous {
+            Text("Before: \(previous)").font(.footnote).foregroundStyle(Color(.secondaryLabel)).lineLimit(full ? nil : 1)
+        }
+    }
+
+    @ViewBuilder private var undo: some View {
+        if change.undone {
+            Text("Undone").font(.subheadline).foregroundStyle(Color(.secondaryLabel))
+        } else if change.canUndo {
+            Button("Undo") { withAnimation { library.undo(change) } }
+                .font(.subheadline.weight(.semibold)).foregroundStyle(Tint.blueText).buttonStyle(.borderless)
+                .accessibilityIdentifier("memory.change.undo")
+        }
     }
 
     private var text: String {
