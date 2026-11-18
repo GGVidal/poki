@@ -45,6 +45,7 @@ pub fn run() {
             }
             tray(app)?;
             keeper_loop(app.handle().clone(), state.clone());
+            watch_account(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -136,6 +137,22 @@ fn show_main(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// Tells the window whenever any client (this app, the CLI) saved the account, so an open Account
+/// page shows a stored sign-in-again state without waiting for its next request.
+fn watch_account(app: tauri::AppHandle) {
+    let mut seen = poki_setup_core::apple::store::revision();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let now = poki_setup_core::apple::store::revision();
+            if now != seen {
+                seen = now;
+                let _ = app.emit("account-changed", ());
+            }
+        }
+    });
 }
 
 /// Every six hours: when a phone is due and the account can sign without a person, renew it.

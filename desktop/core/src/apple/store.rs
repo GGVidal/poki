@@ -315,6 +315,27 @@ pub fn load() -> Result<Account> {
 }
 
 pub fn save(account: &Account) -> Result<()> {
+    write_account(account)?;
+    #[cfg(test)]
+    if test_vault().is_some() {
+        return Ok(());
+    }
+    if let Ok(dir) = paths::state_dir() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let _ = std::fs::write(dir.join(REVISION_FILE), stamp.to_string());
+    }
+    Ok(())
+}
+
+/// Changes on every save, from any client. It holds no account data, so open apps can watch it
+/// for a change without reading the keychain, then ask for the account again.
+const REVISION_FILE: &str = "account.revision";
+
+pub fn revision() -> Option<String> {
+    std::fs::read_to_string(paths::state_dir().ok()?.join(REVISION_FILE)).ok()
+}
+
+fn write_account(account: &Account) -> Result<()> {
     let json = serde_json::to_string(account)?;
     #[cfg(test)]
     if let Some(v) = test_vault() {

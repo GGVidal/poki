@@ -81,6 +81,9 @@ final class AppModel: ObservableObject {
         bridge.onNeedsCode = { [weak self] in
             Task { @MainActor in await self?.promptForCode() }
         }
+        bridge.onAccountChanged = { [weak self] in
+            Task { @MainActor in await self?.accountChanged() }
+        }
     }
 
     var selectedPhone: PhoneRow? {
@@ -177,6 +180,18 @@ final class AppModel: ObservableObject {
             accountError = e
         } catch {
             accountError = CoreError(kind: "error", message: error.localizedDescription)
+        }
+    }
+
+    /// Another client saved the account: show what it stored now, without asking Apple for anything.
+    func accountChanged() async {
+        guard !demo, let state: AccountState = try? await bridge.call("account") else { return }
+        account = state
+        accountError = nil
+        if state.needsReauth == true, state.pendingFactor == nil {
+            needsCode = false
+            codeVia = nil
+            teams = []
         }
     }
 

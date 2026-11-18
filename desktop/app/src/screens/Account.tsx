@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api, failureText, type Account as AccountT, type AppInfo, type Team } from "../api";
 import { t } from "../i18n";
 import { Capsule, Card, ErrorBox, Field, Toggle } from "../ui";
@@ -19,6 +20,14 @@ export default function Account({ info }: { info: AppInfo | null }) {
     if (a.signed_in && !a.pending_factor) api.teams().then(setTeams).catch((e) => setError(failureText(e)));
   }).catch((e) => setError(failureText(e)));
   useEffect(() => { load(); }, []);
+  // Another client (the CLI) may store the sign-in-again state while this page is open.
+  useEffect(() => {
+    const un = listen("account-changed", () => api.account().then((a) => {
+      setAcct(a);
+      if (a.needs_reauth && !a.pending_factor) { setFactor(null); setTeams([]); }
+    }).catch(() => {}));
+    return () => { un.then((f) => f()); };
+  }, []);
 
   const signIn = async () => {
     setBusy(true); setError(null);

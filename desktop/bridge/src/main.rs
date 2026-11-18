@@ -118,6 +118,22 @@ async fn with_signer<T>(state: &Shared, f: impl AsyncFnOnce(&mut setup::Signer) 
     }
 }
 
+/// Tells the app whenever any client (this one, the CLI, a second app) saved the account, so an
+/// open Account page shows a stored sign-in-again state without waiting for its next request.
+fn watch_account(out: Out) -> tokio::task::JoinHandle<()> {
+    let mut seen = poki_setup_core::apple::store::revision();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let now = poki_setup_core::apple::store::revision();
+            if now != seen {
+                seen = now;
+                out.send(json!({ "event": "account_changed" }));
+            }
+        }
+    })
+}
+
 #[tokio::main]
 async fn main() {
     // Log to stderr (the app's Helper Log) and to the log file the Support Bundle collects.
@@ -136,6 +152,7 @@ async fn main() {
         }
     });
     out.send(json!({ "event": "ready", "data": { "version": poki_setup_core::full_version() } }));
+    let _watch = watch_account(out.clone());
     let state = Arc::new(Shared::default());
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -590,14 +607,40 @@ impl std::io::Write for FileOrSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{Out, Shared, dispatch, handoff_path};
+    use super::{Out, Shared, dispatch, handoff_path, watch_account};
     use serde_json::json;
+
+    static HOME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn the_open_app_hears_when_another_client_saves_the_account() {
+        let _home = HOME_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("poki-bridge-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: tests that touch the environment hold HOME_LOCK.
+        unsafe {
+            std::env::set_var("POKI_SETUP_HOME", &dir);
+            std::env::set_var("POKI_SETUP_FILE_SECRETS", "1");
+        }
+        poki_setup_core::apple::store::save(&Default::default()).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let watch = watch_account(Out(tx));
+
+        let mut stored = poki_setup_core::apple::store::load().unwrap();
+        stored.needs_reauth = true;
+        poki_setup_core::apple::store::save(&stored).unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.expect("account_changed within 5 s").unwrap();
+        assert_eq!(event, json!({ "event": "account_changed" }).to_string());
+        watch.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn an_open_bridge_shows_sign_in_again_once_another_client_saved_it() {
+        let _home = HOME_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!("poki-bridge-reauth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: the only test in this binary that touches the environment.
+        // SAFETY: tests that touch the environment hold HOME_LOCK.
         unsafe {
             std::env::set_var("POKI_SETUP_HOME", &dir);
             std::env::set_var("POKI_SETUP_FILE_SECRETS", "1");
