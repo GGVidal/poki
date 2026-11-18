@@ -27,6 +27,8 @@ There are four contributor levels. Everyone starts at the first level, and you d
 | Core contributor | Make sustained contributions over time, and receive an invitation from a maintainer. | Listed in [CODEOWNERS](.github/CODEOWNERS) and in the Core contributors section of [Contributors](#core-contributors). |
 | Maintainer | Repository owner. | Approve releases and change repository settings. |
 
+The repository owner and the Co-creator do not need to sign the [Poki Contributor Agreement](CONTRIBUTOR_AGREEMENT.md). Everyone else signs it once on their first pull request, including invited contributors and core contributors.
+
 Only maintainers can merge pull requests into `main`. Moving up a level is decided by maintainers based on the quality and consistency of your work.
 
 ## Contributors
