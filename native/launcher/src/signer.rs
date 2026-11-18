@@ -169,6 +169,7 @@ async fn handle_inner(request: Value, emit_arc: EmitFn) -> Out {
             };
             Ok(json!({
                 "signed_in": s.signed_in(),
+                "needs_reauth": s.needs_reauth(),
                 "needs_code": pending,
                 "rate_limited": rate_limited,
                 "rate_limited_until": rate_limited_until,
@@ -318,6 +319,9 @@ async fn prepare(request: &Value, reporter: &Reporter) -> Out {
         let mut state = STATE.lock().await;
         let mem_pending = state.pending.clone();
         let s = signer(&mut state).await?;
+        if s.needs_reauth() {
+            return Err(core::apple::gsa::incomplete_session().into());
+        }
         if !s.signed_in() {
             return Err(fail("Sign in with your Apple Account in Setup first.", "needs_person"));
         }

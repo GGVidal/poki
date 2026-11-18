@@ -7,6 +7,7 @@ private final class FakeSignerTransport {
     var latestValue: [String: Any]
     var prepareError: SignerError?
     var finishError: SignerError?
+    var finishClearsPendingAndRequiresReauth = false
     var holdTeams = false
     private var heldTeams: [CheckedContinuation<Void, Never>] = []
     private(set) var ops: [String] = []
@@ -75,9 +76,22 @@ private final class FakeSignerTransport {
                     "prepared_at": 1_700_000_000,
                 ],
             ])
-        case "finish_sign_in":
-            if let finishError { throw finishError }
+        case "sign_in":
             statusValue["needs_code"] = false
+            statusValue["needs_reauth"] = false
+            statusValue["signed_in"] = true
+            return try JSONSerialization.data(withJSONObject: ["v": ["needs_code": false]])
+        case "finish_sign_in":
+            if let finishError {
+                if finishClearsPendingAndRequiresReauth {
+                    statusValue["needs_code"] = false
+                    statusValue["signed_in"] = false
+                    statusValue["needs_reauth"] = true
+                }
+                throw finishError
+            }
+            statusValue["needs_code"] = false
+            statusValue["needs_reauth"] = false
             statusValue["signed_in"] = true
             return try JSONSerialization.data(withJSONObject: ["v": [:]])
         case "cancel_sign_in":
@@ -242,5 +256,48 @@ final class SelfSignerTests: XCTestCase {
         XCTAssertTrue(zhIncomplete.contains("重新登录"), zhIncomplete)
         XCTAssertNotEqual(zhWrong, zhExpired)
         XCTAssertNotEqual(zhWrong, zhIncomplete)
+    }
+
+    func testIncompleteSessionAfterVerificationRequiresManualSignInAndBlocksTeamsAndRenewal() async {
+        let fake = FakeSignerTransport(signedIn: true, needsCode: true, latestVersion: "99.0.0", latestBuild: "999")
+        fake.finishError = SignerError(
+            message: "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session.",
+            code: "needs_person"
+        )
+        fake.finishClearsPendingAndRequiresReauth = true
+
+        let signer = SelfSigner(transport: { req, prog in try await fake.send(req, prog) })
+        signer.phone = { ["host": "10.7.0.1"] }
+        await signer.reload()
+        signer.presentCodeSheet()
+
+        await signer.finishSignIn(code: "654321")
+        await signer.loadTeams()
+        signer.maintain()
+        await settle()
+        _ = await signer.checkLatest()
+
+        XCTAssertEqual(fake.ops.filter { $0 == "teams" }.count, 0, "loadTeams must not run after keyless 409 verification")
+        XCTAssertEqual(fake.ops.filter { $0 == "prepare" }.count, 0, "background renewal must not prepare after keyless 409 verification")
+        XCTAssertFalse(signer.signedIn, "UI must not present account as signed in when manual re-login is required")
+        XCTAssertFalse(signer.needsCodeSheet, "consumed verification code sheet must close")
+        XCTAssertTrue(signer.lastError?.lowercased().contains("sign in again") == true)
+
+        let relaunched = SelfSigner(transport: { req, prog in try await fake.send(req, prog) })
+        relaunched.phone = { ["host": "10.7.0.1"] }
+        await relaunched.reload()
+        await relaunched.loadTeams()
+        relaunched.maintain()
+        await settle()
+
+        XCTAssertFalse(relaunched.signedIn, "relaunched UI must still treat account as requiring manual sign-in")
+        XCTAssertTrue(relaunched.needsReauth, "relaunched UI must explicitly prompt user to sign in again")
+        XCTAssertEqual(fake.ops.filter { $0 == "teams" }.count, 0)
+        XCTAssertEqual(fake.ops.filter { $0 == "prepare" }.count, 0)
+
+        await relaunched.signIn(appleID: "tester@example.com", password: "pw", keepPassword: true)
+        XCTAssertTrue(relaunched.signedIn)
+        XCTAssertFalse(relaunched.needsReauth)
+        XCTAssertEqual(fake.ops.filter { $0 == "teams" }.count, 1)
     }
 }

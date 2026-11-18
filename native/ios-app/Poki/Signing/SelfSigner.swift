@@ -20,6 +20,7 @@ final class SelfSigner {
 
     struct Status: Decodable, Equatable {
         var signed_in: Bool
+        var needs_reauth: Bool?
         var needs_code: Bool
         var rate_limited: Bool?
         var rate_limited_until: Int64?
@@ -132,6 +133,9 @@ final class SelfSigner {
 
     var signedIn: Bool { status?.signed_in == true || Self.screenshotSignedIn }
     var needsCode: Bool { status?.needs_code == true }
+    /// Apple took a code but never opened the session: nothing signs in until the person does.
+    var needsReauth: Bool { status?.needs_reauth == true }
+    static let reauthMessage = "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session."
     var rateLimited: Bool { rateLimitRemainingSeconds() > 0 }
     var needsCodeSheet = false
     static let resendCooldown: TimeInterval = 60
@@ -314,7 +318,7 @@ final class SelfSigner {
             await teamsTask.value
             return
         }
-        guard !needsCode, !rateLimited else { return }
+        guard !needsCode, !rateLimited, !needsReauth else { return }
         let task = Task { @MainActor in
             do {
                 teams = try await decode([Team].self, ["op": "teams"])

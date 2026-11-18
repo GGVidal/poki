@@ -48,6 +48,9 @@ struct AccountPage: View {
             .task { if signer.teams.isEmpty, signer.working == nil, !signer.needsCode, !signer.rateLimited { await signer.loadTeams() } }
             Section { Button("Sign Out", role: .destructive) { Task { await signer.signOut() } } }
         } else {
+            if signer.needsReauth, signer.lastError != SelfSigner.reauthMessage {
+                Section { Label(SelfSigner.localizedErrorText(SelfSigner.reauthMessage), systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+            }
             Section {
                 TextField("Apple ID", text: $appleID)
                     .textContentType(.username)
