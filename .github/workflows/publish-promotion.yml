@@ -4,9 +4,9 @@
 #   beta    Poki-external-0.3.0-712.ipa on app-0.3.0-beta.1, a prerelease, with the Gym scorecards
 #   stable  Poki-external-0.3.0.ipa on app-0.3.0, a full release (never marked Latest: GitHub's
 #           Latest is Poki MCP's v* release, which the Mac server's update check reads)
-# Poki Setup files come along from app-prealpha-latest (beta) or the source release (stable). Created
-# as a draft, checked, then published. A beta waits for approval in the "beta" environment, a stable
-# in "stable" (Settings > Environments > Required reviewers).
+# Poki Setup files come along from app-alpha-latest (beta, filled by the alpha job) or the source
+# release (stable). Created as a draft, checked, then published. A beta waits for approval in the
+# "beta" environment, a stable in "stable" (Settings > Environments > Required reviewers).
 #
 # A beta first puts the same build on the Alpha channel's releases, which older Poki and Poki Setup
 # still read, with no approval of its own: the alpha job below.
@@ -148,7 +148,7 @@ jobs:
             gh run download "$run" --name Poki-unsigned --dir src
             cp src/Poki-external-unsigned.ipa "dist/Poki-external-$BASE-$BUILD.ipa"
             cp src/Poki-signing.zip dist/
-            gh release download app-prealpha-latest --dir dist --pattern 'PokiSetup-*' --pattern 'SHA256SUMS-desktop.txt' || echo "::warning::no Poki Setup files on app-prealpha-latest"
+            gh release download app-alpha-latest --dir dist --pattern 'PokiSetup-*' --pattern 'SHA256SUMS-desktop.txt' || echo "::warning::no Poki Setup files on app-alpha-latest"
             # The Gym scorecards from the merged PR's gate, the baseline for the next beta.
             pr_head="$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA/pulls" --jq '.[0].head.sha')"
             gate="$(gh run list --workflow promotion-gate.yml --commit "$pr_head" --json databaseId --jq '.[].databaseId' | while read -r id; do
