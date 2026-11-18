@@ -943,8 +943,6 @@ final class AppModel {
                 self.pairingTrouble = nil
                 self.servicesSilent = false
                 self.pairingVerifiedAt = Date()
-                // The phone answers over the loopback: the installed apps' names and icons can be read.
-                InstalledApps.shared.refreshSoon()
                 return true
             } catch {
                 let text = error.localizedDescription

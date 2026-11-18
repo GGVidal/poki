@@ -21,9 +21,7 @@ enum AppName {
         if let known = KnownApps.find(name) {
             return known.name(in: .current)
         }
-        // Unlisted apps can arrive with their on-screen name or their reverse-DNS identifier; an installed
-        // one's identifier reads as its Home Screen name (DynamicApps).
-        if let installed = DynamicApps.name(forID: name) { return installed }
+        // Unlisted apps can arrive with their on-screen name or their reverse-DNS identifier.
         guard !name.contains(".") || name.contains(where: \.isWhitespace) else { return nil }
         return name
     }
