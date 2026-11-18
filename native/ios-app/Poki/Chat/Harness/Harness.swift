@@ -1,19 +1,6 @@
-// The chat's prompt and tools are the Mac Poki Agent's, copied from this repository at main 729c77e:
-// - agent-system.md is agent/prompts/system.md (the same text as agent/prompts/pi-app.md, which
-//   agent/task-runner.mjs loads), except two sentences that named tools the app lacks: a locked phone
-//   is the owner's to unlock and a password prompt is handed to them, and a purchase is a plain tap;
-//   and, for ESP-465, the Return sentence names the type answer's read-back as the check before
-//   Return, an action's check lines (the send check after Return) count as evidence, and finish_task
-//   comes in the reply right after the observation that verifies the result; and a last paragraph on
-//   when a reply uses a Markdown table, which the chat draws as a table (the terminal and message
-//   channels the Mac agent answers in do not);
-// - the instructions put PokiCore's own MCP instructions first, as task-runner.mjs puts the MCP server's
-//   instructions first;
-// - look, do and status are PokiCore's tools with their MCP descriptions;
-// - report_plan and finish_task are task-runner.mjs's harness tools (#startModel), descriptions and
-//   schemas unchanged.
-// Not copied, because the app has none of their tools: agent/prompts/call-draft.md and
-// agent/skills/iphone-unlock/SKILL.md, unlock_device and handle_alert.
+// Poki's chat harness shares its core execution rules and harness tools (report_plan, finish_task)
+// with agent/task-runner.mjs and agent/prompts/pi-app.md, adapted to the app's in-process tools
+// (look, do, routines, status) and sandbox browser tools (WebTools).
 import Foundation
 import PokiCore
 
@@ -48,12 +35,9 @@ enum Harness {
         let brief = PokiCore.memoryBrief(for: task)
         var parts = [instructions]
         parts.append("When the owner asks to continue or resume, identify the task from this conversation or an explicitly selected saved task. If no task matches or more than one could match, ask the owner which task before calling any action tool. Long-term notes and saved routines describe preferences and reusable steps; they are not pending tasks and never authorize choosing a different task.")
-        // Poki learns the owner's repeated tasks: a saved routine runs them in one call next time.
-        // The routines that fit are in the brief below, so the first call can be the routine itself:
-        // listing them first cost a whole model turn before anything happened on the phone. Poki is in
-        // front when a task begins, so a first look reads only the owner's chat (ESP-465). finish_task
-        // ends the chat's task and the app brings Poki back (chatTaskEnded), so a finish: true do is a
-        // step more; the save rides in the same reply instead of a turn before it.
+        // Matching routines sit in the brief below, so the first call can invoke the routine directly.
+        // Poki is in front when a task starts, and finish_task brings Poki back when the task ends,
+        // so saving a new routine happens in the same reply as finish_task.
         parts.append("Choose the route from the owner's request. For a website task, start with web_open and use only web tools; do not call look or do to check readiness, open Safari, or finish the task. For an app task, start with do {run: name} when the routine below covers it, else do {launch: bundle id}. When you are not sure of an app's iPhone bundle id, or a launch answers that no app with that bundle id is installed, do not tell the owner the app is missing yet: go home ({button: \"home\"}), swipe down on the Home Screen to search, type the app's name and tap it; say the app is not installed only when that search finds nothing. Send report_plan with the first action. Use both routes only when the owner explicitly requested a separate app part, and put that part in its own plan step with the app's name. A failed step is not permission to switch routes. Finish with finish_task. After a successful app task that was not already a routine, save its steps with routines {action: \"save\", name, description}, named the way the owner would ask for it.")
         // A model decides approvals from what the owner said. A refused step goes through once the
         // owner says yes to it, so the agent asks in words and tries again.
@@ -78,7 +62,7 @@ enum Harness {
         return "The apps this request names and their iPhone bundle ids. Launch them with these ids, not ids from memory (Android package names differ):\n" + lines.joined(separator: "\n")
     }
 
-    /// Poki's own browser's tools (ESP-145) sit beside the phone's.
+    /// Poki's sandbox browser tools sit beside the phone tools.
     static let tools: [ToolSpec] = phoneTools + WebTools.specs + [reportPlan, finishTask]
 
     static let splitViewTools: [ToolSpec] = [
