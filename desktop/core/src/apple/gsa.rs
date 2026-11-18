@@ -1650,136 +1650,103 @@ mod rate_limit_regressions {
         });
     }
 
-    struct LogLines(Arc<Mutex<Vec<String>>>);
-    struct MsgVisitor(String);
-    impl tracing::field::Visit for MsgVisitor {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "message" {
-                self.0 = format!("{value:?}");
-            } else {
-                self.0.push_str(&format!(" {}={value:?}", field.name()));
-            }
-        }
-    }
-    impl tracing::Subscriber for LogLines {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool { true }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id { tracing::span::Id::from_u64(1) }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let mut v = MsgVisitor(String::new());
-            event.record(&mut v);
-            self.0.lock().unwrap().push(v.0);
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
     #[test]
     fn sequential_gsa_replay_requests_at_most_one_code_and_logs_without_secrets() {
-        let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sub = LogLines(logs.clone());
-        tracing::subscriber::with_default(sub, || {
-            // Another test thread may have cached "never" for the code-request callsite before
-            // this subscriber existed; recompute it with this one in place.
-            tracing::callsite::rebuild_interest_cache();
-            run_in_vault(async {
-                let mock = start_mock_gsa(MockBehavior {
-                    au: None,
-                    ..MockBehavior::default()
-                })
-                .await;
+        run_in_vault(async {
+            code_requests_on_this_thread();
+            let mock = start_mock_gsa(MockBehavior {
+                au: None,
+                ..MockBehavior::default()
+            })
+            .await;
 
-                let mut s1 = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let p1 = s1.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("409 without au");
-                s1.finish_sign_in(p1, "654321").await.unwrap();
-                let c = mock.counts.lock().unwrap().clone();
-                assert_eq!(c.trusted_device_push + c.sms_send, 0, "409 without au already pushed 1 code on complete");
-                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 1);
+            let mut s1 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let p1 = s1.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("409 without au");
+            s1.finish_sign_in(p1, "654321").await.unwrap();
+            let c = mock.counts.lock().unwrap().clone();
+            assert_eq!(c.trusted_device_push + c.sms_send, 0, "409 without au already pushed 1 code on complete");
+            assert_eq!(code_requests_on_this_thread().iter().filter(|l| l.contains("2fa-code-request")).count(), 1);
 
-                s1.sign_out().unwrap();
-                *mock.behavior.lock().unwrap() = MockBehavior {
-                    au: Some("secondaryAuth".into()),
-                    ..MockBehavior::default()
-                };
-                let mut s2 = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let p2 = s2.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("409 secondaryAuth");
-                s2.finish_sign_in(p2, "654321").await.unwrap();
-                let c = mock.counts.lock().unwrap().clone();
-                assert_eq!(c.trusted_device_push, 0, "secondaryAuth must never touch trusteddevice");
-                assert_eq!(c.sms_send, 1, "secondaryAuth sends at most 1 SMS code");
-                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 2);
+            s1.sign_out().unwrap();
+            *mock.behavior.lock().unwrap() = MockBehavior {
+                au: Some("secondaryAuth".into()),
+                ..MockBehavior::default()
+            };
+            let mut s2 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let p2 = s2.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("409 secondaryAuth");
+            s2.finish_sign_in(p2, "654321").await.unwrap();
+            let c = mock.counts.lock().unwrap().clone();
+            assert_eq!(c.trusted_device_push, 0, "secondaryAuth must never touch trusteddevice");
+            assert_eq!(c.sms_send, 1, "secondaryAuth sends at most 1 SMS code");
+            assert_eq!(code_requests_on_this_thread().iter().filter(|l| l.contains("2fa-code-request")).count(), 2);
 
-                s2.sign_out().unwrap();
-                *mock.behavior.lock().unwrap() = MockBehavior {
-                    au: Some("trustedDeviceSecondaryAuth".into()),
-                    trusted_device_status: 500,
-                    ..MockBehavior::default()
-                };
-                let mut s3 = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                assert!(s3.sign_in("person@example.com", "correct-horse-battery", true).await.is_err());
-                let c = mock.counts.lock().unwrap().clone();
-                assert_eq!(c.trusted_device_push, 1, "device push tried once");
-                assert_eq!(c.sms_send, 1, "device push failure must not fall back to SMS");
-                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 3);
+            s2.sign_out().unwrap();
+            *mock.behavior.lock().unwrap() = MockBehavior {
+                au: Some("trustedDeviceSecondaryAuth".into()),
+                trusted_device_status: 500,
+                ..MockBehavior::default()
+            };
+            let mut s3 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            assert!(s3.sign_in("person@example.com", "correct-horse-battery", true).await.is_err());
+            let c = mock.counts.lock().unwrap().clone();
+            assert_eq!(c.trusted_device_push, 1, "device push tried once");
+            assert_eq!(c.sms_send, 1, "device push failure must not fall back to SMS");
+            assert_eq!(code_requests_on_this_thread().iter().filter(|l| l.contains("2fa-code-request")).count(), 3);
 
-                *mock.behavior.lock().unwrap() = MockBehavior {
-                    srp_status: 429,
-                    apptokens_status: 429,
-                    ..MockBehavior::default()
-                };
-                let mut s4 = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                s4.account.session = Some(Session {
-                    apple_id: "person@example.com".into(),
-                    adsid: "000123-abc".into(),
-                    gs_idms_token: "idms-tok-1".into(),
-                    first_name: "Test".into(),
-                    last_name: "Person".into(),
-                    sk: vec![7u8; 32],
-                    c: b"cookie-bytes".to_vec(),
-                });
-                s4.account.password = Some("correct-horse-battery".into());
-                store::save(&s4.account).unwrap();
-                let before_429 = mock.counts.lock().unwrap().clone();
-                let e429 = s4.token().await.unwrap_err();
-                assert!(is_rate_limit(&e429));
-                let after_429 = mock.counts.lock().unwrap().clone();
-                assert_eq!(after_429.apptokens, before_429.apptokens + 1);
-                assert_eq!(after_429.srp_init, before_429.srp_init);
-                assert!(s4.token().await.is_err(), "background token renewal must stop during cooldown");
-                let after_bg = mock.counts.lock().unwrap().clone();
-                assert_eq!(after_bg.apptokens, after_429.apptokens, "no HTTP requests during rate-limit cooldown");
-                assert_eq!(after_bg.srp_init, after_429.srp_init);
-                assert_eq!(logs.lock().unwrap().iter().filter(|l| l.contains("2fa-code-request")).count(), 3);
-
-                s4.sign_out().unwrap();
-                *mock.behavior.lock().unwrap() = MockBehavior {
-                    au: Some("trustedDeviceSecondaryAuth".into()),
-                    include_session_keys_on_409: false,
-                    ..MockBehavior::default()
-                };
-                let mut s5 = Signer::for_test(test_client(&mock.base_url)).unwrap();
-                let before_s5 = mock.counts.lock().unwrap().clone();
-                let p5 = s5.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("keyless 409");
-                assert!(s5.finish_sign_in(p5, "654321").await.is_err());
-                let after_s5 = mock.counts.lock().unwrap().clone();
-                assert_eq!(after_s5.srp_complete - before_s5.srp_complete, 1, "keyless 409 must not send a second SRP complete");
-                assert_eq!(after_s5.total_codes_sent() - before_s5.total_codes_sent(), 1, "keyless 409 must emit at most 1 code in total");
-
-                let code_logs: Vec<String> = logs
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|l| l.contains("2fa-code-request"))
-                    .cloned()
-                    .collect();
-                assert_eq!(code_logs.len(), 4, "expected 4 logged code events (at most 1 per sign-in across s1, s2, s3, s5), got: {code_logs:?}");
-                for line in &code_logs {
-                    for secret in ["person@example.com", "correct-horse-battery", "654321", "000123-abc", "idms-tok-1", "xcode-auth-token-ok"] {
-                        assert!(!line.contains(secret), "2fa-code-request leaked {secret}: {line}");
-                    }
-                }
+            *mock.behavior.lock().unwrap() = MockBehavior {
+                srp_status: 429,
+                apptokens_status: 429,
+                ..MockBehavior::default()
+            };
+            let mut s4 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            s4.account.session = Some(Session {
+                apple_id: "person@example.com".into(),
+                adsid: "000123-abc".into(),
+                gs_idms_token: "idms-tok-1".into(),
+                first_name: "Test".into(),
+                last_name: "Person".into(),
+                sk: vec![7u8; 32],
+                c: b"cookie-bytes".to_vec(),
             });
+            s4.account.password = Some("correct-horse-battery".into());
+            store::save(&s4.account).unwrap();
+            let before_429 = mock.counts.lock().unwrap().clone();
+            let e429 = s4.token().await.unwrap_err();
+            assert!(is_rate_limit(&e429));
+            let after_429 = mock.counts.lock().unwrap().clone();
+            assert_eq!(after_429.apptokens, before_429.apptokens + 1);
+            assert_eq!(after_429.srp_init, before_429.srp_init);
+            assert!(s4.token().await.is_err(), "background token renewal must stop during cooldown");
+            let after_bg = mock.counts.lock().unwrap().clone();
+            assert_eq!(after_bg.apptokens, after_429.apptokens, "no HTTP requests during rate-limit cooldown");
+            assert_eq!(after_bg.srp_init, after_429.srp_init);
+            assert_eq!(code_requests_on_this_thread().iter().filter(|l| l.contains("2fa-code-request")).count(), 3);
+
+            s4.sign_out().unwrap();
+            *mock.behavior.lock().unwrap() = MockBehavior {
+                au: Some("trustedDeviceSecondaryAuth".into()),
+                include_session_keys_on_409: false,
+                ..MockBehavior::default()
+            };
+            let mut s5 = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let before_s5 = mock.counts.lock().unwrap().clone();
+            let p5 = s5.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("keyless 409");
+            assert!(s5.finish_sign_in(p5, "654321").await.is_err());
+            let after_s5 = mock.counts.lock().unwrap().clone();
+            assert_eq!(after_s5.srp_complete - before_s5.srp_complete, 1, "keyless 409 must not send a second SRP complete");
+            assert_eq!(after_s5.total_codes_sent() - before_s5.total_codes_sent(), 1, "keyless 409 must emit at most 1 code in total");
+
+            let code_logs: Vec<String> = code_requests_on_this_thread()
+                .iter()
+                .filter(|l| l.contains("2fa-code-request"))
+                .cloned()
+                .collect();
+            assert_eq!(code_logs.len(), 4, "expected 4 logged code events (at most 1 per sign-in across s1, s2, s3, s5), got: {code_logs:?}");
+            for line in &code_logs {
+                for secret in ["person@example.com", "correct-horse-battery", "654321", "000123-abc", "idms-tok-1", "xcode-auth-token-ok"] {
+                    assert!(!line.contains(secret), "2fa-code-request leaked {secret}: {line}");
+                }
+            }
         });
     }
 
