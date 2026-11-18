@@ -170,9 +170,12 @@ final class AppModel {
     private var passcodeHeadsUpSeen = 0.0
     private static let automationBootKey = "automationStartedBoot"
     /// Automation started in this boot: iOS will not ask again until the next restart.
-    private func automationStarted() {
+    /// `askedOwner`: iOS asked for the passcode before this start.
+    private func automationStarted(askedOwner: Bool = false) {
         InProcessWDA.gate.withLock { $0.startedThisBoot = true }
-        guard UserDefaults.standard.double(forKey: Self.automationBootKey) != BootClock.current else { return }
+        let firstThisBoot = UserDefaults.standard.double(forKey: Self.automationBootKey) != BootClock.current
+        if firstThisBoot || askedOwner { AutomationConsent(boot: BootClock.current, at: Date()).save() }
+        guard firstThisBoot else { return }
         UserDefaults.standard.set(BootClock.current, forKey: Self.automationBootKey)
     }
     /// Continue on the note: Poki turns on, and iOS's passcode screen comes next.
@@ -338,6 +341,11 @@ final class AppModel {
         self.activity = ActivityController()
         self.automation = automation
         self.idleSessionPolicy = .forSystem(systemVersion)
+        // iOS 27 lets a relaunched Poki open automation without the passcode while the boot's consent
+        // lasts, so a phone step from the background (Talk Here, an agent) does not wait for Poki in front.
+        if IdleSessionPolicy.forSystem(systemVersion) == .close, AutomationConsent.saved?.covers(boot: BootClock.current, at: Date()) == true {
+            InProcessWDA.gate.withLock { $0.startedThisBoot = true }
+        }
         self.requiresDiskImageCheck = requiresDiskImageCheck ?? !Self.onSimulator
         // A reinstall emptied the container: the pairing file comes back from the Keychain (and the
         // setup state did the same in `SetupState.load`), so the owner is not sent through setup again.
@@ -651,7 +659,7 @@ final class AppModel {
                                           : "in-process session not ready for \(why): \(result["code"] ?? "unknown") after \(seconds) s")
                 if ok {
                     self.log.add("session-timing", String(format: "session_ready uptime=%.6f", ProcessInfo.processInfo.systemUptime))
-                    self.automationStarted()
+                    self.automationStarted(askedOwner: waitedForPasscode)
                     // An open session proves both, also when the launcher only found the image mounted.
                     if !self.setup.developerMode || !self.setup.uiAutomation {
                         var confirmed = self.setup
@@ -2484,4 +2492,26 @@ enum BootClock {
         guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0 else { return 0 }
         return Double(boot.tv_sec)
     }()
+}
+
+/// When iOS last let automation start: the boot it was in, and when (the boot's first start, or a
+/// start iOS asked the passcode for). On iOS 27 a relaunched Poki opens automation without the
+/// passcode in that boot (on the phone, 2 h after the passcode, the first open answered in 2.6 s),
+/// until iOS asks again 8 hours after the passcode.
+struct AutomationConsent: Equatable {
+    let boot: Double
+    let at: Date
+    static let lasts: TimeInterval = 8 * 3600
+    static let key = "automationConsent"
+
+    func covers(boot current: Double, at now: Date) -> Bool {
+        boot == current && now >= at && now.timeIntervalSince(at) < Self.lasts
+    }
+
+    static var saved: AutomationConsent? {
+        guard let pair = UserDefaults.standard.array(forKey: key) as? [Double], pair.count == 2 else { return nil }
+        return AutomationConsent(boot: pair[0], at: Date(timeIntervalSince1970: pair[1]))
+    }
+
+    func save() { UserDefaults.standard.set([boot, at.timeIntervalSince1970], forKey: Self.key) }
 }
