@@ -344,6 +344,13 @@ struct RootView: View {
             openDetails([DetailsRoute.history])
         } else if url.host() == "approvals" {
             openDetails([DetailsRoute.approvals])
+        } else if url.host() == "memory" {
+            // poki://memory, and poki://memory/recent from a conversation's "Memory updated".
+            openDetails(url.path() == "/recent" ? [SettingsRoute.memory, SettingsRoute.memoryPage(.recent())] : [SettingsRoute.memory])
+        } else if url.host() == "session", let id = url.pathComponents.dropFirst().first, SessionStore.shared.session(id) != nil {
+            // poki://session/<id>: a memory's Source, back to the conversation it was heard in.
+            detailsOpen = false
+            openRun(id)
         } else if url.host() == "voice" {
             detailsOpen = false
             model.voice.open(url)
@@ -451,6 +458,8 @@ struct RootView: View {
             openDetails([DetailsRoute.model])
         case "memory":
             openDetails([SettingsRoute.memory])
+        case "memoryRecent":
+            openDetails([SettingsRoute.memory, SettingsRoute.memoryPage(.recent())])
         case "interfaceSize":
             openDetails([DetailsRoute.interfaceSize])
         case "appearance":
