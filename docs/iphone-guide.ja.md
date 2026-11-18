@@ -13,7 +13,7 @@
 | iPhone | iOS 18 以降（iPhone XS、XR、SE 第 2 世代以降）。実機テストは iOS 27 の iPhone で行っています。 |
 | パソコン | macOS 14 以降の Mac（エージェント導入には Node.js 24 以降）、または Apple Devices か iTunes を導入した Windows PC（x64）。 |
 | ケーブルとアカウント | USB データケーブルと Apple Account。無料アカウントの署名は 7 日間有効で、Poki Setup または Poki アプリ内で更新できます。 |
-| 接続 | `10.7.0.1` を iPhone に戻すローカル VPN アプリ（LocalDevVPN、Karing、Shadowrocket）。 |
+| 接続 | `10.7.0.1` を iPhone に戻す外部接続（無料の LocalDevVPN や、Poki の案内に沿って設定した Karing、Shadowrocket）。 |
 | モデルアカウント | ご自身で用意します。ChatGPT Plus または Pro でのログインが手軽です。Anthropic、OpenAI、Gemini、DeepSeek、OpenRouter、OpenCode Go の API キーや、独自の OpenAI 互換サーバーも使えます。Claude のサブスクリプションではログインできないため、Anthropic の API キーを使ってください。 |
 
 iOS 27 以降ではネイティブサービスで iPhone を操作します。iOS 18 から 26 では XCTest セッションを使うため、iPhone のデベロッパ設定で UI オートメーションを有効にしてください。iPadOS 18 以降の iPad にもインストールできます。

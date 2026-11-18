@@ -35,7 +35,7 @@ Poki は、あなたの代わりに iPhone 全体を操作するオープンソ�
 ## なぜ Poki か
 
 - **日常の用事を複数のアプリを行き来せずに済ませる。** チャットで頼むか、アクションボタンの長押しや Siri から呼び出すだけで、内蔵ブラウザでの調べもの、明日の天気の確認、メモの作成を任せられます。iPhone Duo では Split View で 2 つのアプリを並べて操作できます。
-- **繰り返しの手順をタップや音声ですぐ実行。** 毎回同じ操作をしなくても、ホーム画面の記憶済みルーティンをタップするか、音声会話で話しかけるだけで進められます。各ステップの状況は Dynamic Island に表示されます。
+- **繰り返しの操作をタップや音声ですぐ実行。** 毎回同じ手順を繰り返さなくても、ホーム画面に保存されたスキルや習慣をタップするか、音声会話で話しかけるだけで進められます。各ステップの状況は Dynamic Island に表示されます。
 - **パソコンをつけっぱなしにせず実機を自動化。** Mac または Windows PC から一度インストールすれば、その後の作業にパソコンは不要です。承認が必要な操作では、ロック画面や Dynamic Island で一時停止して確認を求めます。
 
 ## 使い方
@@ -49,7 +49,7 @@ Poki は、あなたの代わりに iPhone 全体を操作するオープンソ�
    ```
 
    あるいは [GitHub Releases](https://github.com/JosssphZhou/poki/releases) から macOS 版（`.dmg`）または Windows 版（`.exe`）の Poki Setup をダウンロードして案内どおりに進めます。
-2. **接続設定とモデルアカウントを追加する。** iOS の指示に従って「信頼」、デベロッパモード、オートメーションモードを有効にし、`10.7.0.1` を iPhone にルーティングするローカル VPN アプリ（無料の LocalDevVPN など）を設定します。続けて ChatGPT Plus/Pro でサインインするか、Anthropic、OpenAI、Gemini、DeepSeek、OpenRouter、OpenCode Go の API キー、または OpenAI 互換サーバーを登録します。
+2. **接続設定とモデルアカウントを追加する。** iOS の指示に従って「信頼」、デベロッパモード、オートメーションモードを有効にし、`10.7.0.1` を iPhone にルーティングする外部接続（無料の LocalDevVPN など）を設定します。続けて ChatGPT Plus/Pro でサインインするか、Anthropic、OpenAI、Gemini、DeepSeek、OpenRouter、OpenCode Go の API キー、または OpenAI 互換サーバーを登録します。
 3. **最初のタスクを実行する。** Poki を開いて以下を送信します。
 
    ```text
@@ -66,7 +66,7 @@ Poki は、あなたの代わりに iPhone 全体を操作するオープンソ�
 | iPhone | iOS 18 以降（iPhone XS、XR、SE 第 2 世代以降、iPadOS 18 以降）。実機テストは iOS 27 で確認済みです。 |
 | パソコン | macOS 14 以降の Mac（エージェント導入には Node.js 24 以降）、または Apple Devices / iTunes を導入した Windows PC（x64）。 |
 | ケーブルとアカウント | USB データケーブルと Apple Account。無料アカウントの 7 日間署名は Poki Setup または Poki アプリ内で更新できます。 |
-| 接続 | `10.7.0.1` を iPhone に戻すローカル VPN アプリ（LocalDevVPN、Karing、Shadowrocket）。 |
+| 接続 | `10.7.0.1` を iPhone に戻す外部接続（LocalDevVPN、Karing、Shadowrocket）。 |
 | モデルアカウント | ChatGPT Plus/Pro サインイン、API キー（Anthropic、OpenAI、Gemini、DeepSeek、OpenRouter、OpenCode Go）、または OpenAI 互換サーバー。 |
 
 - 詳細なインストール手順、更新方法、FAQ、既知の制限、ロードマップ：[Poki iPhone アプリガイド](docs/iphone-guide.ja.md)

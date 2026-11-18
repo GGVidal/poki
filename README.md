@@ -35,7 +35,7 @@ Poki is an open-source iPhone agent that operates your entire iPhone for you. Th
 ## Why Poki
 
 - **Skip multi-app tapping for everyday errands.** Ask Poki in chat, hold the Action Button, or trigger Siri to look things up in the built-in browser, check tomorrow's weather, or create a note. On iPhone Duo, Poki works across two apps side by side in Split View.
-- **Run repeat routines by tap or by voice.** Launch a remembered routine from the home screen instead of repeating the same steps every day, or start a hands-free spoken chat with Talk to Poki while Dynamic Island tracks each step.
+- **Run saved skills by tap or by voice.** Launch a saved skill or habit from the home screen instead of repeating the same steps every day, or start a hands-free spoken chat with Talk to Poki while Dynamic Island tracks each step.
 - **Automate your real phone without keeping a computer on.** Once installed from a Mac or Windows PC, Poki runs standalone on your iPhone with no computer attached and pauses on the Lock Screen or in Dynamic Island whenever a step needs approval.
 
 ## How to use
@@ -49,7 +49,7 @@ Poki is an open-source iPhone agent that operates your entire iPhone for you. Th
    ```
 
    Or download [Poki Setup](https://github.com/JosssphZhou/poki/releases) for macOS (`.dmg`) or Windows (`.exe`) and follow the window.
-2. **Connect and add your model account.** Accept **Trust**, turn on Developer Mode and Automation Mode when iOS asks, install a local VPN app routing `10.7.0.1` back to your iPhone (such as free LocalDevVPN), and sign in with ChatGPT Plus or Pro or paste an API key (Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go, or an OpenAI-compatible server).
+2. **Connect and add your model account.** Accept **Trust**, turn on Developer Mode and Automation Mode when iOS asks, set up an external connection routing `10.7.0.1` back to your iPhone (such as free LocalDevVPN), and sign in with ChatGPT Plus or Pro or paste an API key (Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go, or an OpenAI-compatible server).
 3. **Run your first task.** Open Poki and send:
 
    ```text
@@ -66,7 +66,7 @@ Poki is an open-source iPhone agent that operates your entire iPhone for you. Th
 | iPhone | iOS 18 or later (iPhone XS, XR, SE 2nd gen or newer; iPadOS 18+ on iPad). Tested on physical iPhones with iOS 27. |
 | Computer | Mac with macOS 14+ (Node.js 24+ for agent install) or Windows PC (x64) with Apple Devices or iTunes. |
 | Cable and account | USB data cable and an Apple Account. Poki Setup renews free 7-day signatures while open, or sign in inside Poki. |
-| Connection | Local VPN app routing `10.7.0.1` back to the iPhone (LocalDevVPN, Karing, or Shadowrocket). |
+| Connection | External connection routing `10.7.0.1` back to the iPhone (LocalDevVPN, Karing, or Shadowrocket). |
 | Model account | ChatGPT Plus/Pro sign-in, an API key (Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go), or an OpenAI-compatible server. |
 
 - Full installation, updating, FAQ, known issues, and roadmap: [Poki iPhone App Guide](docs/iphone-guide.md)

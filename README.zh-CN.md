@@ -35,7 +35,7 @@ Poki 是开源的 iPhone agent，能替你操作整台 iPhone。Poki 应用直�
 ## 为什么用 Poki
 
 - **日常杂事不必跨多个应用来回点按。** 直接在对话里交代 Poki，或长按操作按钮、呼叫 Siri，就能用内置浏览器查资料、看明天天气或新建备忘录。在 iPhone Duo 上，Poki 还能在分屏视图中同时操作两个应用。
-- **重复流程点一下或说一句话就跑完。** 不用每天重复同样的步骤，直接在首页点击记住的常用流程，或用「和 Poki 对话」语音沟通，每一步进展都会显示在灵动岛上。
+- **重复任务点一下或说一句话就跑完。** 不用每天重复同样的步骤，直接在首页点击保存的技能或习惯，或用「和 Poki 对话」语音沟通，每一步进展都会显示在灵动岛上。
 - **不依赖电脑持续开机，直接操作真机。** 通过 Mac 或 Windows 电脑完成一次安装后，Poki 即可在 iPhone 上独立运行，遇到付款、删除或钱包操作时在锁屏或灵动岛暂停等待你的确认。
 
 ## 怎么用
@@ -49,7 +49,7 @@ Poki 是开源的 iPhone agent，能替你操作整台 iPhone。Poki 应用直�
    ```
 
    也可以从 [GitHub Releases](https://github.com/JosssphZhou/poki/releases) 下载 macOS 版（`.dmg`）或 Windows 版（`.exe`）Poki Setup，按窗口提示操作。
-2. **完成连接并配置模型账户。** 按 iOS 提示点「信任」、开启开发者模式和自动化模式，在手机上安装将 `10.7.0.1` 路由回本机的本地 VPN 应用（如免费的 LocalDevVPN），再用 ChatGPT Plus 或 Pro 登录，或填入 Anthropic、OpenAI、Gemini、DeepSeek、OpenRouter、OpenCode Go 的 API 密钥，或接入 OpenAI 兼容服务。
+2. **完成连接并配置模型账户。** 按 iOS 提示点「信任」、开启开发者模式和自动化模式，配置将 `10.7.0.1` 路由回本机的外部代理通道（如免费的 LocalDevVPN），再用 ChatGPT Plus 或 Pro 登录，或填入 Anthropic、OpenAI、Gemini、DeepSeek、OpenRouter、OpenCode Go 的 API 密钥，或接入 OpenAI 兼容服务。
 3. **试跑第一个任务。** 打开 Poki 并发送：
 
    ```text
@@ -66,7 +66,7 @@ Poki 是开源的 iPhone agent，能替你操作整台 iPhone。Poki 应用直�
 | iPhone | iOS 18 或更高版本（iPhone XS、XR、SE 第 2 代及更新机型；也支持 iPadOS 18+）。真机已在 iOS 27 上测试。 |
 | 电脑 | macOS 14+ 的 Mac（智能体安装需要 Node.js 24+），或已安装 Apple Devices 或 iTunes 的 Windows 电脑（x64）。 |
 | 数据线与账户 | USB 数据线与 Apple 账户。电脑打开 Poki Setup 时可自动续签免费 7 天签名，也可在 Poki 内登录续签。 |
-| 连接 | 将 `10.7.0.1` 路由回 iPhone 的本地 VPN 应用（LocalDevVPN、Karing 或 Shadowrocket）。 |
+| 连接 | 将 `10.7.0.1` 路由回 iPhone 的外部代理通道（LocalDevVPN、Karing 或 Shadowrocket）。 |
 | 模型账户 | ChatGPT Plus/Pro 登录、API 密钥（Anthropic、OpenAI、Gemini、DeepSeek、OpenRouter、OpenCode Go）或 OpenAI 兼容服务。 |
 
 - 完整安装细节、更新、常见问题、已知限制与路线图：[Poki iPhone 使用指南](docs/iphone-guide.zh-CN.md)

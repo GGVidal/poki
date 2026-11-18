@@ -35,7 +35,7 @@ Poki는 사용자를 대신해 iPhone 전체를 조작하는 오픈소스 iPhone
 ## 왜 Poki인가요
 
 - **일상적인 작업을 위해 여러 앱을 번갈아 누를 필요가 없습니다.** 채팅으로 부탁하거나 동작 버튼을 길게 누르고 Siri를 호출해 내장 브라우저 검색, 내일 날씨 확인, 메모 작성을 맡길 수 있습니다. iPhone Duo에서는 Split View로 두 앱을 나란히 조작합니다.
-- **반복 작업을 탭 한 번이나 음성으로 실행합니다.** 매일 같은 단계를 되풀이하는 대신 홈 화면에 기억된 루틴을 탭하거나 음성 대화를 시작하세요. 각 단계의 진행 상황은 Dynamic Island에 표시됩니다.
+- **반복 작업을 탭 한 번이나 음성으로 실행합니다.** 매일 같은 단계를 되풀이하는 대신 홈 화면에 저장된 스킬이나 습관을 탭하거나 음성 대화를 시작하세요. 각 단계의 진행 상황은 Dynamic Island에 표시됩니다.
 - **컴퓨터를 켜 두지 않고도 실제 iPhone을 자동화합니다.** Mac이나 Windows PC에서 한 번 설치하면 컴퓨터 없이 iPhone 단독으로 실행되며, 승인이 필요한 단계에서는 잠금 화면이나 Dynamic Island에서 멈추고 확인을 기다립니다.
 
 ## 사용 방법
@@ -49,7 +49,7 @@ Poki는 사용자를 대신해 iPhone 전체를 조작하는 오픈소스 iPhone
    ```
 
    또는 [GitHub Releases](https://github.com/JosssphZhou/poki/releases)에서 macOS용(`.dmg`) 또는 Windows용(`.exe`) Poki Setup을 내려받아 안내를 따르세요.
-2. **연결과 모델 계정을 설정합니다.** iOS 안내에 따라 신뢰, 개발자 모드, 자동화 모드를 켜고 `10.7.0.1`을 iPhone으로 라우팅하는 로컬 VPN 앱(예: 무료 LocalDevVPN)을 설치합니다. 이어서 ChatGPT Plus/Pro로 로그인하거나 Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go API 키 또는 OpenAI 호환 서버를 등록하세요.
+2. **연결과 모델 계정을 설정합니다.** iOS 안내에 따라 신뢰, 개발자 모드, 자동화 모드를 켜고 `10.7.0.1`을 iPhone으로 라우팅하는 외부 연결(예: 무료 LocalDevVPN)을 설정합니다. 이어서 ChatGPT Plus/Pro로 로그인하거나 Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go API 키 또는 OpenAI 호환 서버를 등록하세요.
 3. **첫 작업을 실행합니다.** Poki를 열고 다음 메시지를 보냅니다.
 
    ```text
@@ -66,7 +66,7 @@ Poki는 사용자를 대신해 iPhone 전체를 조작하는 오픈소스 iPhone
 | iPhone | iOS 18 이상(iPhone XS, XR, SE 2세대 이상 및 iPadOS 18+). 실제 기기 테스트는 iOS 27에서 진행했습니다. |
 | 컴퓨터 | macOS 14+ Mac(에이전트 설치 시 Node.js 24+ 필요) 또는 Apple Devices / iTunes가 설치된 Windows PC(x64). |
 | 케이블 및 계정 | USB 데이터 케이블과 Apple 계정. 무료 계정의 7일 서명은 Poki Setup이나 Poki 앱에서 갱신할 수 있습니다. |
-| 연결 | `10.7.0.1`을 iPhone으로 돌려보내는 로컬 VPN 앱(LocalDevVPN, Karing, Shadowrocket). |
+| 연결 | `10.7.0.1`을 iPhone으로 돌려보내는 외부 연결(LocalDevVPN, Karing, Shadowrocket). |
 | 모델 계정 | ChatGPT Plus/Pro 로그인, API 키(Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go) 또는 OpenAI 호환 서버. |
 
 - 전체 설치 안내, 업데이트, FAQ, 알려진 제한 및 로드맵: [Poki iPhone 앱 가이드](docs/iphone-guide.ko.md)
