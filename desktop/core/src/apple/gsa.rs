@@ -2154,4 +2154,55 @@ mod rate_limit_regressions {
             assert_eq!(reloaded.token().await.unwrap().token, "xcode-auth-token-ok");
         });
     }
+
+    #[test]
+    fn signer_opened_before_another_client_hit_keyless_409_does_not_sign_in_again() {
+        let (_home_guard, _dir) = crate::paths::test_home();
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior {
+                apptokens_ec: -22406,
+                include_session_keys_on_409: false,
+                ..MockBehavior::default()
+            })
+            .await;
+            let mut seeded = store::Account::default();
+            seeded.session = Some(Session {
+                apple_id: "person@example.com".into(),
+                adsid: "000123-abc".into(),
+                gs_idms_token: "expired-tok".into(),
+                first_name: "Test".into(),
+                last_name: "Person".into(),
+                sk: vec![7u8; 32],
+                c: b"cookie-bytes".to_vec(),
+            });
+            seeded.password = Some("correct-horse-battery".into());
+            store::save(&seeded).unwrap();
+
+            // Poki Setup is already open with this account loaded, and so is a second window of it.
+            let mut running = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let mut idle = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            assert!(running.signed_in());
+
+            // Meanwhile the CLI hits the expired session and Apple takes the code without session keys.
+            let mut cli = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let Err(Error::NeedsCode(pending)) = cli.token().await else { panic!("expired session must ask for a code") };
+            assert!(super::is_incomplete_session(&cli.finish_sign_in(*pending, "654321").await.unwrap_err()));
+            let baseline = mock.counts.lock().unwrap().clone();
+
+            let teams = running.teams().await;
+            #[cfg(feature = "device")]
+            let due = crate::setup::renew_due(&mut running, &crate::Reporter::silent()).await;
+            let after = mock.counts.lock().unwrap().clone();
+            assert_eq!(after.srp_init - baseline.srp_init, 0, "the open client must not sign in with the kept password");
+            assert_eq!(after.total_codes_sent() - baseline.total_codes_sent(), 0, "the open client must not ask Apple for a code");
+            assert!(super::is_incomplete_session(&teams.unwrap_err()), "the open client must ask the person to sign in again");
+            #[cfg(feature = "device")]
+            assert!(due.is_empty());
+            assert!(!running.signed_in(), "the open client must show the account as signed out");
+
+            idle.choose_team("TEAM123").unwrap();
+            assert!(store::load().unwrap().needs_reauth, "a save from the open client must keep the sign-in-again state");
+            assert!(!idle.signed_in());
+        });
+    }
 }
