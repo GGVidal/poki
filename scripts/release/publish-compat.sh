@@ -7,13 +7,13 @@
 # See docs/release-channels.md, "Installed clients".
 #
 #   publish-compat.sh alpha <version> <build> [check|draft|public] [--confirm <tag>]
-#       The Alpha as a release of its own, on the tag Promote to Alpha made: app-<version>-alpha.<build>.
+#       The Alpha as a release of its own, on the tag publish-promotion.yml made: app-<version>-alpha.<build>.
 #   publish-compat.sh beta <version> <build> [check|draft|public] [--confirm <tag>]
 #       The Beta under its build number: ios-beta-<version>-<build>. Make it public just before the
 #       Beta itself is approved, so Stable and Beta users are never offered the beta-named file alone.
 #
 # check (the default) downloads the Pre-alpha run's files, verifies them and prints what would be
-# published; before Promote to Alpha it checks the Pre-alpha build. draft uploads a draft release,
+# published; before the Alpha exists it checks the Pre-alpha build. draft uploads a draft release,
 # which no client can see. public checks that draft again, file by file, against the same Pre-alpha
 # files, and makes it public only with --confirm <the release's tag>; without it, it prints what
 # would become public and stops.

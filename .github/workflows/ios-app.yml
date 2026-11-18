@@ -11,7 +11,7 @@ on:
     inputs:
       version: { type: string, required: true }
       build: { type: string, required: true }
-      # The commit to test (promote-alpha.yml passes the pre-alpha's); default the calling run's.
+      # The commit to test; default the calling run's.
       ref: { type: string, required: false, default: '' }
 
 permissions:

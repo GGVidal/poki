@@ -35,7 +35,7 @@
       ]
     },
     {
-      "name": "Alpha, after approval (promote-alpha.yml): the rolling releases, and the tag app-0.4.0-alpha.{N}",
+      "name": "Alpha, when the beta promotion merges (publish-promotion.yml): the rolling releases, and the tag app-0.4.0-alpha.{N}",
       "releases": [
         {
           "tag": "app-alpha-latest",

@@ -12,7 +12,7 @@ name: Pre-alpha
 on:
   push:
     branches: [main]
-    paths-ignore: ['**/*.md', 'docs/**', '.github/ISSUE_TEMPLATE/**', '.github/channels.json', '.github/workflows/promote-*.yml']
+    paths-ignore: ['**/*.md', 'docs/**', '.github/ISSUE_TEMPLATE/**', '.github/channels.json']
   # Re-publish main's head by hand (for example after a failed run).
   workflow_dispatch:
 
@@ -54,7 +54,7 @@ jobs:
           build: ${{ steps.v.outputs.build }}
           editions: external
 
-      # Kept 90 days: an alpha or beta promoted later copies this exact file (promote-alpha.yml).
+      # Kept 90 days: a beta promoted later copies this exact file (publish-promotion.yml).
       - uses: actions/upload-artifact@v4
         with:
           name: Poki-unsigned
