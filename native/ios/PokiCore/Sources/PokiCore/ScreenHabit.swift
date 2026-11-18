@@ -2,9 +2,9 @@ import Foundation
 
 /// Habits Poki learns from Screen History. Today there is one: the music app the owner uses most.
 ///
-/// No count or time window decides it. This file only sums up the owner's own use of music apps
-/// (which app was in front, and when; no screen text or title), and the model reads that summary
-/// with a description of what a habit is and decides (`MusicHabitJudgment`).
+/// This file sums up the owner's own use of music apps (which app was in front, and when; no screen
+/// text or title). An app used `minUses` times in the past `lookBack` can be a habit; the model reads
+/// the summary of those apps with a description of what a habit is and decides (`MusicHabitJudgment`).
 
 // MARK: Types
 
@@ -104,8 +104,15 @@ public enum MusicUsageSummary {
     /// Reads of the same app this close together are one use: a page read a hundred times is still
     /// one time the owner opened the app.
     public static let sameUseGap: TimeInterval = 30 * 60
-    /// How far back the summary looks: the short behavior log Poki keeps.
-    public static let lookBack: TimeInterval = 30 * 86_400
+    /// How far back the summary looks: one week.
+    public static let lookBack: TimeInterval = 7 * 86_400
+    /// The fewest uses in `lookBack` that can make an app a habit. Fewer is never offered to the model.
+    public static let minUses = 3
+
+    /// The apps that can be a habit: those used at least `minUses` times.
+    public static func candidates(_ usages: [MusicAppUsage]) -> [MusicAppUsage] {
+        usages.filter { $0.uses.count >= minUses }
+    }
 
     /// The owner's uses of each music app since `lookBack` (and after `watermarkAt`), from which app
     /// was in front and when. Uses while an agent had the app open are left out, and so are apps the
@@ -182,9 +189,8 @@ public enum MusicHabitJudgment {
         when they ask Poki to play music without naming an app, opening that app is what they would expect.
         You get a summary of the owner's own use of music apps on this iPhone: how many times they used \
         each app, on which days and at what times. Look at how often and how regularly they come back to \
-        an app, whether it is recent, and how it compares with the other music apps. Using an app more \
-        than twice is a useful hint, not a rule: decide from the whole picture. When two apps are used \
-        about as much, or the use looks like a one-off, there is no habit.
+        an app, whether it is recent, and how it compares with the other music apps, and decide from the \
+        whole picture. When two apps are used about as much, or the use looks like a one-off, there is no habit.
         Reply with JSON only, no other text: {"habit": true, "bundle_id": "<the app's bundle id>", \
         "evidence": "<one short sentence for the owner, in the language with code \(language), saying \
         what you saw, such as how many times, on how many days and at what time of day>"} \

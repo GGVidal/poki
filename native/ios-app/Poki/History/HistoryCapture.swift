@@ -294,6 +294,8 @@ final class HistoryCapture: ObservableObject {
     func clearEverything() async {
         BacktapeNotes.shared.reset()
         await HistoryStore.shared.deleteEverything()
+        // What was learned came from what was just deleted. The owner's own notes are not touched.
+        ScreenHabits.forget()
         changes += 1
     }
 

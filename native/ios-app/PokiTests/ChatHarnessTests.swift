@@ -442,12 +442,13 @@ final class ChatHarnessTests: XCTestCase {
     }
 
     private static let done = FakeCompletions.tool("finish_task", ["success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"]])
-    private static let netEaseHabit = FakeCompletions.text(#"{"habit": true, "bundle_id": "com.netease.cloudmusic", "evidence": "最近两天各用了一次网易云音乐，都在晚上"}"#)
+    private static let netEaseHabit = FakeCompletions.text(#"{"habit": true, "bundle_id": "com.netease.cloudmusic", "evidence": "最近三天各用了一次网易云音乐，都在晚上"}"#)
+    private static let threeUses = [(3, 21), (2, 21), (1, 21)]
 
-    /// Whether the owner has a usual music app is the model's call, from a summary of their own use of
-    /// music apps: two uses can be enough when the model says so.
-    func testTheModelDecidesTheUsualMusicAppEvenFromTwoUses() async throws {
-        await useNetEase([(2, 21), (1, 21)])
+    /// An app used three times in the past week is offered to the model, which decides the habit
+    /// and writes the evidence the task then carries.
+    func testThreeUsesInAWeekLetTheModelDecideTheUsualMusicApp() async throws {
+        await useNetEase(Self.threeUses)
         let server = try FakeCompletions(replies: [Self.netEaseHabit, Self.done, FakeCompletions.text("好的。")])
         let chat = chat(on: server)
 
@@ -461,11 +462,70 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertFalse(asked.contains("每日推荐"), "and no screen text")
         let task = FakeCompletions.system(requests[1])
         XCTAssertTrue(task.contains(Self.learnedLine) && task.contains("com.netease.cloudmusic"), "the task uses what the model decided")
-        XCTAssertTrue(task.contains("最近两天各用了一次网易云音乐"), "with the model's own evidence")
+        XCTAssertTrue(task.contains("最近三天各用了一次网易云音乐"), "with the model's own evidence")
     }
 
-    /// No count makes a habit on its own: when the model says there is none, there is none.
-    func testNoCountsMakeAHabitWithoutTheModel() async throws {
+    /// Two uses in the past week, and older ones, are not a habit: the model is not asked and the
+    /// task carries no learned app.
+    func testFewerThanThreeUsesInAWeekAreNotAHabit() async throws {
+        await useNetEase([(12, 21), (10, 21), (9, 21), (2, 21), (1, 21)])
+        // Were the model asked, it would answer that NetEase Cloud Music is the habit.
+        let server = try FakeCompletions(replies: [Self.netEaseHabit, Self.done, FakeCompletions.text("好的。")])
+        let chat = chat(on: server)
+
+        _ = await chat.runDelegated("放一首周杰伦的歌")
+
+        XCTAssertNil(ScreenHabits.musicApp(), "nothing is learned")
+        XCTAssertFalse(server.requests.map(FakeCompletions.system).joined().contains(Self.learnedLine), "the task carries no learned app")
+    }
+
+    /// Deleting all of Screen History forgets what was learned from it: the next music request does
+    /// not use it. The owner's own "from now on, use QQ Music" is not learned from Screen History
+    /// and stays.
+    func testDeletingAllOfScreenHistoryForgetsTheLearnedAppButNotTheOwnersNote() async throws {
+        await useNetEase(Self.threeUses)
+        let server = try FakeCompletions(replies: [Self.netEaseHabit, Self.done, FakeCompletions.text("好的。"), Self.done, FakeCompletions.text("好的。")])
+        let chat = chat(on: server)
+
+        _ = await chat.runDelegated("放一首周杰伦的歌")
+        await HistoryCapture.shared.clearEverything()
+        XCTAssertNil(ScreenHabits.musicApp(), "deleting everything forgets the learned app")
+        _ = await chat.runDelegated("放一首周杰伦的歌")
+
+        let requests = server.requests
+        XCTAssertEqual(requests.count, 5)
+        guard requests.count == 5 else { return }
+        XCTAssertTrue(FakeCompletions.system(requests[1]).contains(Self.learnedLine), "NetEase Cloud Music was learned")
+        XCTAssertFalse(FakeCompletions.system(requests[3]).contains(Self.learnedLine), "and is not used after everything is deleted")
+
+        let choice = "以后都用QQ音乐放歌"
+        notes.append(choice)
+        XCTAssertNotNil(ScreenHabits.memory.remember(choice, by: "owner"))
+        await HistoryCapture.shared.clearEverything()
+        XCTAssertTrue(ScreenHabits.memory.notes.contains { $0.text == choice }, "the owner's own choice stays")
+    }
+
+    /// Turning Screen History off forgets what was learned: turned on again, the same reads do not
+    /// bring it back.
+    func testTurningOffScreenHistoryForgetsTheLearnedApp() async throws {
+        await useNetEase(Self.threeUses)
+        let server = try FakeCompletions(replies: [Self.netEaseHabit, Self.done, FakeCompletions.text("好的。"), Self.done, FakeCompletions.text("好的。")])
+        let chat = chat(on: server)
+
+        _ = await chat.runDelegated("放一首周杰伦的歌")
+        HistoryCapture.shared.enabled = false
+        HistoryCapture.shared.enabled = true
+        _ = await chat.runDelegated("放一首周杰伦的歌")
+
+        let requests = server.requests
+        XCTAssertEqual(requests.count, 5, "the model is not asked again about reads from before")
+        guard requests.count == 5 else { return }
+        XCTAssertTrue(FakeCompletions.system(requests[1]).contains(Self.learnedLine))
+        XCTAssertFalse(FakeCompletions.system(requests[3]).contains(Self.learnedLine))
+    }
+
+    /// Enough uses do not make a habit on their own: when the model says there is none, there is none.
+    func testEnoughUsesMakeNoHabitWhenTheModelSaysNone() async throws {
         await useNetEase([(3, 9), (3, 18), (2, 9), (2, 18), (1, 9), (1, 18)])
         let server = try FakeCompletions(replies: [FakeCompletions.text(#"{"habit": false}"#), Self.done, FakeCompletions.text("好的。")])
         let chat = chat(on: server)
@@ -481,7 +541,7 @@ final class ChatHarnessTests: XCTestCase {
     /// other than the learned one and whether Poki knows its name or not, and the saved choice keeps
     /// the learned app out of the next music request.
     func testTheOwnersStandingMusicChoiceIsSavedOverTheLearnedApp() async throws {
-        await useNetEase([(2, 21), (1, 21)])
+        await useNetEase(Self.threeUses)
         for choice in ["以后都用苹果音乐放歌", "以后都用咪咕音乐放歌"] {
             notes.append(choice)
             let server = try FakeCompletions(replies: [

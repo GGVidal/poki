@@ -3,9 +3,10 @@ import PokiCore
 
 /// Habits Poki learns from Screen History: today only the owner's usual music app.
 ///
-/// No count decides it. Poki sums up the owner's own use of music apps from which app was in front
-/// and when (`MusicUsageSummary`, no screen text), and the chat's model reads that with a description
-/// of what a habit is and decides (`MusicHabitJudgment`). What it decides is kept here, with the
+/// Poki sums up the owner's own use of music apps from which app was in front and when
+/// (`MusicUsageSummary`, no screen text). An app used three times in the past week can be a habit, and
+/// the chat's model reads the summary of those apps with a description of what a habit is and decides
+/// (`MusicHabitJudgment`). What it decides is kept here, with the
 /// model's evidence, and the Memory page shows it as inferred. The model is asked again only when the
 /// summary changes. The owner's own words come first: a music app named in the request, or a saved
 /// note saying which app to use, leaves the learned app out.
@@ -64,8 +65,13 @@ enum ScreenHabits {
     /// summary changed since it was last asked. What it says replaces what was learned before.
     static func judge(provider: ModelProvider = ModelKeys.selectedProvider, model: String = ModelKeys.selectedModel) async {
         guard isOn, let piModel = provider.piModel(model) else { return }
-        let usages = usages()
-        guard !usages.isEmpty else { return }
+        let usages = MusicUsageSummary.candidates(usages())
+        // No app used often enough this week: there is no habit, and nothing to ask.
+        guard !usages.isEmpty else {
+            learn(nil)
+            UserDefaults.standard.removeObject(forKey: judgedKey)
+            return
+        }
         let summary = MusicUsageSummary.text(usages, name: { KnownApps.find($0)?.names.first ?? $0 })
         // The summary names days and counts, not exact times: a new use changes it, a re-read does not.
         guard UserDefaults.standard.string(forKey: judgedKey) != summary else { return }

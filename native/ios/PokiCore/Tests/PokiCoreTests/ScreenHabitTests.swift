@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import PokiCore
 
-/// What the model gets to decide the usual music app from: the owner's own uses of each music app,
-/// and only those. No count decides anything here.
+/// What the model gets to decide the usual music app from: the owner's own uses of each music app in
+/// the past week, and only apps used at least three times.
 final class ScreenHabitTests: XCTestCase {
     static let netease = "com.netease.cloudmusic"
     static let appleMusic = "com.apple.Music"
@@ -32,12 +32,19 @@ final class ScreenHabitTests: XCTestCase {
         XCTAssertEqual(Self.usages(rows).first?.uses.count, 1)
     }
 
-    func testTwoUsesAreGivenToTheModelWithTheirDaysAndTimes() {
-        let rows = Self.use(Self.netease, daysAgo: 2, hour: 21) + Self.use(Self.netease, daysAgo: 1, hour: 21)
-        let usages = Self.usages(rows)
-        XCTAssertEqual(usages.map(\.bundleID), [Self.netease])
-        let text = MusicUsageSummary.text(usages, name: { _ in "NetEase Cloud Music" }, now: Self.now, calendar: Self.utc)
-        XCTAssertTrue(text.contains("2 uses on 2 days: 2026-11-16 (Mon) ×1, 2026-11-17 (Tue) ×1. Times of day: evening 2."), text)
+    func testThreeUsesInAWeekAreOfferedWithTheirDaysAndTimes() {
+        let rows = Self.use(Self.netease, daysAgo: 3, hour: 21) + Self.use(Self.netease, daysAgo: 2, hour: 21) + Self.use(Self.netease, daysAgo: 1, hour: 9)
+        let offered = MusicUsageSummary.candidates(Self.usages(rows))
+        XCTAssertEqual(offered.map(\.bundleID), [Self.netease])
+        let text = MusicUsageSummary.text(offered, name: { _ in "NetEase Cloud Music" }, now: Self.now, calendar: Self.utc)
+        XCTAssertTrue(text.contains("3 uses on 3 days: 2026-11-15 (Sun) ×1, 2026-11-16 (Mon) ×1, 2026-11-17 (Tue) ×1. Times of day: morning 1, evening 2."), text)
+    }
+
+    func testFewerThanThreeUsesInAWeekAreNotOffered() {
+        let old = (8...12).flatMap { Self.use(Self.netease, daysAgo: $0, hour: 21) }
+        let rows = old + Self.use(Self.netease, daysAgo: 2, hour: 21) + Self.use(Self.netease, daysAgo: 1, hour: 21)
+        XCTAssertEqual(Self.usages(rows).first?.uses.count, 2, "uses older than a week are left out")
+        XCTAssertTrue(MusicUsageSummary.candidates(Self.usages(rows)).isEmpty)
     }
 
     func testPokisOwnLaunchesAreNotTheOwnersUses() {
