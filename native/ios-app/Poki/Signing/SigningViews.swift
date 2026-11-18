@@ -308,6 +308,8 @@ struct SigningOptionsPage: View {
     @State private var address = ""
     /// Custom was tapped, so the address field shows before the signer has an address to keep.
     @State private var entering = false
+    /// The address last handed to the signer, so leaving the field does not hand it over twice.
+    @State private var sent: String?
     @FocusState private var typing: Bool
     private var signer: SelfSigner { model.signer }
     private var saved: String? { signer.customSignInServer }
@@ -330,8 +332,9 @@ struct SigningOptionsPage: View {
             Section {
                 ChoiceRow(title: Text("Default"), selected: saved == nil) {
                     entering = false
-                    typing = false
                     address = ""
+                    sent = nil
+                    typing = false
                     if saved != nil { Task { await signer.setAnisette("") } }
                 }
                 // The tick moves to Custom once the signer has taken the address.
@@ -347,10 +350,7 @@ struct SigningOptionsPage: View {
                         .autocorrectionDisabled()
                         .submitLabel(.done)
                         .focused($typing)
-                        .onSubmit {
-                            let url = address.trimmingCharacters(in: .whitespaces)
-                            if !url.isEmpty { Task { await signer.setAnisette(url) } }
-                        }
+                        .onSubmit { save() }
                 }
             } header: {
                 SettingsHeader("Sign-In Server")
@@ -366,6 +366,18 @@ struct SigningOptionsPage: View {
         .onChange(of: saved, initial: true) { _, saved in
             if let saved { address = saved }
         }
+        // An address typed and left (a tap elsewhere, or back) is kept like one sent with Done.
+        .onChange(of: typing) { _, typing in
+            if !typing { save() }
+        }
+        .onDisappear { save() }
+    }
+
+    private func save() {
+        let url = address.trimmingCharacters(in: .whitespaces)
+        guard !url.isEmpty, url != saved, url != sent else { return }
+        sent = url
+        Task { await signer.setAnisette(url) }
     }
 }
 

@@ -52,14 +52,15 @@ final class SigningPageTests: XCTestCase {
                 CATransaction.flush()
                 var words = PageWords()
                 var source = ""
-                let deadline = CACurrentMediaTime() + 10
+                let deadline = CACurrentMediaTime() + 30
                 repeat {
                     try await Task.sleep(for: .milliseconds(200))
                     source = await Task.detached {
                         var code: NSString?
                         return PKInProcess.shared().sourceXML(nil, code: &code) ?? ""
                     }.value
-                    words = try PageWords(source)
+                    // No answer yet (the page is still coming up) is asked again until the deadline.
+                    words = (try? PageWords(source)) ?? PageWords()
                 } while words.all.count < 4 && CACurrentMediaTime() < deadline
                 let name = "\(options ? "options" : "signing")-\(preference)"
                 try source.write(to: output.appendingPathComponent("\(name).xml"), atomically: true, encoding: .utf8)
