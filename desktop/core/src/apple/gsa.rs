@@ -1719,7 +1719,7 @@ mod rate_limit_regressions {
             assert_eq!(mock.counts.lock().unwrap().sms_send, 1);
 
             signer.finish_sign_in(pending, "654321").await.unwrap();
-            assert_eq!(mock.counts.lock().unwrap().srp_complete, 1);
+            assert_eq!(mock.counts.lock().unwrap().srp_complete, 2, "signs in once more after the code");
             assert_eq!(mock.counts.lock().unwrap().sms_send, 1);
         });
     }
