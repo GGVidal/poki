@@ -389,11 +389,12 @@ struct RootView: View {
         if model.voice.canTalkLive { openLiveVoice() } else { MessageFieldAsk.shared.ask() }
     }
 
-    /// The conversation `id` left the list. When it is the one in the chat, the chat starts a new
-    /// conversation; when an outside agent's session with that id is open over the chat (iPhone) or
-    /// beside the list (iPad), the chat comes back. The drawer stays as it is: the owner is in it.
+    /// The conversation `id` left the list. When it is the one in the chat, the chat stops its task and
+    /// starts a new conversation (`ChatModel.conversationLeft`); when an outside agent's session with that
+    /// id is open over the chat (iPhone) or beside the list (iPad), the chat comes back. The drawer stays
+    /// as it is: the owner is in it.
     private func leave(_ id: String) {
-        if id == chat.sessionID, !chat.running { chat.newConversation() }
+        chat.conversationLeft(id)
         if wide == .session(id) { wide = .chat }
         if home == NavigationPath([HomeRoute.session(id)]) { home = NavigationPath() }
     }
