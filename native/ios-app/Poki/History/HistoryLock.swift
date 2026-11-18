@@ -85,6 +85,7 @@ final class HistoryLock: ObservableObject {
         case unlockWithPIN(String)
         case removePIN
         case setBiometrics(Bool)
+        case readStarting
     }
 
     /// Changes only on events (a lock action, the app coming back, the phone unlocking, a Face ID
@@ -101,7 +102,18 @@ final class HistoryLock: ObservableObject {
     /// This install of Poki. The keychain outlives a deleted app, Poki's settings and Screen History do
     /// not, so the mark that the lock was set up counts only for the install that wrote it.
     private static let installKey = "history.lock.install"
-    private var enrollmentToken: Int32 = NOTIFY_TOKEN_INVALID
+    private let subscriptions = Subscriptions()
+
+    /// What the lock listens to, given back when the lock goes.
+    private final class Subscriptions {
+        var observers: [NSObjectProtocol] = []
+        var enrollmentToken: Int32 = NOTIFY_TOKEN_INVALID
+
+        deinit {
+            observers.forEach(NotificationCenter.default.removeObserver)
+            if enrollmentToken != NOTIFY_TOKEN_INVALID { notify_cancel(enrollmentToken) }
+        }
+    }
 
     init(boundary: Boundary) {
         self.boundary = boundary
@@ -109,16 +121,19 @@ final class HistoryLock: ObservableObject {
         biometrics = boundary.biometrics()
         _ = transition(.refresh)
         let center = NotificationCenter.default
-        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.lock() }
-        }
-        center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
-        center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
-        notify_register_dispatch("com.apple.BiometricKit.enrollmentChanged", &enrollmentToken, DispatchQueue.main) { [weak self] _ in
+        subscriptions.observers = [
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.lock() }
+            },
+            center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            },
+            center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            },
+        ]
+        // Not documented for apps; coming back to the foreground reads Face ID again either way.
+        notify_register_dispatch("com.apple.BiometricKit.enrollmentChanged", &subscriptions.enrollmentToken, DispatchQueue.main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
     }
@@ -204,6 +219,10 @@ final class HistoryLock: ObservableObject {
     /// Reads the iPhone and the keychain again, as when Poki comes back from Settings.
     func refresh() { _ = transition(.refresh) }
 
+    /// A read is about to start. With a way in already there (Face ID, Touch ID or a PIN), the lock
+    /// counts as set up from now on, so what the read keeps never waits behind a first PIN.
+    func readStarting() { _ = transition(.readStarting) }
+
     // MARK: State machine
 
     @discardableResult
@@ -234,16 +253,14 @@ final class HistoryLock: ObservableObject {
 
         case .beginBiometrics(let attempt):
             guard case .locked(let methods, nil, let cooldown) = current, methods.usesBiometrics else {
-                if state != current { state = current }
-                return false
+                return refuse(current)
             }
             next = .locked(methods: methods, evaluatingBiometrics: attempt, cooldown: cooldown)
             accepted = true
 
         case .finishBiometrics(let attempt, let passed):
             guard case .locked(let methods, let active?, let cooldown) = current, active == attempt else {
-                if state != current { state = current }
-                return false
+                return refuse(current)
             }
             if passed, methods.usesBiometrics {
                 markArmed()
@@ -261,8 +278,7 @@ final class HistoryLock: ObservableObject {
             }
             guard Self.valid(pin), allowed, let sealed = Self.seal(pin),
                   boundary.writeKeychain(Self.pinAccount, sealed, kSecAttrAccessibleWhenUnlockedThisDeviceOnly) else {
-                if state != current { state = current }
-                return false
+                return refuse(current)
             }
             markArmed()
             env = readEnvironment()
@@ -276,12 +292,10 @@ final class HistoryLock: ObservableObject {
             switch current {
             case .locked(let methods, let attempt, var cooldown) where methods.hasPIN:
                 if let until = cooldown.blockedUntil, until > now {
-                    if state != current { state = current }
-                    return false
+                    return refuse(current)
                 }
                 guard case .present(let value) = env.storedPIN else {
-                    if state != current { state = current }
-                    return false
+                    return refuse(current)
                 }
                 if Self.matchesPIN(pin, stored: value) {
                     markArmed()
@@ -301,24 +315,29 @@ final class HistoryLock: ObservableObject {
                 next = current
                 accepted = Self.matchesPIN(pin, stored: value)
             default:
-                if state != current { state = current }
-                return false
+                return refuse(current)
             }
 
         case .removePIN:
             guard case .unlocked(.biometricsAndPIN) = current else {
-                if state != current { state = current }
-                return false
+                return refuse(current)
             }
             boundary.deleteKeychain(Self.pinAccount)
             next = .unlocked(methods: .biometricsOnly)
             accepted = true
 
+        case .readStarting:
+            switch current {
+            case .locked, .unlocked: markArmed()
+            case .unconfigured, .biometricsUnavailable, .deviceLocked: break
+            }
+            next = current
+            accepted = true
+
         case .setBiometrics(let on):
             guard case .unlocked(let methods) = current, on || methods.hasPIN,
                   let updated = AuthMethods(biometrics: on && env.biometrics.ready, pin: methods.hasPIN) else {
-                if state != current { state = current }
-                return false
+                return refuse(current)
             }
             biometricsOn = on
             boundary.defaults.set(on, forKey: Self.biometricsKey)
@@ -331,14 +350,21 @@ final class HistoryLock: ObservableObject {
         return accepted
     }
 
+    /// Refuses an event: the state catches up with what was just read, and nothing else changes.
+    private func refuse(_ current: State) -> Bool {
+        if state != current { state = current }
+        return false
+    }
+
     private func readEnvironment() -> Environment {
         let on = boundary.defaults.object(forKey: Self.biometricsKey) as? Bool ?? true
         let bio = boundary.biometrics()
         if biometricsOn != on { biometricsOn = on }
         if biometrics != bio { biometrics = bio }
-        adoptEarlierHistory(biometricsOn: on, biometrics: bio)
+        forgetADeletedInstall()
         let pin = boundary.readKeychain(Self.pinAccount)
-        return Environment(biometricsOn: on, biometrics: bio, storedPIN: pin, armed: pin != .absent || armedOnThisInstall())
+        let armed = pin != .absent || armedOnThisInstall() || adoptKeptHistory(biometricsOn: on, biometrics: bio)
+        return Environment(biometricsOn: on, biometrics: bio, storedPIN: pin, armed: armed)
     }
 
     private static func reconcile(_ state: State, env: Environment, now: Date) -> State {
@@ -395,15 +421,34 @@ final class HistoryLock: ObservableObject {
         _ = boundary.writeKeychain(Self.armedAccount, mark, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
     }
 
-    /// Once per install: history kept by an earlier Poki, which had no set-up mark, stays behind the
-    /// Face ID or Touch ID that guarded it then. A new install finds its history empty and starts unset.
-    private func adoptEarlierHistory(biometricsOn on: Bool, biometrics bio: Biometrics) {
-        guard boundary.defaults.string(forKey: Self.installKey) == nil, let holds = boundary.historyHoldsAnything() else { return }
-        if holds, on, bio.ready || bio.blockedOrDeniedOnHardware {
+    /// History kept while the lock was not set up yet stays behind the Face ID or Touch ID that could
+    /// open it: reads kept before Screen History was first opened, and history from an earlier Poki that
+    /// had no set-up mark. Asked on every event until the lock is set up, so a read counts once it is kept,
+    /// also when Face ID is locked out or turned off for Poki after it. An iPhone without Face ID or
+    /// Touch ID had nothing guarding its history and still makes a first PIN.
+    private func adoptKeptHistory(biometricsOn on: Bool, biometrics bio: Biometrics) -> Bool {
+        guard on, bio.ready || bio.blockedOrDeniedOnHardware else { return false }
+        switch boundary.historyHoldsAnything() {
+        case true?:
             markArmed()
-        } else {
-            boundary.defaults.set(UUID().uuidString, forKey: Self.installKey)
+            return true
+        case false?:
+            return false
+        case nil:
+            // The store cannot be read just now: no first PIN until it can be.
+            return true
         }
+    }
+
+    /// A deleted Poki leaves its PIN and set-up mark in the keychain; its history went with it. While
+    /// the mark is another install's and this install's history is empty, they guard nothing, and the
+    /// PIN may be long forgotten.
+    private func forgetADeletedInstall() {
+        guard case .present(let mark) = boundary.readKeychain(Self.armedAccount),
+              boundary.defaults.string(forKey: Self.installKey).map({ Data($0.utf8) != mark }) ?? true,
+              boundary.historyHoldsAnything() == false else { return }
+        boundary.deleteKeychain(Self.pinAccount)
+        boundary.deleteKeychain(Self.armedAccount)
     }
 
     // MARK: PIN storage

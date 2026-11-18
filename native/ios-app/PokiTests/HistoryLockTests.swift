@@ -169,6 +169,58 @@ final class HistoryLockTests: XCTestCase {
         }
     }
 
+    func testReadsKeptBeforeScreenHistoryWasOpenedStayLockedWhenFaceIDIsLockedOut() {
+        var holds = false
+        let phone = Phone(history: { holds })
+        let lock = phone.launch()
+        XCTAssertFalse(lock.needsSetup)
+
+        // A read started in Testing Options is kept; nobody has opened Screen History yet. Then Face ID
+        // fails five times, or is turned off for Poki in Settings.
+        holds = true
+        phone.biometrics = .deniedForPoki
+        XCTAssertFalse(lock.setPIN("1234"), "A new PIN must not open reads nobody has unlocked")
+        XCTAssertFalse(lock.unlocked)
+        XCTAssertFalse(lock.needsSetup)
+        XCTAssertTrue(lock.biometricsUnavailable)
+
+        lock.lock()
+        lock.refresh()
+        XCTAssertFalse(lock.needsSetup)
+        XCTAssertFalse(lock.setPIN("1234"))
+    }
+
+    func testAReadStartedWithFaceIDStaysLockedWhenFaceIDIsRemovedBeforePokiLooksAgain() {
+        var holds = false
+        let phone = Phone(history: { holds })
+        let lock = phone.launch()
+        lock.readStarting()
+
+        // The read keeps text while Poki is in the background, and Face ID is removed in Settings
+        // before Poki comes back.
+        holds = true
+        phone.biometrics = .unavailable
+        lock.refresh()
+        XCTAssertFalse(lock.needsSetup)
+        XCTAssertTrue(lock.biometricsUnavailable)
+        XCTAssertFalse(lock.setPIN("1234"))
+        XCTAssertFalse(lock.unlocked)
+    }
+
+    func testAReinstalledPokiDropsAPINLeftByTheDeletedInstall() {
+        let phone = Phone()
+        phone.biometrics = .unavailable
+        XCTAssertTrue(phone.launch().setPIN("2468"))
+
+        phone.reinstall()
+        let lock = phone.launch()
+        XCTAssertTrue(lock.needsSetup, "A PIN from the deleted Poki guards nothing and may be forgotten")
+        XCTAssertTrue(lock.setPIN("1357"))
+        lock.lock()
+        XCTAssertFalse(lock.unlock(pin: "2468"))
+        XCTAssertTrue(lock.unlock(pin: "1357"))
+    }
+
     // MARK: Helpers
 
     private enum Kept { case read, summaryOnly }
@@ -209,7 +261,7 @@ private final class Phone {
     var biometrics = HistoryLock.Biometrics.usable
     var now = Date(timeIntervalSince1970: 1_800_000_000)
     private var defaults = Phone.freshDefaults()
-    private var history: () -> Bool?
+    private let history: () -> Bool?
 
     init(history: @escaping () -> Bool? = { false }) {
         self.history = history
@@ -236,9 +288,9 @@ private final class Phone {
         ))
     }
 
+    /// Poki's settings go. Screen History goes too, and the caller empties the store it reads.
     func reinstall() {
         defaults = Self.freshDefaults()
-        history = { false }
     }
 
     private static func freshDefaults() -> UserDefaults {
