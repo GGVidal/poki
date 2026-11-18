@@ -1,0 +1,126 @@
+import SwiftUI
+import XCTest
+@testable import Poki
+
+@MainActor
+final class SigningPageTests: XCTestCase {
+    /// Settings › Signing & Updates and the page under it, read as a person reads them with an update
+    /// waiting and the signing about to end: every word is in Poki's language, and none of them is a
+    /// release channel's name or a word only the maintainers use.
+    func testSigningPagesUseThePersonsLanguageAndNoInternalWords() async throws {
+        try XCTSkipUnless(Bundle.main.preferredLocalizations.first == "en", "Requires iOS app language English (-AppleLanguages (en))")
+        let language = AppLocalization.shared.preference
+        let hooks = ["pokiLatest": "newer", "pokiSigningDays": 1.0, "pokiSignedIn": true] as [String: Any]
+        hooks.forEach { UserDefaults.standard.set($1, forKey: $0) }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let covered = scene.windows.filter { !$0.accessibilityElementsHidden }
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.screen.bounds
+        covered.forEach { $0.accessibilityElementsHidden = true }
+        defer {
+            window.isHidden = true
+            covered.forEach { $0.accessibilityElementsHidden = false }
+            AppLocalization.shared.preference = language
+            hooks.keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+        }
+        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
+        await app.signer.checkLatest()
+        XCTAssertTrue(app.signer.updateAvailable, "the simulator's newer build is known")
+        let output = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SigningPageEvidence")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let internalWords = ["Beta", "anisette", "GitHub", "R2", "https://", "headers", "Signing Options", "Set up Poki", "Renew in"]
+        let titles = ["en": "Signing & Updates", "zh-Hans": "签名与更新", "zh-Hant": "簽署與更新"]
+        for options in [false, true] {
+            for preference in ["en", "zh-Hans", "zh-Hant"] {
+                AppLocalization.shared.preference = preference
+                let controller = UIHostingController(rootView:
+                    SigningReviewView(options: options).environment(app))
+                window.rootViewController = controller
+                window.makeKeyAndVisible()
+                window.layoutIfNeeded()
+                CATransaction.flush()
+                var words = PageWords()
+                var source = ""
+                let deadline = CACurrentMediaTime() + 10
+                repeat {
+                    try await Task.sleep(for: .milliseconds(200))
+                    source = await Task.detached {
+                        var code: NSString?
+                        return PKInProcess.shared().sourceXML(nil, code: &code) ?? ""
+                    }.value
+                    words = try PageWords(source)
+                } while words.all.count < 4 && CACurrentMediaTime() < deadline
+                let name = "\(options ? "options" : "signing")-\(preference)"
+                try source.write(to: output.appendingPathComponent("\(name).xml"), atomically: true, encoding: .utf8)
+                let image = await Task.detached {
+                    var code: NSString?
+                    return PKInProcess.shared().screenshot(&code)
+                }.value
+                try XCTUnwrap(image).write(to: output.appendingPathComponent("\(name).png"))
+
+                XCTAssertGreaterThanOrEqual(words.all.count, 4, "\(name): the page shows its rows")
+                if !options { XCTAssertTrue(words.all.contains(titles[preference]!), "\(name): the page has the name of its row in Settings") }
+                for word in internalWords {
+                    let found = words.all.filter { $0.localizedCaseInsensitiveContains(word) }
+                    XCTAssertEqual(found, [], "\(name): “\(word)” is not a word for the person")
+                }
+                if preference != "en" {
+                    XCTAssertEqual(words.leftInEnglish, [], "\(name): every word is in Poki's language")
+                }
+            }
+        }
+    }
+}
+
+private struct SigningReviewView: View {
+    let options: Bool
+
+    var body: some View {
+        NavigationStack {
+            if options {
+                SigningOptionsPage()
+            } else {
+                SigningUpdatesPage()
+            }
+        }
+        .environment(\.locale, AppLocalization.locale)
+    }
+}
+
+/// What the page says: every label, value and placeholder under the window.
+private final class PageWords: NSObject, XMLParserDelegate {
+    private(set) var all: [String] = []
+
+    override init() {}
+
+    convenience init(_ source: String) throws {
+        self.init()
+        let parser = XMLParser(data: Data(source.utf8))
+        parser.delegate = self
+        guard parser.parse() else {
+            throw parser.parserError ?? NSError(domain: "SigningPageTests", code: 1)
+        }
+    }
+
+    /// Names that stay as they are in every language, and the Apple ID as it was typed.
+    private static let names = ["Poki", "Apple", "ID", "iPhone", "Mac", "MB"]
+
+    var leftInEnglish: [String] {
+        all.filter { text in
+            let rest = Self.names.reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
+            return rest.range(of: "[A-Za-z]{2,}", options: .regularExpression) != nil
+        }
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                qualifiedName: String?, attributes: [String: String]) {
+        // iOS names its own parts (the toolbar, the scroll bar) in the iPhone's language, not Poki's.
+        let systemParts = ["XCUIElementTypeApplication", "XCUIElementTypeWindow", "XCUIElementTypeToolbar"]
+        guard !systemParts.contains(elementName), attributes["label"]?.contains("scroll bar") != true else { return }
+        for key in ["label", "value", "placeholderValue"] {
+            if let text = attributes[key], !text.isEmpty, !all.contains(text) { all.append(text) }
+        }
+    }
+}

@@ -171,9 +171,7 @@ struct PokiDetailsView: View {
                 case .agents:
                     AgentsAndRelayView(path: $path)
                 case .updates:
-                    Form { SigningSection() }
-                        .navigationTitle(AppLocalization.text("Signing & Updates"))
-                        .navigationBarTitleDisplayMode(.inline)
+                    SigningUpdatesPage()
                 case .approvals:
                     ApprovalsSettingsView()
                 case .appearance:
