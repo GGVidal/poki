@@ -75,7 +75,9 @@ impl Signer {
         store::save(&self.account)
     }
 
-    pub fn signed_in(&self) -> bool { self.account.session.is_some() }
+    pub fn signed_in(&self) -> bool { self.account.session.is_some() && !self.account.needs_reauth }
+
+    pub fn needs_reauth(&self) -> bool { self.account.needs_reauth }
 
     /// Keeps the anisette server that worked (the client may have moved to a fallback).
     fn remember_anisette(&mut self) {
@@ -123,6 +125,7 @@ impl Signer {
                 self.pending = None;
                 let _ = store::clear_pending();
                 self.account.clear_rate_limit();
+                self.account.needs_reauth = false;
                 self.remember_anisette();
                 self.account.session = Some(session);
                 self.account.password = keep_password.then(|| password.to_string());
@@ -156,6 +159,7 @@ impl Signer {
                 self.pending = None;
                 let _ = store::clear_pending();
                 self.account.clear_rate_limit();
+                self.account.needs_reauth = false;
                 self.remember_anisette();
                 self.account.password = active.keep_password.then(|| active.password_str().to_string());
                 self.account.session = Some(session);
@@ -171,6 +175,9 @@ impl Signer {
                 if gsa::is_incomplete_session(&e) {
                     self.pending = None;
                     let _ = store::clear_pending();
+                    self.account.needs_reauth = true;
+                    self.account.xcode_token = None;
+                    store::save(&self.account)?;
                 } else {
                     let _ = store::save_pending(&active);
                     self.pending = Some(active);
@@ -256,6 +263,9 @@ impl Signer {
             }
             self.pending = None;
             let _ = store::clear_pending();
+        }
+        if self.account.needs_reauth {
+            return Err(gsa::incomplete_session());
         }
         if let Some(t) = &self.account.xcode_token {
             if t.valid_for(600) {
@@ -618,6 +628,9 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
 #[cfg(feature = "device")]
 /// Signs Poki again for a phone this computer set up and reinstalls it (an upgrade keeps data).
 pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Result<keeper::Record> {
+    if signer.needs_reauth() {
+        return Err(gsa::incomplete_session());
+    }
     let rec = keeper::get(udid)?.ok_or_else(|| Error::msg("This computer did not set up that iPhone."))?;
     let result: Result<keeper::Record> = async {
         let phone = pick_phone(Some(udid)).await?;
@@ -653,7 +666,7 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
 #[cfg(feature = "device")]
 /// Renews every phone that is due. Returns (udid, result) pairs.
 pub async fn renew_due(signer: &mut Signer, reporter: &Reporter) -> Vec<(String, Result<keeper::Record>)> {
-    if signer.is_rate_limited() || signer.pending().is_some() {
+    if signer.is_rate_limited() || signer.pending().is_some() || signer.needs_reauth() {
         return vec![];
     }
     let prev_caller = signer.caller;

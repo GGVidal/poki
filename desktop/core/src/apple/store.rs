@@ -159,6 +159,10 @@ pub struct Account {
     pub anisette: Option<Source>,
     #[serde(default)]
     pub rate_limited_until: Option<i64>,
+    /// Apple accepted a code but never opened the session. Nothing signs in again by itself, with
+    /// the saved password or otherwise, until the person signs in by hand.
+    #[serde(default)]
+    pub needs_reauth: bool,
 }
 
 /// Cooldown window after Apple rate-limits sign-in or code requests ("Wait about an hour").
