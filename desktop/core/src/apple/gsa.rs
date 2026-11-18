@@ -2031,4 +2031,127 @@ mod rate_limit_regressions {
             });
         });
     }
+
+    #[test]
+    fn expired_saved_session_after_keyless_409_blocks_teams_and_renewal_until_manual_sign_in() {
+        let (_home_guard, _dir) = crate::paths::test_home();
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior {
+                apptokens_ec: -22406,
+                include_session_keys_on_409: false,
+                ..MockBehavior::default()
+            })
+            .await;
+
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            signer.account.session = Some(Session {
+                apple_id: "person@example.com".into(),
+                adsid: "000123-abc".into(),
+                gs_idms_token: "expired-tok".into(),
+                first_name: "Test".into(),
+                last_name: "Person".into(),
+                sk: vec![7u8; 32],
+                c: b"cookie-bytes".to_vec(),
+            });
+            signer.account.password = Some("correct-horse-battery".into());
+            store::save(&signer.account).unwrap();
+
+            #[cfg(feature = "device")]
+            {
+                let due_rec = crate::keeper::Record {
+                    udid: "00008150-KEYLESS-DUE".into(),
+                    phone_name: "Test iPhone".into(),
+                    ios: "27.0".into(),
+                    apple_id: "person@example.com".into(),
+                    team_id: "TEAM123".into(),
+                    team_name: "Test Team".into(),
+                    team_is_free: true,
+                    bundle_id: "nz.zheha.poki.TEAM123".into(),
+                    app_group: "group.nz.zheha.poki.TEAM123".into(),
+                    version: "0.4.5".into(),
+                    build: "1".into(),
+                    release_tag: "app-0.4.5".into(),
+                    signed_at: now - 6 * 86_400,
+                    profile_expires_at: now + 86_400,
+                    last_checked_at: None,
+                    last_error: None,
+                    wifi_address: None,
+                    pairing_handed_off: false,
+                };
+                crate::keeper::put(due_rec).unwrap();
+            }
+
+            // 1. Expired saved session + saved password triggers 2FA challenge with no sk/c.
+            let Err(Error::NeedsCode(pending)) = signer.token().await else {
+                panic!("expired session renewal must ask for a 2FA code");
+            };
+            assert_eq!(mock.counts.lock().unwrap().srp_complete, 1);
+            assert_eq!(mock.counts.lock().unwrap().total_codes_sent(), 1);
+
+            // 2. Person enters the valid 6-digit code; finish_sign_in asks to sign in again and clears Pending.
+            let finish_err = signer.finish_sign_in(*pending, "654321").await.unwrap_err().to_string();
+            assert!(
+                finish_err.to_lowercase().contains("sign in again"),
+                "keyless 409 verification must explicitly ask user to sign in again, got: {finish_err}"
+            );
+            assert!(signer.pending().is_none(), "consumed Pending must be cleared in memory");
+            assert!(store::load_pending().is_none(), "consumed Pending must be cleared in vault");
+
+            let baseline = mock.counts.lock().unwrap().clone();
+
+            // 3. Subsequent teams(), token(), and background renewal (in-memory and reloaded) must do 0 SRP or code requests.
+            let teams_res = signer.teams().await;
+            let token_res = signer.token().await;
+            let mut reloaded = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let reloaded_teams_res = reloaded.teams().await;
+            #[cfg(feature = "device")]
+            let (due_runs, direct_renew_res) = (
+                crate::setup::renew_due(&mut reloaded, &crate::Reporter::silent()).await,
+                crate::setup::renew(&mut reloaded, "00008150-KEYLESS-DUE", &crate::Reporter::silent()).await,
+            );
+
+            let after = mock.counts.lock().unwrap().clone();
+            assert_eq!(
+                after.srp_init - baseline.srp_init,
+                0,
+                "teams/token/renewal after keyless 409 must trigger 0 SRP init exchanges"
+            );
+            assert_eq!(
+                after.srp_complete - baseline.srp_complete,
+                0,
+                "teams/token/renewal after keyless 409 must trigger 0 SRP complete exchanges"
+            );
+            assert_eq!(
+                after.total_codes_sent() - baseline.total_codes_sent(),
+                0,
+                "teams/token/renewal after keyless 409 must trigger 0 2FA code requests"
+            );
+            assert!(!signer.signed_in(), "account must not appear signed in before user manually signs in");
+            assert!(!reloaded.signed_in(), "reloaded account must persist manual sign-in requirement");
+            assert!(teams_res.unwrap_err().to_string().to_lowercase().contains("sign in again"));
+            assert!(token_res.unwrap_err().to_string().to_lowercase().contains("sign in again"));
+            assert!(reloaded_teams_res.unwrap_err().to_string().to_lowercase().contains("sign in again"));
+            #[cfg(feature = "device")]
+            {
+                assert!(due_runs.is_empty(), "renew_due must stay quiet while manual sign-in is required");
+                assert!(direct_renew_res.unwrap_err().to_string().to_lowercase().contains("sign in again"));
+                assert_eq!(crate::keeper::get("00008150-KEYLESS-DUE").unwrap().unwrap().last_error, None);
+            }
+
+            // 4. Cancelling an unfinished manual sign-in keeps reauth required; completing manual sign-in restores normal operation.
+            *mock.behavior.lock().unwrap() = MockBehavior::default();
+            let _cancelled = reloaded.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            reloaded.cancel_sign_in().unwrap();
+            let after_cancel = mock.counts.lock().unwrap().clone();
+            assert!(!reloaded.signed_in(), "cancelling an unfinished manual sign-in must keep reauth required");
+            assert!(reloaded.teams().await.is_err());
+            assert_eq!(mock.counts.lock().unwrap().srp_complete - after_cancel.srp_complete, 0);
+
+            let manual_pending = reloaded.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            reloaded.finish_sign_in(manual_pending, "654321").await.unwrap();
+            assert!(reloaded.signed_in(), "completing manual sign-in must clear reauth requirement");
+            assert_eq!(reloaded.token().await.unwrap().token, "xcode-auth-token-ok");
+        });
+    }
 }
