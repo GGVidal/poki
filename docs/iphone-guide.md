@@ -1,5 +1,7 @@
 # Poki iPhone App Guide
 
+English | [简体中文](iphone-guide.zh-CN.md) | [繁體中文](iphone-guide.zh-TW.md) | [日本語](iphone-guide.ja.md) | [한국어](iphone-guide.ko.md) | [Español](iphone-guide.es.md)
+
 This guide covers full system requirements, installation details, updating, common questions, known limits, and task examples for the Poki iPhone app.
 
 See what changed in each version in [CHANGELOG.md](../CHANGELOG.md).
@@ -136,4 +138,4 @@ Poki's code is open source under the [AGPL-3.0-only license](../LICENSE).
 
 The Poki bear, the app icon, and Poki's other artwork are not covered by that license. You can use screenshots to write about Poki; a fork needs its own name and artwork. See [BRAND.md](../BRAND.md).
 
-Open-source dependencies and third-party assets retain their respective licenses; see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). To contribute, see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Copyright (c) 2026 Joseph Zhou (周瑟夫) and contributors. Open-source dependencies and third-party assets retain their respective licenses; see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). To contribute, see [CONTRIBUTING.md](../CONTRIBUTING.md).
