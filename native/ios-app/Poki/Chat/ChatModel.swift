@@ -562,7 +562,8 @@ final class ChatModel {
             began("direct", prepared.provider, prepared.model, task: prepared.text)
             await run(client, instructions: instructions, delivered: prepared.you.id, token: token)
             let current = runToken == token
-            if !current { app.finishTask() }
+            // The direct engine does not say when its task ends: the quiet wait finishes the run.
+            if !current { app.finishTask() } else { app.chatReleasesRun() }
             logEnd("direct", outcome: nil, session: prepared.runSession, text: prepared.text, stopped: !current)
             if current { running = false; awaitingModel = false }
         case .pi(let piModel):
