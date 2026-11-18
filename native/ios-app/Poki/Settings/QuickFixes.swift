@@ -43,6 +43,8 @@ enum QuickFixes {
         case downloaded
         /// The provider's model named in the settings.
         case provider
+        /// A model of one of the owner's model accounts (`accountPick`).
+        case account
 
         var raw: String {
             switch self {
@@ -50,6 +52,7 @@ enum QuickFixes {
             case .apple: "apple"
             case .downloaded: "downloaded"
             case .provider: "provider"
+            case .account: "account"
             }
         }
 
@@ -59,6 +62,7 @@ enum QuickFixes {
             case "apple": self = .apple
             case "downloaded": self = .downloaded
             case "provider": self = .provider
+            case "account": self = .account
             default: return nil
             }
         }
@@ -73,6 +77,35 @@ enum QuickFixes {
             return settings.hasModel && providerDecider != nil ? .provider : .none
         }
         set { UserDefaults.standard.set(newValue.raw, forKey: choiceKey) }
+    }
+
+    private static let accountProviderKey = "quickFixes.account.provider"
+    private static let accountModelKey = "quickFixes.account.model"
+
+    /// The account and its model that decide while the pick is an account's (set on the account's
+    /// own page, Settings › Models › the account › Decisions).
+    static var accountPick: (provider: ModelProvider, model: String)? {
+        guard let raw = UserDefaults.standard.string(forKey: accountProviderKey), let provider = ModelProvider(rawValue: raw),
+              let model = UserDefaults.standard.string(forKey: accountModelKey), !model.isEmpty else { return nil }
+        return (provider, model)
+    }
+
+    /// The model of `provider` that is the decision model now, if one of its models is.
+    static func accountModel(_ provider: ModelProvider) -> String? {
+        guard choice == .account, let pick = accountPick, pick.provider == provider else { return nil }
+        return pick.model
+    }
+
+    /// Picks an account's model as the decision model; nil turns it off when this account's was.
+    static func pickAccount(_ provider: ModelProvider, model: String?) {
+        if let model {
+            UserDefaults.standard.set(provider.rawValue, forKey: accountProviderKey)
+            UserDefaults.standard.set(model, forKey: accountModelKey)
+            choice = .account
+        } else if accountModel(provider) != nil {
+            choice = .none
+        }
+        ModelKeys.saved += 1
     }
 
     /// One row of the Decision Model menu.
@@ -91,6 +124,7 @@ enum QuickFixes {
         var out = [Option(choice: .none, name: AppLocalization.text("Off"))]
         if OnDeviceDecisions.appleAvailable { out.append(Option(choice: .apple, name: AppLocalization.text("Apple Intelligence"))) }
         if let name = OnDeviceDecisions.downloadedName { out.append(Option(choice: .downloaded, name: name)) }
+        if choice == .account, let account = accountOption { out.append(account) }
         let settings = settings
         if providerDecider != nil {
             var models = DeciderSettings.models(settings.provider)
@@ -109,7 +143,14 @@ enum QuickFixes {
         case .apple: return all.first { $0.choice == .apple } ?? all[0]
         case .downloaded: return all.first { $0.choice == .downloaded } ?? all[0]
         case .provider: return all.first { $0.choice == .provider && $0.model == settings.modelInUse && settings.hasModel } ?? all[0]
+        case .account: return all.first { $0.choice == .account } ?? all[0]
         }
+    }
+
+    /// The account's model as a row of the menu, while it is the pick and its account is still there.
+    private static var accountOption: Option? {
+        guard let pick = accountPick, ModelAccounts.isSetUp(pick.provider) else { return nil }
+        return Option(choice: .account, model: pick.model, name: AccountDecisions.name(pick.provider, pick.model))
     }
 
     static func pick(_ option: Option) {
@@ -128,6 +169,7 @@ enum QuickFixes {
         case .apple: return OnDeviceDecisions.apple
         case .downloaded: return OnDeviceDecisions.downloaded
         case .provider: return settings.hasModel ? providerDecider : nil
+        case .account: return accountPick.flatMap { AccountDecisions.decider($0.provider, model: $0.model) }
         }
     }
 
@@ -194,30 +236,6 @@ enum OnDeviceDecisions {
     }
 }
 
-/// The two speed-ups being tried (General › Testing Options), both on unless turned off there.
-enum SpeedOptions {
-    static let appNamesKey = "testing.appNames"
-    static let quickReadKey = "testing.quickRead"
-    static var appNames: Bool { UserDefaults.standard.object(forKey: appNamesKey) as? Bool ?? true }
-    static var quickRead: Bool { UserDefaults.standard.object(forKey: quickReadKey) as? Bool ?? true }
-}
-
-/// General › Testing Options: the switches for the two speed-ups.
-struct SpeedTestingSection: View {
-    @AppStorage(SpeedOptions.appNamesKey) private var appNames = true
-    @AppStorage(SpeedOptions.quickReadKey) private var quickRead = true
-    var body: some View {
-        Section {
-            Toggle("Apps by Name", isOn: $appNames)
-            Toggle("Read When the Screen Settles", isOn: $quickRead)
-        } header: {
-            Text("Speed")
-        } footer: {
-            Text("On by default. Apps by Name lets an agent open an app by its name and keep it as the app it works in. Read When the Screen Settles reads the screen as soon as it has changed and holds still after an app opens, a swipe or a button, in place of a fixed pause. Changes count from the next step.")
-        }
-    }
-}
-
 /// Settings › Models: the Decision Model menu, and the way to the providers' page. `picked` is the
 /// page's, so the In Use card above shows the same pick.
 struct DecisionModelRows: View {
@@ -237,6 +255,8 @@ struct DecisionModelRows: View {
             .onAppear(perform: refresh)
             // The downloaded model joins the menu when its download ends, and leaves it when removed.
             .onChange(of: BacktapeModel.shared.state) { _, _ in refresh() }
+            // An account's own page picked or dropped its model as the decision model.
+            .onReceive(NotificationCenter.default.publisher(for: ModelKeys.changed)) { _ in refresh() }
     }
 
     /// Back from the providers' page, or a download ended: the models, and the pick, may have changed.
