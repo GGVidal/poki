@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/images/poki-icon.png" width="72" height="72" alt="Poki icon">
+  <img src="docs/images/poki-icon.png" width="64" height="64" alt="Poki icon">
 </p>
 
 <h1 align="center">Poki는 당신의 iPhone을 당신처럼 씁니다</h1>
 
 <p align="center">
-  <img src="docs/images/poki-home.gif" width="720" alt="Poki 공식 웹사이트 홈페이지 애니메이션">
+  <img src="docs/images/poki-home.gif" width="500" alt="Poki 공식 웹사이트 홈페이지 애니메이션">
 </p>
 
 <p align="center">
@@ -19,158 +19,71 @@
   <a href="https://github.com/JosssphZhou/poki/stargazers"><img src="https://img.shields.io/github/stars/JosssphZhou/poki" alt="GitHub stars"></a>
   <a href="https://github.com/JosssphZhou/poki/forks"><img src="https://img.shields.io/github/forks/JosssphZhou/poki" alt="GitHub forks"></a>
   <a href="https://github.com/JosssphZhou/poki/issues"><img src="https://img.shields.io/github/issues/JosssphZhou/poki" alt="GitHub issues"></a>
-  <a href="https://github.com/JosssphZhou/poki/releases/tag/app-0.4.0-beta.1"><img src="https://img.shields.io/badge/Poki_App-0.4.0_Beta-blue" alt="Poki App 0.4.0 Beta"></a>
+  <a href="https://github.com/JosssphZhou/poki/releases"><img src="https://img.shields.io/badge/Poki_App-0.4.4_Beta-blue" alt="Poki App 0.4.4 Beta"></a>
   <img src="https://img.shields.io/badge/platform-iOS%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Platform: iOS, macOS and Windows">
 </p>
 <!-- badges:end -->
 
-Poki는 iPhone을 조작하는 앱입니다. 화면을 읽고 실제 앱에서 탭, 입력, 스크롤을 수행합니다. 승인을 요청하는 방식은 선택할 수 있지만, 결제와 삭제, Wallet에서의 작업은 항상 확인을 받습니다.
+<p align="center">
+  <strong>Poki가 도움이 되었다면 ★ Star를 클릭해 프로젝트를 응원해 주세요.</strong>
+</p>
 
-**Poki 앱**은 iPhone 자체에서 실행됩니다. 채팅으로 작업을 부탁하면 다른 앱에서 수행합니다. Mac이나 Windows PC에서 한 번 설치하면 이후 작업은 컴퓨터 없이 iPhone에서 실행됩니다.
+## Poki란 무엇인가요
 
-버전별 변경 사항은 [CHANGELOG.md](CHANGELOG.md)를 확인하세요.
+Poki는 사용자를 대신해 iPhone 전체를 조작하는 오픈소스 iPhone 에이전트입니다. Poki 앱은 iPhone에서 직접 실행되며, 사용자의 모델 계정으로 화면을 읽고 실제 앱에서 탭, 입력, 스크롤을 수행합니다. 승인 방식은 직접 선택할 수 있으며 결제, 삭제, Wallet 작업은 항상 확인을 받습니다.
 
-## iPhone에 Poki 설치하기
+## 왜 Poki인가요
 
-처음 설치할 때 Mac 또는 Windows PC가 필요합니다.
+- **일상적인 작업을 위해 여러 앱을 번갈아 누를 필요가 없습니다.** 채팅으로 부탁하거나 동작 버튼을 길게 누르고 Siri를 호출해 내장 브라우저 검색, 내일 날씨 확인, 메모 작성을 맡길 수 있습니다. iPhone Duo에서는 Split View로 두 앱을 나란히 조작합니다.
+- **반복 작업을 탭 한 번이나 음성으로 실행합니다.** 매일 같은 단계를 되풀이하는 대신 홈 화면에 기억된 루틴을 탭하거나 음성 대화를 시작하세요. 각 단계의 진행 상황은 Dynamic Island에 표시됩니다.
+- **컴퓨터를 켜 두지 않고도 실제 iPhone을 자동화합니다.** Mac이나 Windows PC에서 한 번 설치하면 컴퓨터 없이 iPhone 단독으로 실행되며, 승인이 필요한 단계에서는 잠금 화면이나 Dynamic Island에서 멈추고 확인을 기다립니다.
 
-- **Mac에서는** 에이전트에게 설치를 맡기거나 macOS용 Poki Setup을 내려받아 창의 안내를 따르세요.
-- **Windows에서는** Windows용 Poki Setup을 내려받아 안내를 따르세요. USB로 iPhone을 인식할 수 있도록 Apple Devices 또는 iTunes를 먼저 설치하세요. 에이전트가 Poki Setup에 포함된 명령줄 도구를 사용할 수도 있습니다.
-- **설치 후에는** 컴퓨터 없이 iPhone에서 작업을 실행합니다. 무료 Apple 계정의 서명은 7일간 유효하며, 컴퓨터에서 Poki Setup을 계속 실행하면 갱신할 수 있습니다. [자주 묻는 질문](#자주-묻는-질문)을 참고하세요.
+## 사용 방법
 
-### 준비할 것
+### iPhone에 Poki 설치하기
+
+1. **Mac 또는 Windows PC에서 한 번 설치합니다.** USB 케이블로 iPhone을 연결하고 잠금을 해제한 뒤(무료 Apple 계정 가능), Claude Code나 Codex 같은 코딩 에이전트에게 아래 문장을 전달하세요.
+
+   ```text
+   Install Poki on my iPhone from https://github.com/JosssphZhou/poki
+   ```
+
+   또는 [GitHub Releases](https://github.com/JosssphZhou/poki/releases)에서 macOS용(`.dmg`) 또는 Windows용(`.exe`) Poki Setup을 내려받아 안내를 따르세요.
+2. **연결과 모델 계정을 설정합니다.** iOS 안내에 따라 신뢰, 개발자 모드, 자동화 모드를 켜고 `10.7.0.1`을 iPhone으로 라우팅하는 로컬 VPN 앱(예: 무료 LocalDevVPN)을 설치합니다. 이어서 ChatGPT Plus/Pro로 로그인하거나 Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go API 키 또는 OpenAI 호환 서버를 등록하세요.
+3. **첫 작업을 실행합니다.** Poki를 열고 다음 메시지를 보냅니다.
+
+   ```text
+   Create a new note in Notes titled "Poki Demo" with these three lines: Milk, Eggs, Coffee. Open the note when finished. Leave existing notes unchanged.
+   ```
+
+   완료 후 메모 앱을 열어 "Poki Demo" 메모가 세 줄의 내용과 함께 생성되었는지 확인하세요.
+
+<details>
+<summary>요구 사항, 업데이트, 자주 묻는 질문 및 가이드</summary>
 
 | 항목 | 요구 사항 |
 | --- | --- |
-| iPhone | iOS 18 이상인 iPhone XS, XR, SE(2세대) 또는 이후 기종. 실제 기기 테스트는 iOS 27이 설치된 iPhone에서 진행했습니다. |
-| 컴퓨터 | macOS 14 이상인 Mac, 또는 Apple Devices나 iTunes가 설치된 Windows PC(x64). Mac에서 에이전트가 설치 스크립트를 사용하려면 Node.js 24 이상도 필요합니다. |
-| 케이블과 계정 | USB 데이터 케이블과 Apple 계정. 무료 계정의 서명은 7일간 유효하며 Poki Setup이 갱신할 수 있습니다. |
-| 연결 | 10.7.0.1을 iPhone 자체로 연결하는 VPN 앱. App Store의 무료 LocalDevVPN이나 Poki의 안내에 따라 설정한 Karing, Shadowrocket을 사용할 수 있습니다. |
-| 모델 계정 | 본인 계정이 필요합니다. ChatGPT Plus 또는 Pro 로그인이 간편한 시작 방법입니다. Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter의 API 키나 자체 OpenAI 호환 서버도 사용할 수 있습니다. Claude 구독으로는 로그인할 수 없으므로 Anthropic API 키를 사용하세요. |
+| iPhone | iOS 18 이상(iPhone XS, XR, SE 2세대 이상 및 iPadOS 18+). 실제 기기 테스트는 iOS 27에서 진행했습니다. |
+| 컴퓨터 | macOS 14+ Mac(에이전트 설치 시 Node.js 24+ 필요) 또는 Apple Devices / iTunes가 설치된 Windows PC(x64). |
+| 케이블 및 계정 | USB 데이터 케이블과 Apple 계정. 무료 계정의 7일 서명은 Poki Setup이나 Poki 앱에서 갱신할 수 있습니다. |
+| 연결 | `10.7.0.1`을 iPhone으로 돌려보내는 로컬 VPN 앱(LocalDevVPN, Karing, Shadowrocket). |
+| 모델 계정 | ChatGPT Plus/Pro 로그인, API 키(Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter, OpenCode Go) 또는 OpenAI 호환 서버. |
 
-iOS 27 이상에서는 네이티브 서비스로 iPhone을 조작합니다. iOS 18부터 26까지는 XCTest 세션을 사용하므로 iPhone 개발자 설정에서 UI 자동화를 켜야 합니다. iPadOS 18 이상인 iPad에도 설치할 수 있습니다.
+- 전체 설치 안내, 업데이트, FAQ, 알려진 제한 및 로드맵: [Poki iPhone 앱 가이드](docs/iphone-guide.md)
+- 버전별 변경 사항: [CHANGELOG.md](CHANGELOG.md)
+- 에이전트 설치 스킬 및 데스크톱 도우미: [install-poki 스킬](skills/install-poki/SKILL.md) 및 [Poki Setup](desktop/README.md)
+- 검증 기록, 제한 사항 및 릴리스 채널: [검증 및 제한](docs/verification.md) 및 [릴리스 채널](docs/release-channels.md)
+- 기존 컴퓨터 연동 도구(업데이트 중단): [Poki MCP 및 Poki Agent](docs/poki-mcp.md)
 
-iPhone 앱에는 본인의 모델 계정이 필요합니다. 코딩 에이전트의 구독이 Poki에 자동으로 연결되지는 않습니다. 기존 에이전트에서 Poki MCP만 사용하려면 [MCP 설치 안내](docs/install.md)를 따르세요. MCP는 해당 클라이언트의 모델 연결을 사용합니다.
+</details>
 
-### 원클릭 설치 (권장)
+## 커뮤니티
 
-직접 할 일은 iPhone 연결과 잠금 해제, 안내에 따른 로그인, iPhone 권한, 로컬 연결, 모델 계정 설정뿐입니다.
+- **질문 및 아이디어:** [GitHub Discussions](https://github.com/JosssphZhou/poki/discussions)에 참여해 주세요.
+- **버그 제보 및 기능 제안:** [GitHub Issues](https://github.com/JosssphZhou/poki/issues)에 올려 주세요.
+- **코드 기여:** [CONTRIBUTING.md](CONTRIBUTING.md)를 참고해 주세요.
 
-Claude Code나 Codex 같은 에이전트에게 다음과 같이 요청하세요.
-
-```text
-https://github.com/JosssphZhou/poki 에서 내 iPhone에 Poki를 설치해 줘
-```
-
-에이전트는 [install-poki 스킬](skills/install-poki/SKILL.md)에 따라 `bin/install-iphone.mjs`를 실행해 자동화할 수 있는 단계를 처리합니다. 사용자는 Mac의 Poki Setup 창에서 Apple 계정 입력, iPhone에서 신뢰 선택, 개발자 모드 활성화, 개발자 신뢰, Poki 실행을 직접 합니다. 처음 열 때 자동화 모드를 요청하면 계속을 누르고 iPhone 암호를 입력하세요. 취소했다면 Poki를 다시 켜면 요청이 다시 표시됩니다. 직접 해야 할 단계마다 에이전트가 안내합니다. 무료 Apple 계정도 사용할 수 있습니다.
-
-현재 설치 프로그램은 Beta를 선택합니다. 이전 Stable, Alpha, Pre-alpha 설정도 Beta로 처리하며, Beta가 없으면 중단합니다. 이미 설치한 구버전 Poki Setup은 이전 선택 방식을 사용할 수 있으므로 이번 설치에 표시되는 버전을 확인하세요.
-
-Node.js 24가 없거나 Windows를 사용하나요? Poki Setup을 설치하면 같은 요청을 사용할 수 있습니다. 에이전트가 내장 명령줄 도구를 사용합니다. Poki Setup 메뉴에서도 요청문을 복사할 수 있습니다. Mac은 Poki > Copy Prompt for Your Agent, Windows는 Settings > Use an agent입니다.
-
-설치 프로그램이 릴리스 정보를 읽다가 GitHub에서 403 또는 429를 받으면, 같은 네트워크에서 공유하는 시간당 익명 요청 한도에 도달한 경우가 많습니다. 다른 네트워크나 프록시 서버로 다시 시도하거나 한 시간 기다리세요.
-
-### Poki Setup으로 설치하기
-
-설치 파일이 포함된 최신 [Beta 릴리스](https://github.com/JosssphZhou/poki/releases)에서 macOS용 Poki Setup(`.dmg`) 또는 Windows용(`.exe`, [ZhehanZhang](https://github.com/ZhehanZhang) 기여)을 내려받아 안내를 따르세요. 자세한 단계는 [Poki Setup](desktop/README.md)을 참고하세요.
-
-### 첫 작업 실행하기
-
-설치된 버전을 확인하고 로컬 연결과 모델 계정 설정을 마쳤다면 Poki에서 다음 요청을 보내세요.
-
-```text
-메모 앱에 제목이 "Poki Demo"인 새 메모를 만들고 Milk, Eggs, Coffee를 각각 한 줄씩 적어 주세요. 완료하면 해당 메모를 열어 주세요. 기존 메모는 변경하지 마세요.
-```
-
-메모 앱에서 제목이 "Poki Demo"이고 본문 세 줄이 각각 Milk, Eggs, Coffee인지 확인하세요. 완료 메시지만으로는 성공을 확인할 수 없습니다. 메모 앱이 없거나 설정이 끝나지 않았다면 먼저 해당 단계를 완료하세요. 중단 후 다시 시도하기 전에 메모가 이미 만들어졌는지 확인하세요.
-
-### 자주 묻는 질문
-
-**Windows에서도 설치할 수 있나요?** 네. Windows용 Poki Setup은 Mac 버전처럼 설치, 페어링, 서명 갱신을 지원합니다. PC가 iPhone을 인식하도록 Apple Devices 또는 iTunes를 먼저 설치하세요. [Poki Setup](desktop/README.md)을 참고하세요.
-
-**설치 후에도 컴퓨터가 필요한가요?** 작업 실행에는 필요하지 않습니다. Poki는 iPhone에서 독립적으로 작동합니다. 무료 Apple 계정이라면 컴퓨터에서 Poki Setup을 계속 실행해 서명을 갱신하거나, Poki에서 Apple 계정에 로그인해 iPhone이 직접 갱신하도록 할 수 있습니다. 로그인이 실패하면 컴퓨터의 Poki Setup을 사용하세요. [계속 실행해 둘 항목](skills/install-poki/SKILL.md#what-to-keep-running)을 참고하세요.
-
-**무료 Apple 계정도 되나요? 7일 제한은 무엇인가요?** 사용할 수 있지만 Apple이 발급하는 서명은 7일간만 유효합니다. Poki Setup이 실행 중이고 컴퓨터가 깨어 있으며 iPhone에 연결할 수 있으면, 6시간마다 확인해 유효 기간이 2일 이하인 앱의 서명을 갱신합니다. 갱신하지 않으면 만료 후 앱을 열 수 없으므로 Poki가 마지막 2일 동안 알려 줍니다. [유료 개발자 계정이 없는 경우](skills/install-poki/SKILL.md#no-paid-developer-account)를 참고하세요.
-
-**어떤 iPhone과 iOS가 필요한가요?** iOS 18 이상인 iPhone XS, XR, SE(2세대) 또는 이후 기종이며, iPadOS 18 이상인 iPad에도 설치할 수 있습니다. 실제 기기 테스트는 iOS 27에서 진행했습니다. 다른 제어 방식을 사용하는 iOS 18부터 26까지는 실제 iPhone에서 아직 검증하지 않았습니다. [검증 결과와 알려진 제한](docs/verification.md)을 참고하세요.
-
-**내 모델 계정이 필요한가요?** 네. ChatGPT Plus 또는 Pro로 로그인하거나 Anthropic, OpenAI, Gemini, DeepSeek, OpenRouter의 API 키 또는 자체 OpenAI 호환 서버를 사용하세요. 음성 대화에는 음성 모델 키도 필요합니다. [준비할 것](#준비할-것)을 참고하세요.
-
-**중국 본토 네트워크 등에서 업데이트가 보이지 않으면 어떻게 하나요?** Poki는 GitHub에서 업데이트를 확인합니다. 일부 네트워크는 접속할 수 없거나 403, 429 요청 제한에 걸립니다. 다른 네트워크나 프록시 서버를 사용하거나, 컴퓨터의 Poki Setup에서 Renew로 업데이트하세요. [Poki 업데이트하기](#poki-업데이트하기)를 참고하세요.
-
-**내 iPhone의 내용을 변경하나요? 먼저 물어보나요?** 실제 앱에서 메시지 전송 등 요청한 작업을 수행하며, 화면 내용은 설정한 모델 서비스로 전송됩니다. 결제와 삭제, Wallet 작업은 항상 확인을 받습니다. 메시지 전송이나 암호 입력 같은 다른 민감한 단계는 설정 > 승인에서 확인 방법이나 확인 여부를 선택할 수 있습니다. [알려진 문제](#알려진-문제)를 참고하세요.
-
-## Poki 업데이트하기
-
-- **iPhone에서 업데이트.** 현재 빌드에서는 설정 > 서명 및 업데이트를 여세요. 구버전에서는 연결 아래에 있을 수 있습니다. 새 빌드가 있으면 다운로드하고 설치할 수 있습니다. 먼저 로그인을 요청한다면 컴퓨터에서 설치했기 때문에 iPhone에 Apple 계정이 아직 없는 상태입니다. 설치할 때 쓴 계정으로 로그인하거나 컴퓨터에서 업데이트하세요.
-- **컴퓨터에서 업데이트.** Poki Setup의 Renew는 선택한 채널의 최신 빌드를 기존 앱 위에 설치합니다. Mac에서는 에이전트에게 “내 iPhone의 Poki를 업데이트해 줘”라고 요청할 수도 있습니다. install-poki 스킬은 설치된 버전과 서명 정보를 먼저 확인하는 별도 업데이트 절차를 제공합니다.
-- 업데이트가 “Finishing the update”에서 멈추면 앱 전환기에서 Poki를 종료한 뒤 다시 열고 설정에서 버전을 확인하세요. 버전이 바뀌지 않았다면 컴퓨터의 Poki Setup으로 업데이트하세요. 업데이트 문제를 해결하려고 Poki를 삭제하지 마세요. 대화도 함께 삭제됩니다.
-
-채널과 Alpha에서 Beta로 빌드가 이동하는 절차는 [릴리스 채널](docs/release-channels.md)을 참고하세요.
-
-## 알려진 문제
-
-- Poki는 실제 iPhone을 조작하며 요청한 메시지 전송이나 결제를 실행합니다. 화면 내용은 설정한 모델 서비스로 전송됩니다.
-- iPhone에서 Apple 계정에 로그인할 수 없으면 컴퓨터의 Poki Setup으로 서명을 갱신하고 앱을 업데이트하세요.
-- 실제 기기 지원은 중국어 인터페이스와 세로 방향의 iPhone에서만 검증했습니다. 가로 방향은 지원하지 않습니다.
-- 이 릴리스는 iOS 27 미만의 실제 iPhone이나 iPad에서 테스트하지 않았습니다. 오래되거나 작은 iPhone에서는 입체 곰과 홈 화면 애니메이션으로 발열이나 지연이 생길 수 있습니다. 저전력 모드나 동작 줄이기를 켜면 곰을 정지 이미지로 표시합니다.
-- 무료 Apple 계정의 서명은 7일간 유효합니다. 컴퓨터의 Poki Setup이 iPhone에 연결할 수 있도록 유지하거나 만료 전에 수동 갱신하세요.
-- GitHub 릴리스 조회가 403 또는 429로 실패할 수 있으며, 여러 사람이 네트워크를 공유할 때 흔히 발생합니다. 네트워크나 프록시 서버를 바꾸거나 한 시간 기다리세요.
-
-더 많은 제한과 테스트 결과는 [검증 결과와 알려진 제한](docs/verification.md)을 참고하세요.
-
-## 작업 실행해 보기
-
-Poki를 열고 “내일 날씨를 확인해서 우산이 필요한지 알려 줘” 같은 작업을 입력하거나 홈 화면에서 앱을 눌러 시작하세요. Poki가 화면의 앱을 조작하고 Dynamic Island와 잠금 화면에 각 단계를 표시하며 설정에 따라 승인을 요청합니다.
-
-Poki를 열지 않고 부를 수도 있습니다. 동작 버튼을 길게 눌러 대화하거나 단축어와 Siri에서 Talk to Poki 또는 Send Task to Poki를 사용하세요. 이 방식으로 보낸 작업의 결과는 알림으로 도착합니다.
-
-> **참고:** Poki는 실제 iPhone을 제어합니다. 메시지 전송이나 결제를 요청하면 실행합니다.
-
-## 로드맵
-
-날짜를 약속하는 일정이 아니라 앞으로의 방향입니다. 출시된 기능은 [CHANGELOG.md](CHANGELOG.md)에 기록되어 있습니다.
-
-**0.4.0 Beta에 출시됨**
-
-- 설정 후 컴퓨터 없이 작업을 실행하는 iPhone 앱과 잠금 화면 및 Dynamic Island에서의 승인.
-- 무료 Apple 계정으로 Mac 또는 Windows의 에이전트나 Poki Setup을 통한 설치.
-- iOS 27 이상의 네이티브 제어와 Poki 내장 브라우저에서의 웹 작업.
-- 입체 곰이 있는 새 홈 화면, 음성 대화, 동작 버튼, 대화 보관, 다크 모드.
-
-**진행 중**
-
-- 업데이트 다운로드를 더 안정적인 서버로 옮기고 GitHub는 예비 경로로 유지.
-- 여러 업데이트 채널을 하나로 통합.
-- 더 많은 인터페이스 언어.
-
-**계획됨**
-
-- 더 많은 iPhone, iOS 버전, 화면 언어를 실제 기기에서 검증.
-- 더 많은 모델 제공업체 지원.
-
-## 문서
-
-| 주제 | 문서 |
-| --- | --- |
-| 버전별 변경 사항 | [CHANGELOG.md](CHANGELOG.md) |
-| 에이전트로 iPhone 앱 설치 | [install-poki 스킬](skills/install-poki/SKILL.md) |
-| Mac 및 Windows용 Poki Setup | [Poki Setup](desktop/README.md) |
-| 릴리스 채널과 버전 승격 | [릴리스 채널](docs/release-channels.md) |
-| 테스트 결과, 알려진 제한, 면책 사항 | [검증](docs/verification.md) |
-| 로드맵 | [로드맵](#로드맵) |
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=JosssphZhou%2Fpoki&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=JosssphZhou/poki&type=date&theme=dark&legend=top-left">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=JosssphZhou/poki&type=date&legend=top-left">
-    <img alt="Star History chart" src="https://api.star-history.com/chart?repos=JosssphZhou/poki&type=date&legend=top-left">
-  </picture>
-</a>
-
-## 공동 창작자
+### 공동 창작자
 
 <!-- CO-CREATOR:START -->
 <p align="center">
@@ -179,7 +92,7 @@ Poki를 열지 않고 부를 수도 있습니다. 동작 버튼을 길게 눌러
 </p>
 <!-- CO-CREATOR:END -->
 
-## 핵심 기여자
+### 핵심 기여자
 
 <!-- CORE-CONTRIBUTORS:START -->
 <table>
@@ -228,7 +141,10 @@ Poki를 열지 않고 부를 수도 있습니다. 동작 버튼을 길게 눌러
 </table>
 <!-- CORE-CONTRIBUTORS:END -->
 
-## 특별 기여자
+<details>
+<summary>특별 기여자, 고마운 분들 및 Star History</summary>
+
+### 특별 기여자
 
 <table>
   <tbody>
@@ -238,7 +154,7 @@ Poki를 열지 않고 부를 수도 있습니다. 동작 버튼을 길게 눌러
   </tbody>
 </table>
 
-## 고마운 분들
+### 고마운 분들
 
 Issue나 Pull Request를 남겨 주신 모든 분께 감사드리며, 여러분의 제보와 수정 덕분에 Poki가 더 좋아지고 있습니다.
 
@@ -298,28 +214,16 @@ Issue나 Pull Request를 남겨 주신 모든 분께 감사드리며, 여러분�
 </table>
 <!-- THANKS-WALL:END -->
 
-## 기타 도구
+### Star History
 
-[Poki MCP](docs/poki-mcp.md)는 컴퓨터의 에이전트를 iPhone이나 iOS 시뮬레이터에 연결하는 이전 도구이며, 현재는 업데이트하지 않습니다.
+<a href="https://www.star-history.com/?repos=JosssphZhou%2Fpoki&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=JosssphZhou/poki&type=date&theme=dark&legend=top-left">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=JosssphZhou/poki&type=date&legend=top-left">
+    <img alt="Star History chart" src="https://api.star-history.com/chart?repos=JosssphZhou/poki&type=date&legend=top-left">
+  </picture>
+</a>
 
-[Poki Agent](docs/poki-mcp.md#try-a-task-with-poki-agent)는 iMessage와 Telegram 채널을 지원하는 터미널 에이전트입니다. 설치와 사용법은 링크된 가이드에 있습니다.
+</details>
 
-## 면책 조항
-
-Poki는 독립적인 오픈소스 프로젝트입니다. Apple, OpenAI 또는 Poki가 조작하는 앱이나 웹사이트의 제작사와 제휴 관계가 없으며, 이들의 보증을 받지 않았습니다. iPhone은 Apple Inc.의 상표입니다.
-
-타사 앱과 웹사이트를 자동으로 조작하면 해당 서비스 약관을 위반할 수 있습니다. 특정 서비스에서 Poki를 쓸지는 직접 판단하세요. 사용자의 기기와 계정에서 Poki가 하는 일(보낸 메시지, 변경한 내용, 그 결과로 생긴 계정 제한 포함)에 대한 책임은 사용자에게 있습니다.
-
-Poki는 AGPL-3.0 라이선스에 명시된 대로 어떠한 보증도 없이 "있는 그대로" 제공됩니다.
-
-## 라이선스
-
-Poki의 코드는 [AGPL-3.0-only 라이선스](LICENSE)에 따라 공개된 오픈소스입니다.
-
-Poki 곰, 앱 아이콘과 Poki의 다른 아트워크는 이 라이선스에 포함되지 않습니다. Poki를 소개할 때 스크린샷은 사용할 수 있지만, 포크는 자체 이름과 아트워크를 사용해야 합니다. 자세한 내용은 [BRAND.md](BRAND.md)를 참고하세요.
-
-Copyright (c) 2026 Joseph Zhou (周瑟夫) and contributors. 오픈소스 의존성과 서드파티 에셋은 각자의 라이선스를 따릅니다. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요. 기여하려면 [CONTRIBUTING.md](CONTRIBUTING.md)를 읽어 보세요.
-
-## 감사의 말
-
-Poki가 사용하는 오픈소스 의존성과 에셋은 [서드파티 고지](THIRD_PARTY_NOTICES.md)를 확인하세요.
+[AGPL-3.0-only](LICENSE) 라이선스로 공개됩니다. 브랜드 자산 규정은 [BRAND.md](BRAND.md)를 따릅니다. 자세한 내용은 [Poki iPhone 앱 가이드](docs/iphone-guide.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [면책 조항](docs/iphone-guide.md#disclaimer)을 참고하세요.
