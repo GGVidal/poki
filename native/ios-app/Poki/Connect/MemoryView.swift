@@ -195,11 +195,12 @@ private struct LearnedHabitRows: View {
     }
 
     private func detail(_ habit: InferredMusicAppHabit) -> String {
-        let span = DateIntervalFormatter()
-        span.locale = AppLocalization.locale
-        span.dateStyle = .medium
-        span.timeStyle = .none
-        let range = span.string(from: habit.windowStart, to: habit.lastObservedAt)
+        // Month and day in the app's language with the system region: 11月16日至11月18日, Nov 16 to Nov 18.
+        let day = DateFormatter()
+        day.locale = AppLocalization.locale
+        day.setLocalizedDateFormatFromTemplate("MMMd")
+        let from = day.string(from: habit.windowStart), to = day.string(from: habit.lastObservedAt)
+        let range = AppLocalization.text(LocalizedStringResource("\(from) to \(to)"))
         return AppLocalization.text(LocalizedStringResource("Inferred automatically · \(habit.activeSessionCount) uses on \(habit.distinctDayCount) days · \(range)"))
     }
 }
