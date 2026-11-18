@@ -1,3 +1,4 @@
+import LocalAuthentication
 import Security
 import XCTest
 import notify
@@ -103,6 +104,7 @@ final class HistoryLockTests: XCTestCase {
         phone.deviceLocked = true
         let lock = phone.launch()
         XCTAssertFalse(lock.needsSetup, "An unreadable PIN must not offer setup")
+        XCTAssertFalse(lock.biometricsUnavailable, "A locked iPhone is not a Face ID problem to fix in Settings")
         XCTAssertFalse(lock.setPIN("1111"))
         XCTAssertFalse(lock.unlock(pin: "2468"))
         XCTAssertFalse(lock.unlocked)
@@ -189,6 +191,11 @@ final class HistoryLockTests: XCTestCase {
         _ = notify_set_state(token, enrolled ? 1 : 0)
         _ = notify_post("com.apple.BiometricKit.enrollmentChanged")
         _ = notify_cancel(token)
+        // The simulator applies the change a moment later, and later still on a busy Mac.
+        let deadline = Date().addingTimeInterval(10)
+        while LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) != enrolled, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
     }
 }
 
@@ -196,7 +203,8 @@ final class HistoryLockTests: XCTestCase {
 /// Screen History go with a reinstall; the keychain stays.
 @MainActor
 private final class Phone {
-    var keychain: [String: Data] = [:]
+    /// Each item with whether it can be read only while the iPhone is unlocked.
+    var keychain: [String: (value: Data, whenUnlocked: Bool)] = [:]
     var deviceLocked = false
     var biometrics = HistoryLock.Biometrics.usable
     var now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -212,11 +220,13 @@ private final class Phone {
             biometrics: { [self] in biometrics },
             evaluateBiometrics: { [self] _ in biometrics.ready },
             readKeychain: { [self] account in
-                deviceLocked ? .inaccessibleWhileDeviceLocked : keychain[account].map { .present($0) } ?? .absent
+                guard let item = keychain[account] else { return .absent }
+                return deviceLocked && item.whenUnlocked ? .inaccessibleWhileDeviceLocked : .present(item.value)
             },
-            writeKeychain: { [self] account, value, _ in
-                guard !deviceLocked else { return false }
-                keychain[account] = value
+            writeKeychain: { [self] account, value, accessible in
+                let whenUnlocked = accessible == kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+                guard !(deviceLocked && whenUnlocked) else { return false }
+                keychain[account] = (value, whenUnlocked)
                 return true
             },
             deleteKeychain: { [self] account in keychain[account] = nil },
