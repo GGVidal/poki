@@ -54,6 +54,12 @@ impl Signer {
                 Ok(None)
             }
             SignInOutcome::NeedsCode(p) => {
+                // The code is checked with the anisette identity that asked for it. Keep the server
+                // that answered (the client may have moved to a fallback), so a second run
+                // (`poki-setup login --code`) checks the code as the same "Mac".
+                let saved_password = self.account.password.clone();
+                self.remember_anisette();
+                store::save(&store::Account { password: saved_password, ..self.account.clone() })?;
                 self.account.password = keep_password.then(|| password.to_string());
                 Ok(Some(p))
             }
@@ -94,7 +100,11 @@ impl Signer {
                         self.account.session = Some(s);
                         t
                     }
-                    SignInOutcome::NeedsCode(_) => return Err(Error::NeedsPerson("Apple wants a new verification code. Open Poki Setup and sign in again.".into())),
+                    SignInOutcome::NeedsCode(pending) => {
+                        self.remember_anisette();
+                        let _ = store::save(&self.account);
+                        return Err(Error::NeedsCode(Box::new(pending)));
+                    }
                 }
             }
             Err(e) => return Err(e),

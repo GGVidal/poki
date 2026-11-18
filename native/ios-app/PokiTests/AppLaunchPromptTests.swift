@@ -1,33 +1,37 @@
 import XCTest
 @testable import Poki
 
-/// The chat's model is told the bundle ids of the apps a request names, and the debug file keeps the
-/// chat's tasks. A tester's 淘宝 and 美团 tasks (Nov 13 2026) failed with "no app with that bundle id is
-/// installed": the model had guessed the ids, and the debug file showed no runs at all.
+/// The chat's model is told the bundle ids of the apps a request names, finds the others with
+/// find_app, and the debug file keeps the chat's tasks. A tester's 淘宝 and 美团 tasks (Nov 13 2026)
+/// failed with "no app with that bundle id is installed": the model had guessed the ids, and the
+/// debug file showed no runs at all.
 @MainActor
 final class AppLaunchPromptTests: XCTestCase {
-    func testTheRequestsAppsComeWithTheirBundleIDs() {
-        let taobao = Harness.appIDs(for: "帮我每天自动上淘宝买纸巾") ?? ""
-        XCTAssertTrue(taobao.contains("com.taobao.taobao4iphone"), taobao)
-        let meituan = Harness.appIDs(for: "帮我在美团上买一杯霸王茶姬") ?? ""
-        XCTAssertTrue(meituan.contains("com.meituan.imeituan"), meituan)
-        XCTAssertFalse(meituan.contains("com.meituan.itakeaway"), "Meituan, not Meituan Waimai")
-        XCTAssertNil(Harness.appIDs(for: "what time is it"))
-    }
-
-    func testTheInstructionsCarryThemAndTheSearchFallback() {
-        let text = Harness.instructions(for: "帮我在美团上买一杯霸王茶姬")
-        XCTAssertTrue(text.contains("com.meituan.imeituan"))
-        XCTAssertTrue(text.contains("swipe down on the Home Screen to search"))
-    }
-
-    func testEachSpellingOf12306FindsIt() {
-        for request in ["打开铁路12306查询", "打开12306查询", "打开 12306 查询"] {
-            XCTAssertTrue(Harness.instructions(for: request).contains("cn.12306.rails12306"), request)
+    func testNamedAppsReachTheModelWithTheirBundleIDs() async {
+        for (request, bundleID) in [
+            ("打开淘宝", "com.taobao.taobao4iphone"),
+            ("打开美团", "com.meituan.imeituan"),
+            ("打开铁路12306", "cn.12306.rails12306"),
+            ("打开12306", "cn.12306.rails12306"),
+            ("打开12306查询", "cn.12306.rails12306"),
+            ("打开 12306 查询", "cn.12306.rails12306"),
+        ] {
+            let prompt = Harness.instructions(for: request)
+            XCTAssertTrue(prompt.contains(bundleID), "\(request): missing \(bundleID)")
         }
-        XCTAssertNil(Harness.appIDs(for: "order a123067 now"), "digits inside a longer Latin run are not the app")
-        XCTAssertNil(Harness.appIDs(for: "call 9123067"), "nor inside a longer number")
-        XCTAssertNil(Harness.appIDs(for: "open notesbook"), "a Latin name still needs a whole word")
+        XCTAssertFalse(Harness.instructions(for: "打开美团").contains("com.meituan.itakeaway"))
+    }
+
+    func testNumericAliasDoesNotMatchInsideLongerIdentifiers() async {
+        for request in ["order a123067 now", "call 9123067", "open notesbook"] {
+            XCTAssertTrue(AppIconStore.bundleIDs(namedIn: request).isEmpty, request)
+        }
+    }
+
+    func testLaunchFailureRequiresHomeScreenSearchBeforeCallingAnAppMissing() async {
+        let prompt = Harness.instructions(for: "打开美团")
+        XCTAssertTrue(prompt.contains("swipe down on the Home Screen to search"))
+        XCTAssertTrue(prompt.contains("Say an app is not installed only after find_app says so"))
     }
 
     // MARK: The debug file
