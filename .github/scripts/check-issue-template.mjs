@@ -71,11 +71,16 @@ Edit this issue rather than opening a new one. When it matches a form, the \`${L
 感谢反馈。这个 issue 没有使用仓库的 issue 模板，维护者暂时无法分类处理。如果是 AI 代理（Claude Code、Codex 等）代你提交的，请让它先阅读 [AGENTS.md 中的 File an issue](${base}/blob/main/AGENTS.md#file-an-issue)，再编辑本 issue，按上面任一模板补齐所有必填小节（标题保留英文原文，内容可以用中文）。请直接编辑本 issue，不要重新开一个。符合模板后 \`${LABEL}\` 标签会自动移除。`;
 }
 
+// Writes go out as Poki Repo Bot when its token is there (BOT_TOKEN). If it is missing, or GitHub
+// refuses it (the app lacks Issues write), the workflow's own token is used.
 async function api(path, init = {}) {
-  const res = await fetch(`https://api.github.com${path}`, {
+  const call = (token) => fetch(`https://api.github.com${path}`, {
     ...init,
-    headers: { authorization: `Bearer ${process.env.GITHUB_TOKEN}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', ...(init.headers || {}) },
+    headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', ...(init.headers || {}) },
   });
+  const bot = init.method && process.env.BOT_TOKEN;
+  let res = await call(bot || process.env.GITHUB_TOKEN);
+  if (res.status === 403 && bot) res = await call(process.env.GITHUB_TOKEN);
   if (!res.ok && res.status !== 404) throw new Error(`${init.method || 'GET'} ${path}: ${res.status} ${await res.text()}`);
   return res.status === 204 || res.status === 404 ? null : res.json();
 }

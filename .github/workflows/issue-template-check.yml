@@ -4,6 +4,10 @@ name: Issue template check
 # "opened" fires only for issues created after this file is on the default branch,
 # so existing issues are never touched. "edited" acts only on issues this check
 # already labeled needs-template, to take the label off once they match a form.
+#
+# The label and the comment come from the Poki Repo Bot GitHub App (secrets POKI_BOT_APP_ID and
+# POKI_BOT_PRIVATE_KEY; it needs Issues write). If its token cannot be made or is refused, the
+# workflow's own token is used and they come from github-actions.
 on:
   issues:
     types: [opened, edited]
@@ -24,6 +28,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - id: bot
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.POKI_BOT_APP_ID }}
+          private-key: ${{ secrets.POKI_BOT_PRIVATE_KEY }}
       - uses: actions/checkout@v4
         with:
           sparse-checkout: .github
@@ -31,3 +41,4 @@ jobs:
       - run: node .github/scripts/check-issue-template.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BOT_TOKEN: ${{ steps.bot.outputs.token }}
