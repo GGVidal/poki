@@ -58,6 +58,24 @@ final class LanguageTests: XCTestCase {
         }
     }
 
+    func testSplitViewStartupErrorsFollowTheSelectedLanguage() {
+        AppLocalization.shared.preference = "en"
+        XCTAssertEqual(ChatModel.splitViewPlanningMessage,
+                       "Poki couldn't determine whether to use Split View. Try sending the task again.")
+        let english = ChatModel.splitViewSetupMessage("com.apple.mobilesafari", "com.apple.mobilenotes")
+        XCTAssertTrue(english.hasPrefix("Open Safari and Notes together"), english)
+
+        AppLocalization.shared.preference = "zh-Hans"
+        XCTAssertEqual(ChatModel.splitViewPlanningMessage, "Poki 无法判断是否需要分屏。请重新发送任务。")
+        let simplified = ChatModel.splitViewSetupMessage("com.apple.mobilesafari", "com.apple.mobilenotes")
+        XCTAssertTrue(simplified.contains("分屏打开 Safari浏览器 和 备忘录"), simplified)
+
+        AppLocalization.shared.preference = "zh-Hant"
+        XCTAssertEqual(ChatModel.splitViewPlanningMessage, "Poki 無法判斷是否需要分割顯示。請重新傳送任務。")
+        let traditional = ChatModel.splitViewSetupMessage("com.apple.mobilesafari", "com.apple.mobilenotes")
+        XCTAssertTrue(traditional.contains("分割顯示 Safari瀏覽器 和 備忘錄"), traditional)
+    }
+
     func testKnownAppNamesFollowTheSelectedLanguage() {
         for (language, expected) in [("en", "Notes"), ("zh-Hans", "备忘录"), ("zh-Hant", "備忘錄")] {
             AppLocalization.shared.preference = language
@@ -170,5 +188,35 @@ final class LanguageTests: XCTestCase {
         AppLocalization.shared.preference = "en"
         chat.languageChanged()
         XCTAssertEqual(chat.entries, completed)
+    }
+
+    func testDiskImageDownloadFailureMessageFollowsTheSelectedLanguage() async throws {
+        let directory = AppFiles.ddiDirectory
+        let support = AppFiles.support
+        let manager = FileManager.default
+        let backup = directory.appendingPathExtension("language-test-backup")
+        let existed = manager.fileExists(atPath: directory.path)
+        if existed { try manager.moveItem(at: directory, to: backup) }
+        try? manager.removeItem(at: support.appendingPathComponent("ddi.partial"))
+        let originalPermissions = (try? manager.attributesOfItem(atPath: support.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0o755
+        defer {
+            try? manager.setAttributes([.posixPermissions: originalPermissions], ofItemAtPath: support.path)
+            try? manager.removeItem(at: directory)
+            if existed { try? manager.moveItem(at: backup, to: directory) }
+        }
+        // Deny creating `ddi.partial` under Application Support/Poki so `download()` fails offline.
+        try manager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: support.path)
+
+        let expected: [(String, String)] = [
+            ("zh-Hans", "下载开发者磁盘映像失败。请确认网络能访问 GitHub（开启代理或全局 VPN），然后点重新下载；也可以用电脑上的 Poki Setup 写入。"),
+            ("en", "Failed to download the developer disk image. Make sure your network can reach GitHub (turn on a proxy or a global VPN), then tap Download Again. You can also write it from Poki Setup on your computer."),
+            ("zh-Hant", "下載開發者磁碟映像失敗。請確認網路能存取 GitHub（開啟代理或全域 VPN），然後點一下重新下載；也可以用電腦上的 Poki Setup 寫入。"),
+        ]
+        for (language, text) in expected {
+            AppLocalization.shared.preference = language
+            let store = DiskImageStore(verifySynchronously: true)
+            await store.download()
+            XCTAssertEqual(store.state, .failed(text), language)
+        }
     }
 }
