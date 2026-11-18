@@ -6,6 +6,11 @@ struct PokiApp: App {
     @State private var model: AppModel
     @State private var chat: ChatModel
 
+    @discardableResult
+    static func scheduleStartupWork(routines: RoutineStore = .shared) -> Task<String?, Never> {
+        Task.detached(priority: .utility) { routines.importRestoredBackup() }
+    }
+
     init() {
         // PokiLauncher (Rust) and the relay write to sockets the other side may have closed. In an app,
         // unlike a Rust executable, nothing ignores SIGPIPE, and it would end the whole app.
@@ -31,8 +36,8 @@ struct PokiApp: App {
         #if DEBUG && targetEnvironment(simulator)
         TestCredential.importIfGiven()
         #endif
-        // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in before any agent asks.
-        _ = RoutineStore.shared.importRestoredBackup()
+        // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in off the main thread.
+        Self.scheduleStartupWork()
         // The three-dimensional bear loads while the app starts, to be there when Poki's picture first shows.
         BearModel.shared.load()
         let model = AppModel()
@@ -57,18 +62,24 @@ struct PokiApp: App {
 }
 
 /// The chat is the app (ESP-326): it opens on Poki's conversation. The conversations slide in from the
-/// leading edge on iPhone and stand beside the chat on iPad; an outside agent's session, the voice
-/// page and a setup step push over the chat; every setting lives in Poki's profile, which opens from
-/// the bear.
+/// leading edge in narrow windows and stand beside the chat when both columns fit. An outside agent's
+/// session, the voice page and a setup step push over the chat. Poki's profile opens from the bear.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(ChatModel.self) private var chat
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.horizontalSizeClass) private var width
+    var sessionStore: SessionStore = .shared
+    var shortcutStore: HomeShortcutStore = .shared
+    @State private var showsSidebar = false
+    // Both navigation layouts share the composer while the window changes size.
+    @State private var draft = UserDefaults.standard.string(forKey: "pokiDraft") ?? ""
 
-    /// What is pushed over the chat on iPhone.
+    private static let sidebarWidth: CGFloat = 375
+    private static let minimumChatWidth: CGFloat = 375
+
+    /// What is pushed over the chat in a narrow window.
     @State private var home = NavigationPath()
-    /// The right-hand column on iPad.
+    /// The right-hand column when both columns fit.
     @State private var wide: HomeRoute = .chat
     @State private var threadsOpen = false
     @State private var detailsOpen = false
@@ -81,6 +92,8 @@ struct RootView: View {
     @State private var welcoming = false
     /// A setup step a link opened while the first run is up: it opens there.
     @State private var welcomeLink: SetupStep?
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @AppStorage(AppInterfaceSize.defaultsKey) private var interfaceSize = AppInterfaceSize.system
     @AppStorage(Appearance.key) private var appearance = Appearance.automatic.rawValue
     @Namespace private var profile
 
@@ -102,7 +115,8 @@ struct RootView: View {
     private var sessions: some View {
         SessionsView(
             openChat: { show(.chat) },
-            openSession: { show(.session($0)) }
+            openSession: { show(.session($0)) },
+            sessionStore: sessionStore
         )
     }
 
@@ -127,6 +141,7 @@ struct RootView: View {
 
     private func chatPage(split: Bool) -> some View {
         ChatView(
+            sharedDraft: $draft,
             openDetails: { under in
                 cardUnder = under
                 statusOpen = true
@@ -138,11 +153,13 @@ struct RootView: View {
             openVoiceKey: { openDetails([DetailsRoute.voiceKey]) },
             openThreads: split ? nil : { withAnimation(ThreadsDrawerMotion.settle) { threadsOpen = true } },
             openAgents: { fix(.agents, split: split) },
-            openUpdates: { fix(.updates, split: split) }
+            openUpdates: { fix(.updates, split: split) },
+            sessionStore: sessionStore,
+            shortcutStore: shortcutStore
         )
         // The bear stops drawing where it is out of sight: behind the open drawer or the profile over the
         // chat. Poki's card opens beside the picture and leaves it in sight.
-        .environment(\.bearCovered, threadsOpen || welcoming || (detailsOpen && width != .regular))
+        .environment(\.bearCovered, threadsOpen || welcoming || (detailsOpen && !showsSidebar))
     }
 
     @ViewBuilder private func destination(_ route: HomeRoute, split: Bool) -> some View {
@@ -170,12 +187,12 @@ struct RootView: View {
     }
 
     @ViewBuilder private var mainNavigation: some View {
-        if width == .regular {
+        if showsSidebar {
             // Two plain stacks side by side, not a NavigationSplitView: its sidebar is a floating panel
             // on iOS 26, set in from the top edge. The left stack is the iPhone's drawer as it is.
             HStack(spacing: 0) {
                 NavigationStack { sessions }
-                    .frame(width: 375)
+                    .frame(width: Self.sidebarWidth)
                 Divider().ignoresSafeArea()
                 NavigationStack {
                     destination(wide, split: true).id(wide)
@@ -201,13 +218,14 @@ struct RootView: View {
             .softTopEdge()
             // Settings opens from the bottom of the conversations.
             .environment(\.openPokiSettings, { openDetails() })
-            .pokiStatusCard(isPresented: $statusOpen, under: cardUnder, leading: width == .regular ? 376 : 0, openModel: { openDetails([DetailsRoute.model]) })
+            .environment(\.pokiDetailsOpen, detailsOpen)
+            .pokiStatusCard(isPresented: $statusOpen, under: cardUnder, leading: showsSidebar ? Self.sidebarWidth + 1 : 0, openModel: { openDetails([DetailsRoute.model]) })
             // Settings covers the whole screen on iPhone (ESP-469: nothing of the chat shows around it), with
             // its Close button; beside the list on iPad it stays a sheet at a page's width (ESP-376).
-            .fullScreenCover(isPresented: Binding(get: { detailsOpen && width != .regular }, set: { detailsOpen = $0 })) {
+            .fullScreenCover(isPresented: Binding(get: { detailsOpen && !showsSidebar }, set: { detailsOpen = $0 })) {
                 profilePage
             }
-            .sheet(isPresented: Binding(get: { detailsOpen && width == .regular }, set: { detailsOpen = $0 })) {
+            .sheet(isPresented: Binding(get: { detailsOpen && showsSidebar }, set: { detailsOpen = $0 })) {
                 profilePage.presentationSizing(.page).presentationDragIndicator(.visible)
             }
             .onChange(of: PokiEntry.shared.pending, initial: true) { takeEntry() }
@@ -230,6 +248,7 @@ struct RootView: View {
         // Presented on its own, so it says the edge's style itself rather than counting on the
         // presenting page's.
         .softTopEdge()
+        .modifier(AutomationNotices())
     }
 
     var body: some View {
@@ -240,6 +259,11 @@ struct RootView: View {
                 navigation
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Tint.page.ignoresSafeArea())
+        .onGeometryChange(for: Bool.self) { geometry in
+            geometry.size.width >= Self.sidebarWidth + 1 + Self.minimumChatWidth
+        } action: { showsSidebar = $0 }
         .fullScreenCover(isPresented: $welcoming) { FirstRunGuide(link: $welcomeLink, done: { welcoming = false }).modifier(LinkAskAlert()) }
         // A link that would change the relay or the pairing file asks first. The first run's cover shows its own.
         .modifier(LinkAskAlert(active: !welcoming))
@@ -250,27 +274,14 @@ struct RootView: View {
             Button("Don’t Allow", role: .cancel) { model.answerConnection(false) }
             Button("Allow") { model.answerConnection(true) }
         } message: { ask in
-            Text("\(ask.client) is signing in through \(ask.connector) and returns to \(ask.callback), which isn’t on Poki’s list of known agents. Allow it only if you are connecting it yourself right now. It could then see your screen and act on this iPhone.")
+            Text("\(ask.client) is signing in through \(ask.connector) with callback destination \(ask.callback). Allow it only if you are connecting it yourself right now. It could then see your screen and act on this iPhone.")
         }
         .alert("Poki Will Close to Finish the Update", isPresented: Binding(get: { model.signer.finishNotice }, set: { if !$0 { model.signer.finishNoticeAnswered() } })) {
             Button("OK") { model.signer.finishNoticeAnswered() }
         } message: {
             Text("The update is almost in. Poki will close to finish it. Open Poki again afterwards.")
         }
-        // Turning on after Off: Poki exits by itself and has to be opened again.
-        .alert("Poki Restarts to Turn On", isPresented: Binding(get: { model.relaunchNotice }, set: { if !$0 { model.relaunchNotice = false } })) {
-            Button("Cancel", role: .cancel) { model.relaunchNotice = false }
-            Button("Continue") { model.continueRelaunch() }
-        } message: {
-            Text("Poki closes by itself so agents can see the screen again. Open Poki again afterwards, from the notification or the Home Screen. It turns on when it opens.")
-        }
-        // Before the first automation after a restart: iOS's passcode screen is next, and expected.
-        .alert("Enter Your Passcode Next", isPresented: Binding(get: { model.passcodeHeadsUp }, set: { if !$0 { model.passcodeHeadsUp = false } })) {
-            Button("Cancel", role: .cancel) { model.passcodeHeadsUp = false }
-            Button("Continue") { model.continueAfterPasscodeHeadsUp() }
-        } message: {
-            Text(AppModel.passcodeHeadsUpMessage)
-        }
+        .modifier(AutomationNotices(enabled: !detailsOpen))
         .onChange(of: scenePhase, initial: true) { _, phase in
             if phase == .active { model.becameActive(); AskPoki.refresh(); model.startSigner(); model.signer.maintain(); Task { await model.verifyPairing() } } else if phase == .background { model.wentToBackground() }
         }
@@ -281,7 +292,25 @@ struct RootView: View {
         .onChange(of: appearance, initial: true) { _, value in
             let style = (Appearance(rawValue: value) ?? .automatic).style
             for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
-                for window in scene.windows { window.overrideUserInterfaceStyle = style }
+                for window in scene.windows where window.overrideUserInterfaceStyle != style {
+                    window.overrideUserInterfaceStyle = style
+                }
+            }
+        }
+        .task(id: interfaceSize) {
+            // Apply outside the current layout pass. Coalesce events within roughly one frame,
+            // while the preview and the rest of the window inherit the same native category.
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled else { return }
+            for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+                for window in scene.windows { AppInterfaceSize.apply(interfaceSize, to: window) }
+            }
+        }
+        .task(id: typeSize) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+                for window in scene.windows { AppInterfaceSize.updateNavigationFonts(in: window) }
             }
         }
         .onAppear(perform: openLaunchScreen)
@@ -313,11 +342,13 @@ struct RootView: View {
         if let step {
             detailsOpen = false
             threadsOpen = false
-            if width == .regular { openDetails([DetailsRoute.connection, step]) } else { home = NavigationPath([step]) }
+            if showsSidebar { openDetails([DetailsRoute.connection, step]) } else { home = NavigationPath([step]) }
         } else if url.host() == "setup", !url.absoluteString.contains("relay=") {
             openDetails([DetailsRoute.connection])
         } else if url.host() == "log" {
             openDetails([DetailsRoute.history])
+        } else if url.host() == "approvals" {
+            openDetails([DetailsRoute.approvals])
         } else if url.host() == "voice" {
             detailsOpen = false
             model.voice.open(url)
@@ -339,6 +370,7 @@ struct RootView: View {
         guard model.voice.canTalkLive else { model.voice.keyAsked = true; return }
         if !model.voice.isOn {
             ApprovalNotice.requestPermission()
+            model.prepareForTask()
             Task { await model.voice.start() }
         }
     }
@@ -424,6 +456,8 @@ struct RootView: View {
             openDetails([DetailsRoute.model])
         case "memory":
             openDetails([SettingsRoute.memory])
+        case "interfaceSize":
+            openDetails([DetailsRoute.interfaceSize])
         case "appearance":
             openDetails([DetailsRoute.appearance])
         case "language":
@@ -432,11 +466,34 @@ struct RootView: View {
             openDetails([DetailsRoute.voice])
         case "conversations":
             openDetails([DetailsRoute.conversations])
+        case "screenHistory":
+            openDetails([DetailsRoute.screenHistory])
         case "updates":
             openDetails([DetailsRoute.updates])
         case "steps":
             openDetails([DetailsRoute.history])
         default: break
+        }
+    }
+}
+
+private struct AutomationNotices: ViewModifier {
+    @Environment(AppModel.self) private var model
+    var enabled = true
+
+    func body(content: Content) -> some View {
+        content
+        .alert("Poki Restarts to Turn On", isPresented: Binding(get: { enabled && model.relaunchNotice }, set: { if enabled && !$0 { model.relaunchNotice = false } })) {
+            Button("Cancel", role: .cancel) { model.relaunchNotice = false }
+            Button("Continue") { model.continueRelaunch() }
+        } message: {
+            Text("Poki closes by itself so agents can see the screen again. Open Poki again afterwards, from the notification or the Home Screen. It turns on when it opens.")
+        }
+        .alert("Enter Your Passcode Next", isPresented: Binding(get: { enabled && model.passcodeHeadsUp }, set: { if enabled && !$0 { model.passcodeHeadsUp = false } })) {
+            Button("Cancel", role: .cancel) { model.cancelPasscodeHeadsUp() }
+            Button("Continue") { model.continueAfterPasscodeHeadsUp() }
+        } message: {
+            Text(AppModel.passcodeHeadsUpMessage)
         }
     }
 }
