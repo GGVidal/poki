@@ -40,7 +40,7 @@ struct ResultCard: Codable, Equatable {
 
         /// A button's words for this item: each `{field}` becomes the item's value of it.
         func fill(_ template: String) -> String {
-            template.replacing(#/\{([A-Za-z_]+)\}/#) { match in text(String(match.1)) ?? "" }
+            template.replacing(ResultCard.field) { match in text(String(match.1)) ?? "" }
         }
     }
 
@@ -55,6 +55,9 @@ struct ResultCard: Codable, Equatable {
         items.first { $0.id == chosen } ?? items.first { $0.id == recommended } ?? items[0]
     }
 
+    /// A `{field}` in a button's words.
+    fileprivate static let field = #/\{([A-Za-z_]+)\}/#
+
     /// Why this card cannot be shown, for the model to answer in words instead; nil when it can.
     var problem: String? {
         guard let look = ResultCardLooks.all[kind] else {
@@ -63,8 +66,10 @@ struct ResultCard: Codable, Equatable {
         guard items.count >= 2 else { return "a card needs at least two items to choose from" }
         guard Set(items.map(\.id)).count == items.count else { return "item ids must be unique" }
         guard items.contains(where: { $0.id == recommended }) else { return "recommended must be one of the item ids" }
-        for action in [primary] + (next.map { [$0] } ?? []) where action.label.isBlank || action.say.isBlank {
-            return "primary and next need a label and a say"
+        for action in [primary] + (next.map { [$0] } ?? []) {
+            if action.label.isBlank || action.say.isBlank { return "primary and next need a label and a say" }
+            // A sentence with no field would send the suggested item whichever one is selected.
+            if !action.say.contains(Self.field) { return "primary.say and next.say must name the selected item with {field}, such as {title}" }
         }
         return look.problem(items)
     }

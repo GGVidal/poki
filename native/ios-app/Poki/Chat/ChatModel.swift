@@ -1015,9 +1015,10 @@ final class ChatModel {
             updatePlan { steps in
                 for i in steps.indices where steps[i].state == .current || steps[i].state == .waiting { steps[i].state = result.success ? .done : .failed }
             }
-            let card = result.success ? result.card : nil
+            // An outside agent reads the reply, not the card: its tasks answer in words.
+            let card = result.success && kind == .poki ? result.card : nil
             if let card { showCard(card) }
-            return PokiCore.ToolAnswer(text: Harness.recorded(result, cardShown: card != nil, toOwner: kind == .poki), jpeg: nil, isError: false)
+            return PokiCore.ToolAnswer(text: Harness.recorded(result, cardShown: card != nil), jpeg: nil, isError: false)
         case let name where WebTools.names.contains(name):
             if let refusal = selectRoute(.web) { return refusal }
             showBrowser(opening: name == "web_open")

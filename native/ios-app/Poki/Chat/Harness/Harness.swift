@@ -144,7 +144,7 @@ enum Harness {
     private static let cardDescription = """
         Only when the owner is choosing among two or more results of one app (trains, flights, products): those results as a card in the app's own look under the task card, which replaces listing them in the reply. Leave it out otherwise. Write its words in the owner's language; the examples are for a Chinese conversation.
         kind 12306.trains, Railway 12306's train list: app "cn.12306.rails12306". Each item is one train as 12306 shows it: id and title the train number ("G1234"), date ("11月20日 周四"), from and to stations, depart and arrive times ("07:00"), duration ("4小时28分"), price ("¥626"), seats [{name: "二等座", left: "有", "候补", "无" or "5张"}], and note only for a fact that bears on the choice ("15:00 有冲突").
-        recommended is the id of the item that best fits the request; the card selects it until the owner taps another. primary and next are the card's buttons for the selected item: in label and say, {field} becomes that item's field. A tap sends say as the owner's message, so say stands alone with the item's key facts. primary: {label: "在 12306 查看", say: "在 12306 打开 {date} {title} 次（{from} {depart} 开）"}. next is the one obvious next step, or left out. To send the train to someone, name the recipient the long-term notes give: {label: "发到公司差旅群", say: "把这趟车发到公司差旅群：{date} {title} 次，{from} {depart} 开，{to} {arrive} 到，{price}"}; when the notes name none: {label: "发送车次", say: "把这趟车发出去：{date} {title} 次，{from} {depart} 开，{to} {arrive} 到，{price}"}. Never offer paying, booking or choosing seats.
+        recommended is the id of the item that best fits the request; the card selects it until the owner taps another. primary and next are the card's buttons for the selected item: in label and say, {field} becomes that item's field. A tap sends say as the owner's message, so say stands alone with the item's key facts, written as {field}s so they follow the selection. primary: {label: "在 12306 查看", say: "在 12306 打开 {date} {title} 次（{from} {depart} 开）"}. next is the one obvious next step, or left out. To send the train to someone, name the recipient the long-term notes give: {label: "发到公司差旅群", say: "把这趟车发到公司差旅群：{date} {title} 次，{from} {depart} 开，{to} {arrive} 到，{price}"}; when the notes name none: {label: "发送车次", say: "把这趟车发出去：{date} {title} 次，{from} {depart} 开，{to} {arrive} 到，{price}"}. Never offer paying, booking or choosing seats.
         """
 
     /// task-runner.mjs's answers to its harness tools.
@@ -153,8 +153,8 @@ enum Harness {
 
     /// finish_task's answer. Under a card the reply adds one conclusion; a card that could not be drawn
     /// leaves the whole result to the reply.
-    static func recorded(_ result: TaskResult, cardShown: Bool, toOwner: Bool) -> String {
-        if cardShown, toOwner {
+    static func recorded(_ result: TaskResult, cardShown: Bool) -> String {
+        if cardShown {
             return "Result recorded. The card under the task shows the items and their buttons. Reply with one plain sentence the card does not show: why the recommended item fits, or what to watch for (\"这趟最早到，比其他车次贵 50 元。\", \"只剩这趟还有二等座余票。\", \"这趟最晚发车，到站后能赶上下午的会。\"). Do not repeat the items' numbers, stations, times or prices, or what the buttons do."
         }
         if let problem = result.cardProblem {
