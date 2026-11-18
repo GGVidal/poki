@@ -2324,7 +2324,21 @@ final class AppModel {
     var setupLooksComplete: Bool { SetupStep.shown.allSatisfy(looksDone) }
 
     func stepReadyForUse(_ step: SetupStep) -> Bool {
-        step == .loopback && canStartTasks ? true : looksDone(step)
+        step == .loopback && (canStartTasks || mountedImageStandsIn) ? true : looksDone(step)
+    }
+
+    /// The launcher hands every new task to the mounted disk image when the loopback does not answer
+    /// (Poki's own session, a pairing made on this iPhone, the image mounted), so the loopback is not
+    /// what keeps Poki from acting. Unlike `canStartTasks`, this still holds once that task ended and
+    /// the runner stands by without `local_ddi`, and it leaves an open step elsewhere to name itself.
+    var mountedImageStandsIn: Bool {
+        automationPath == .inProcess && setup.loopback != .none && hasPhonePairing && imageMounted()
+    }
+
+    /// The pairing is an RPPairing record made on this iPhone, the only kind the launcher can hand to the mounted image.
+    private var hasPhonePairing: Bool {
+        guard let pairingPath, let record = Self.pairingRecord(at: pairingPath) else { return false }
+        return record["identifier"] is String && (record["public_key"] as? Data)?.count == 32 && (record["private_key"] as? Data)?.count == 32
     }
     var setupReadyForUse: Bool { SetupStep.shown.allSatisfy(stepReadyForUse) }
 
@@ -2345,11 +2359,7 @@ final class AppModel {
 
     func canStartFromHome(localDDIAvailable: @autoclosure () -> Bool) -> Bool {
         if setupLooksComplete { return true }
-        guard automationPath == .inProcess, setup.loopback != .none, !setupStepsLeft,
-              let pairingPath, let record = Self.pairingRecord(at: pairingPath),
-              record["identifier"] is String,
-              (record["public_key"] as? Data)?.count == 32,
-              (record["private_key"] as? Data)?.count == 32 else { return false }
+        guard automationPath == .inProcess, setup.loopback != .none, !setupStepsLeft, hasPhonePairing else { return false }
         return localDDIAvailable()
     }
 
