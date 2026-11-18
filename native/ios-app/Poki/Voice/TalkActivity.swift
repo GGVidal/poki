@@ -13,16 +13,19 @@ final class TalkActivity {
     private let deviceName: @MainActor () -> String
     /// Poki is on: its Live Activity stays when the talk ends.
     private let keepsActivity: @MainActor () -> Bool
+    /// The talk went off.
+    private let ended: @MainActor () -> Void
     private var shown: PokiState.Voice?
     /// What EndTalkIntent's notification reaches; it holds this weakly, so an ended TalkActivity hears nothing.
     private let mailbox: Mailbox
 
     init(voice: VoiceModel, activity: ActivityController, deviceName: @escaping @MainActor () -> String,
-         keepsActivity: @escaping @MainActor () -> Bool) {
+         keepsActivity: @escaping @MainActor () -> Bool, ended: @escaping @MainActor () -> Void = {}) {
         self.voice = voice
         self.activity = activity
         self.deviceName = deviceName
         self.keepsActivity = keepsActivity
+        self.ended = ended
         mailbox = Mailbox()
         mailbox.owner = self
         mailbox.listen()
@@ -56,6 +59,7 @@ final class TalkActivity {
         // Only a Live Activity that shows nothing else goes with the talk: an approval, a hand-off, a
         // problem, pairing or setup stays.
         if talk == nil, !keepsActivity(), activity.state.phase == .idle { activity.end() }
+        if talk == nil, !started { ended() }
     }
 
     /// Talk Here (TalkHereIntent), with Poki in the background: the Live Activity starts first, while

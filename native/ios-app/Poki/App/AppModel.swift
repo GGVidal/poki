@@ -418,7 +418,8 @@ final class AppModel {
         ApprovalNotice.registerActions()
         listenForApprovals()
         talkActivity = TalkActivity(voice: voice, activity: self.activity, deviceName: { UIDevice.current.name },
-                                    keepsActivity: { [weak self] in self?.sessionOn == true })
+                                    keepsActivity: { [weak self] in self?.sessionOn == true },
+                                    ended: { [weak self] in self?.talkEnded() })
         // One pump for the app's whole life. Cancelling a task that reads an AsyncStream ends the
         // stream for good, so a pump per session would go silent after the first Turn off (no steps,
         // no approvals, no relay state in the log, which is what happened on the phone).
@@ -1413,6 +1414,21 @@ final class AppModel {
         standBy(reason: nil, keepingDone: true)
     }
 
+    /// A talk ended (End, the Action Button again, or silence): the automation its steps used closes
+    /// as at the end of a task, so iOS's banner goes at once, not when Poki next comes to the front.
+    /// A step still running closes it when it finishes.
+    private var talkStepsToClose = false
+    private func talkEnded() {
+        talkStepsToClose = true
+        closeAfterTalk()
+    }
+
+    private func closeAfterTalk() {
+        guard talkStepsToClose, !voice.isOn, stepUnderWay == nil, outsideAgentsAtWork.isEmpty else { return }
+        talkStepsToClose = false
+        closeAfterTask("the talk ended")
+    }
+
     /// Starts a paused runner again (the next agent request, or the owner).
     func wakeRunner(asked: String = "an agent asked") {
         ownerPaused = false
@@ -1712,6 +1728,7 @@ final class AppModel {
             activity.update { state in state.app = app ?? state.app }
             activity.setThumbnail(thumbnail)
             if let thumbnail, let image = UIImage(data: thumbnail) { lastShot = image }
+            closeAfterTalk()
         case .approvalRequested(let approval):
             switch ApprovalClassifier.route(approval, voiceOn: voice.isOn) {
             case .allow:

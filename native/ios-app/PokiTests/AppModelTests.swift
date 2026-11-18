@@ -1097,6 +1097,21 @@ final class InProcessPasscodeTests: XCTestCase {
         }
     }
 
+    /// A talk that ends (End, the Action Button again, or silence) closes the automation its steps used
+    /// at once: iOS's banner goes while the owner stays in the app they talked over.
+    func testTheEndOfATalkClosesTheAutomationAtOnce() async {
+        UserDefaults.standard.set("1", forKey: "pokiTalkRehearsal")
+        defer { UserDefaults.standard.removeObject(forKey: "pokiTalkRehearsal") }
+        await openSessionForATask()
+        model.wentToBackground()
+        await model.voice.start(microphone: false)
+        XCTAssertTrue(model.voice.isOn)
+        XCTAssertTrue(session.isOpen)
+
+        model.voice.stop()
+        await waitFor("the end of the talk closes automation") { !self.session.isOpen && self.model.runnerPaused }
+    }
+
     func testRemotePhoneReadWaitsForSessionWithoutInputPreparation() async throws {
         session.holdNextOpen()
         let transport = SessionScreenTransport(session: session)
