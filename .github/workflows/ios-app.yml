@@ -16,7 +16,7 @@ on:
       # The commit to test; default the calling run's.
       ref: { type: string, required: false, default: '' }
       # The caller publishes its own Poki-unsigned, so a second one by that name would clash.
-      upload_ipa: { type: boolean, required: false, default: true }
+      skip_ipa_upload: { type: boolean, required: false, default: false }
 
 permissions:
   contents: read
@@ -365,7 +365,7 @@ jobs:
           grep -q "TEST SUCCEEDED" build/tests.log
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'workflow_dispatch' || inputs.upload_ipa
+        if: ${{ !inputs.skip_ipa_upload }}
         with:
           name: Poki-unsigned
           path: out/

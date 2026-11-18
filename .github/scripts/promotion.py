@@ -70,9 +70,9 @@ def vkey(v):
     return tuple(int(x) for x in v.split("."))
 
 
-# The test jobs of prealpha.yml as GitHub names them: its App tests job runs ios-app.yml, whose jobs
-# appear as "App tests / <job id>". Renaming any of them there means renaming it here.
-TEST_JOBS = ("App tests / inprocess", "App tests / agent-chat", "App tests / app", "Poki Setup tests")
+# The test jobs of prealpha.yml as GitHub names them: its app-tests job runs ios-app.yml, whose jobs
+# appear as "app-tests / <job id>". Renaming any of them there means renaming it here.
+TEST_JOBS = ("app-tests / inprocess", "app-tests / agent-chat", "app-tests / app", "setup-tests")
 
 
 def prealpha(src):

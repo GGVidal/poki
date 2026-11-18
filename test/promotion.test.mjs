@@ -14,7 +14,7 @@ const script = join(root, '.github/scripts/promotion.py');
 const BUILT = '69585293051fee03c7ad110f037d8f4dd2a4e96f';
 const FAILED = '55b04d6b3c9190f223271ffc748538291c396e6a';
 const UNTESTED = 'c3f1e2a0b9d84c7e6f5a4b3c2d1e0f9a8b7c6d5e';
-const TESTS = ['prealpha', 'App tests / inprocess', 'App tests / agent-chat', 'App tests / app', 'Poki Setup tests'];
+const TESTS = ['prealpha', 'app-tests / inprocess', 'app-tests / agent-chat', 'app-tests / app', 'setup-tests'];
 const RUN = id => `https://github.com/example/poki/actions/runs/${id}`;
 
 const repo = {
@@ -102,7 +102,7 @@ test('a build whose run never ran the app tests is refused, naming the missing t
   const r = propose(t, 'app-0.4.5-prealpha.1700');
   assert.notEqual(r.status, 0);
   assert.ok(r.output.includes(RUN(43000000001)), r.output);
-  assert.match(r.output, /did not pass App tests \/ inprocess, App tests \/ agent-chat, App tests \/ app, Poki Setup tests/);
+  assert.match(r.output, /did not pass app-tests \/ inprocess, app-tests \/ agent-chat, app-tests \/ app, setup-tests/);
   assert.equal(r.channelsChanged, false);
   assert.equal(r.version, '0.4.5');
 });

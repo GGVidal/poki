@@ -2,7 +2,7 @@
 # push and no step to wait for. One macOS job does it all (version, build, tag, publish), because
 # each extra job costs a runner pickup. Beside it, the app tests (ios-app.yml) and Poki Setup's core
 # tests run on the same commit; a run where any of them fails cannot be promoted to Beta
-# (.github/scripts/promotion.py checks these jobs by name). It runs on main so that the caches it saves are the ones
+# (.github/scripts/promotion.py checks these jobs by id). It runs on main so that the caches it saves are the ones
 # every later run can read; a run from a tag could only read main's caches, and main had none, so
 # every release build used to start cold (about 20 minutes, 9 of them in PiSwiftAI).
 #
@@ -97,19 +97,19 @@ jobs:
 
   # The tests a build passes before it can be promoted: PokiCore and loopback tests, the in-process
   # field, apps and idle-cycle checks, the simulator smoke test with every screen, the app unit tests,
-  # and Poki's agent end to end with a scripted model. Three macOS jobs, on the same commit. They do
-  # not hold up publishing to Pre-alpha; they decide whether this build can go to Beta.
+  # and Poki's agent end to end with a scripted model. Three macOS jobs, on the same commit, after the
+  # build, so a build skipped for a newer merge takes no macOS runner for its tests. They do not hold
+  # up publishing to Pre-alpha; they decide whether this build can go to Beta. promotion.py checks
+  # them by job id ("app-tests / <job>", "setup-tests"), so renaming one means renaming it there.
   app-tests:
-    name: App tests
-    if: github.ref == 'refs/heads/main'
+    needs: prealpha
     uses: ./.github/workflows/ios-app.yml
     with:
-      upload_ipa: false
+      skip_ipa_upload: true
 
   # Poki Setup's core (release picking, pairing, signing) on Linux.
   setup-tests:
-    name: Poki Setup tests
-    if: github.ref == 'refs/heads/main'
+    needs: prealpha
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
