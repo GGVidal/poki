@@ -15,7 +15,7 @@ _Related_: Poki Runner, Conversation
 _Avoid_: iOS app, client, phone agent
 
 **Poki Runner**:
-The companion app that enables Poki to control third-party apps on iPhones where the Poki app cannot act alone.
+An optional separate helper app that can carry out Poki's control of other apps. By default the Poki app does this itself.
 _Related_: Automation session, Poki app
 _Avoid_: runner app, test runner, automation helper
 
@@ -53,7 +53,7 @@ _Avoid_: session, chat thread
 
 **Sensitive step**:
 A step that makes a payment, deletes data, sends a message, places a call, enters a password, or interacts with Wallet.
-_Related_: Approval, Takeover
+_Related_: Approval, Handoff
 _Avoid_: dangerous action, risky step
 
 **Approval**:
@@ -68,12 +68,17 @@ _Avoid_: approval mode, auto-approve, AI approver
 
 **Takeover**:
 When the owner reclaims control of the iPhone from Poki during an active task. The owner can hand back control when ready for Poki to continue.
-_Related_: Hand back, Sensitive step
-_Avoid_: handoff, interrupt, pause
+_Related_: Hand back, Handoff
+_Avoid_: interrupt, pause
+
+**Handoff**:
+When Poki stops at a step only the owner should do, such as paying, and gives the iPhone to the owner until they hand it back.
+_Related_: Hand back, Sensitive step, Takeover
+_Avoid_: takeover, escalation
 
 **Hand back**:
-Returning control of the iPhone to Poki after a takeover so the task continues from where it paused.
-_Related_: Takeover
+Returning control of the iPhone to Poki after a takeover or handoff so the task continues from where it paused.
+_Related_: Takeover, Handoff
 _Avoid_: resume, give back
 
 **Automation session**:
@@ -99,7 +104,7 @@ _Avoid_: choice card, nudge, popup
 ## Memory
 
 **Memory library**:
-Everything Poki keeps about its owner on the iPhone, including memories, skills, habits, to-dos, and Your people. Every agent operating the phone shares this library.
+Everything Poki has learned about its owner on the iPhone, in three kinds: memories, skills and habits. Every agent operating the phone shares this library.
 _Related_: Memory, Skill, Habit, Memory page
 _Avoid_: memory store, brain, knowledge base
 
@@ -145,16 +150,16 @@ _Avoid_: routine, pattern, schedule
 
 **To-do**:
 Something the owner has agreed to do, phrased as one sentence from the owner's side with a due time, which Poki reminds the owner about when it is due.
-_Related_: Your people, Screen observation
+_Related_: Your people, Task
 _Avoid_: task, reminder, commitment
 
 **Your people**:
 The people the owner refers to by name or relationship, such as "Mom", each linked to a contact with an address, a birthday, and the app the owner usually uses to reach them.
-_Related_: Memory library, To-do
+_Related_: To-do, Global memory
 _Avoid_: contacts, relationships, social graph
 
 **Source**:
-How a memory, habit, or to-do was created or updated, whether stated directly by the owner, learned during a conversation, discovered in the nightly review, or edited manually.
+How a memory or habit was created or updated, whether stated directly by the owner, learned during a conversation, discovered in the nightly review, or edited manually.
 _Related_: Reason, Locked
 _Avoid_: origin, provenance
 
@@ -164,7 +169,7 @@ _Related_: Habit, Source
 _Avoid_: basis, justification, explanation
 
 **Locked**:
-The protected status of any item added or edited by the owner, allowing Poki to read the item while preventing automatic edits or merges.
+The state of any item added or edited by the owner, allowing Poki to read the item while preventing automatic edits or merges.
 _Related_: Rule, Source
 _Avoid_: pinned, protected, frozen
 
@@ -184,7 +189,7 @@ _Related_: Behavior log, Habit, Recent updates
 _Avoid_: consolidation, background review, sync
 
 **Screen history**:
-A private, PIN-protected on-device log recording which apps appeared on screen and when.
+The owner's private record on the iPhone of what was on screen and when, kept behind its own PIN.
 _Related_: Screen observation, Behavior log
 _Avoid_: activity log, screen recording, timeline
 
@@ -201,7 +206,7 @@ _Avoid_: blocklist, private apps
 **Behavior log**:
 A concise daily summary distilled from screen history that captures when the owner used an app and what they did inside it.
 _Related_: Screen history, Nightly review, Habit
-_Avoid_: activity log, usage log, screen history
+_Avoid_: activity log, usage log
 
 **Activity log**:
 The chronological record of actions taken by agents on the iPhone and how each approval was resolved.
@@ -227,45 +232,28 @@ _Avoid_: endpoint, MCP URL, integration
 
 **Relay**:
 A forwarding service on the internet, deployed by the owner, that routes requests from external agents to the iPhone when the phone is away from the computer.
-_Related_: Connector, Local connection
+_Related_: Connector, External agent
 _Avoid_: proxy, tunnel, cloud server
 
 **Local connection**:
-The VPN app on the iPhone that lets the Poki app communicate with automation services running on the same iPhone.
-_Related_: Loopback, Relay
-_Avoid_: VPN, tunnel, proxy app
+The connection built into the Poki app that routes traffic back to the same iPhone, so Poki can reach the phone's developer services without another app.
+_Related_: Loopback, External connection
+_Avoid_: VPN, tunnel, built-in VPN
+
+**External connection**:
+A compatible VPN or proxy app the owner already uses, set up to provide the loopback in place of the local connection.
+_Related_: Loopback, Local connection
+_Avoid_: third-party VPN, external VPN
 
 **Loopback**:
-The local network route established by the local connection back to the iPhone itself. Poki requires an active loopback to tap and type.
-_Related_: Local connection
+The route back to the iPhone itself, provided by the local connection or an external connection. Poki requires an active loopback to tap and type.
+_Related_: Local connection, External connection, Pairing
 _Avoid_: localhost, VPN
 
 **Voice bridge**:
 A lightweight Mac utility that issues short-lived credentials for live voice sessions so the iPhone never stores persistent voice API keys.
 _Related_: Poki app
 _Avoid_: voice server, voice relay
-
-## Computer side
-
-**Pairing**:
-The USB trust relationship established between a computer and an iPhone, required before Poki Setup or Poki MCP can communicate with the device.
-_Related_: Poki Setup, Poki MCP
-_Avoid_: linking, binding, trust
-
-**Signing**:
-The Apple code signature that authorizes the Poki app to run on an iPhone. Signatures created with a free Apple Account expire after seven days.
-_Related_: Renewal, Poki Setup
-_Avoid_: certificate, provisioning
-
-**Renewal**:
-Re-applying the Apple code signature to an installed Poki app before the current signature expires.
-_Related_: Signing, Poki Setup
-_Avoid_: refresh, re-sign, reinstall
-
-**Release channel**:
-The line of builds a Poki installation follows for updates, such as Beta.
-_Related_: Poki Setup
-_Avoid_: channel (on its own), track, ring
 
 **Messaging channel**:
 An external chat platform, such as iMessage or Telegram, that the owner uses to communicate with Poki Agent.
@@ -281,3 +269,25 @@ _Avoid_: lock, reservation, claim
 Explicit confirmation given by the user at the computer before Poki MCP performs sensitive host or device actions, such as installing apps, opening links, or reading the clipboard.
 _Related_: Approval, Poki MCP
 _Avoid_: approval (on its own), permission
+
+## Installing and updating
+
+**Pairing**:
+The trust that lets Poki, Poki Setup or Poki MCP reach the iPhone's developer services. It is made from a computer over USB, or on the iPhone itself on recent iOS versions.
+_Related_: Poki Setup, Loopback
+_Avoid_: linking, binding
+
+**Signing**:
+The Apple code signature that authorizes the Poki app to run on an iPhone. Signatures created with a free Apple Account expire after seven days.
+_Related_: Renewal, Poki Setup
+_Avoid_: certificate, provisioning
+
+**Renewal**:
+Re-applying the Apple code signature to an installed Poki app before the current signature expires, from Poki Setup or from the Poki app itself.
+_Related_: Signing, Poki Setup
+_Avoid_: refresh, re-sign, reinstall
+
+**Release channel**:
+The line of builds a Poki installation follows for updates, such as Beta.
+_Related_: Poki Setup
+_Avoid_: channel (on its own), track, ring
