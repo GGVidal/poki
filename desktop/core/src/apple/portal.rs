@@ -311,14 +311,37 @@ impl<'a> Portal<'a> {
     }
 }
 
+/// The developer portal turned the Xcode token away: code 1100, or its sentence under another code.
+fn is_expired_session(code: i64, text: &str) -> bool {
+    code == 1100 || text.to_ascii_lowercase().contains("session has expired")
+}
+
 fn portal_error(code: i64, text: String) -> Error {
     let t = match code {
         7460 => "This team has registered its limit of devices. Remove one at developer.apple.com, or use another Apple ID.".to_string(),
         3250 | 7250 => "A free Apple ID can only sign three apps at a time, and Apple counts Poki's extensions. Remove another sideloaded app from your developer account and try again.".to_string(),
         9100 | 7460_0 => text,
         35 => "Apple's developer agreement has changed. Open developer.apple.com once, accept it, then try again.".to_string(),
+        // Apple's own words ("Your session has expired. Please log in.") name no way back. Poki's
+        // sentence is the one the apps know, translate and offer Sign In Again for.
+        _ if is_expired_session(code, &text) => return Error::NeedsPerson(super::gsa::SESSION_EXPIRED.into()),
         _ if text.is_empty() => format!("The developer portal refused the request (code {code})."),
         _ => text,
     };
     Error::apple(code, t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_portal_session_reads_as_sign_in_again() {
+        for (code, text) in [(1100, "Your session has expired. Please log in."), (9999, "Your session has expired. Please log in."), (1100, "")] {
+            let e = portal_error(code, text.into());
+            assert!(super::super::gsa::is_session_expired(&e), "{code} {text}");
+            assert_eq!(e.to_string(), super::super::gsa::SESSION_EXPIRED);
+        }
+        assert!(!super::super::gsa::is_session_expired(&portal_error(35, String::new())));
+    }
 }
