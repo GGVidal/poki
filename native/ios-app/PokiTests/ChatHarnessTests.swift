@@ -442,6 +442,64 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertEqual(result.details, [TaskResult.Detail(label: "Battery", value: "81%")])
     }
 
+    /// A result card the app cannot draw costs only the card: the task's result stays, no card appears
+    /// and the model is told to give the whole result in words. A card it can draw appears under the
+    /// task with Poki's suggestion selected and the model adds only a conclusion; the item you select
+    /// comes back with the conversation as it is saved.
+    func testAResultCardTheAppCannotDrawLeavesTheWholeResultToTheReply() async throws {
+        func train(_ number: String, _ depart: String) -> [String: Any] {
+            ["id": number, "title": number, "date": "11月20日 周四", "from": "北京南", "to": "上海虹桥", "depart": depart,
+             "arrive": "12:28", "price": "¥626", "seats": [["name": "二等座", "left": "有"]]]
+        }
+        func finish(_ items: [[String: Any]]) -> String {
+            FakeCompletions.tool("finish_task", [
+                "success": true, "summary": "Found 2 trains.", "details": [["label": "G1", "value": "07:00"]], "answer": ["kind": "list"],
+                "card": ["app": "cn.12306.rails12306", "kind": "12306.trains", "recommended": "G1", "items": items,
+                         "primary": ["label": "在 12306 查看", "say": "在 12306 打开 {title} 次"],
+                         "next": ["label": "发到公司差旅群", "say": "把 {title} 次发到公司差旅群"]],
+            ])
+        }
+        let server = try FakeCompletions(replies: [
+            finish([train("G1", "07:00"), ["id": "G3", "title": "G3"]]), FakeCompletions.text("G1 07:00, G3 08:00."),
+            finish([train("G1", "07:00"), train("G3", "08:00")]), FakeCompletions.text("G1 is the earliest."),
+        ])
+        let chat = chat(on: server, kind: .poki)
+        var records: [TaskRecord] = []
+        ChatModel.afterTask = { records.append($0) }
+        func cards() -> [ChatEntry] { chat.entries.filter { if case .card = $0.kind { true } else { false } } }
+        func ask(_ text: String) async throws {
+            chat.send(text)
+            for _ in 0..<200 where chat.running { try await Task.sleep(for: .milliseconds(50)) }
+            XCTAssertFalse(chat.running)
+        }
+
+        try await ask("Find trains from Beijing to Shanghai")
+        XCTAssertEqual(records.last?.result?.summary, "Found 2 trains.")
+        XCTAssertEqual(cards(), [])
+        guard server.requests.count == 2 else { return XCTFail("\(server.requests.count) model requests") }
+        XCTAssertTrue(Self.toolAnswer(server.requests[1]).contains("give the whole result in words"), Self.toolAnswer(server.requests[1]))
+
+        try await ask("Find trains from Beijing to Shanghai for tomorrow")
+        let entry = try XCTUnwrap(cards().last)
+        guard case .card(let card) = entry.kind, let next = card.next else { return XCTFail("no card") }
+        guard server.requests.count == 4 else { return XCTFail("\(server.requests.count) model requests") }
+        XCTAssertEqual(card.selected(entry.chosen).fill(next.say), "把 G1 次发到公司差旅群")
+        XCTAssertTrue(Self.toolAnswer(server.requests[3]).contains("one plain sentence"), Self.toolAnswer(server.requests[3]))
+
+        chat.choose("G3", on: entry.id)
+        let saved = try JSONDecoder().decode([ChatEntry].self, from: JSONEncoder().encode(chat.entries))
+        let reopened = try XCTUnwrap(saved.first { $0.id == entry.id })
+        guard case .card(let again) = reopened.kind else { return XCTFail("the saved card") }
+        XCTAssertEqual(again.selected(reopened.chosen).fill(next.say), "把 G3 次发到公司差旅群")
+    }
+
+    /// The tool answer the model was given last in a request.
+    private static func toolAnswer(_ request: [String: Any]) -> String {
+        let messages = request["messages"] as? [[String: Any]] ?? []
+        guard let tool = messages.last(where: { $0["role"] as? String == "tool" }) else { return "" }
+        return (tool["content"] as? String) ?? json(tool)
+    }
+
     /// The model's name for the task comes with its plan and is kept on the task's plan entry, where
     /// the task card reads its title ("Book a class", not the whole sentence that was asked). A
     /// sentence sent as the title is not taken. When the task ends, its entry also keeps how it ended.
