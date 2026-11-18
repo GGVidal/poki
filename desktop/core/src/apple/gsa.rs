@@ -1127,6 +1127,10 @@ mod rate_limit_regressions {
         second_apptokens: Option<(u16, i64, String)>,
         /// Runs while an apptokens request is in flight, before the answer goes back.
         on_apptokens: Option<fn()>,
+        /// What Apple does once a code is checked: the next password step answers 200 with a
+        /// new session, and app tokens asked for with the 409 session from before the code get
+        /// hsc 401 with ec -22411.
+        apple_after_code: bool,
     }
 
     impl Default for MockBehavior {
@@ -1148,6 +1152,7 @@ mod rate_limit_regressions {
                 apptokens_em: String::new(),
                 second_apptokens: None,
                 on_apptokens: None,
+                apple_after_code: false,
             }
         }
     }
@@ -1177,11 +1182,14 @@ mod rate_limit_regressions {
         plist_xml(root)
     }
 
-    fn encrypt_spd_for_test(srp_key: &[u8], include_keys: bool) -> Vec<u8> {
+    const TOKEN_BEFORE_CODE: &str = "idms-tok-1";
+    const TOKEN_AFTER_CODE: &str = "idms-tok-after-code";
+
+    fn encrypt_spd_for_test(srp_key: &[u8], include_keys: bool, idms_token: &str) -> Vec<u8> {
         use aes::cipher::{BlockEncryptMut, KeyIvInit};
         let mut spd = plist::Dictionary::new();
         spd.insert("adsid".into(), "000123-abc".into());
-        spd.insert("GsIdmsToken".into(), "idms-tok-1".into());
+        spd.insert("GsIdmsToken".into(), idms_token.into());
         spd.insert("fn".into(), "Test".into());
         spd.insert("ln".into(), "Person".into());
         if include_keys {
@@ -1217,6 +1225,12 @@ mod rate_limit_regressions {
         et.extend_from_slice(&iv);
         et.extend_from_slice(&ct);
         et
+    }
+
+    async fn return_gs(stream: &mut tokio::net::TcpStream, body: Vec<u8>) {
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/x-xml-plist\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        let _ = stream.write_all(head.as_bytes()).await;
+        let _ = stream.write_all(&body).await;
     }
 
     async fn start_mock_gsa(initial: MockBehavior) -> MockGsa {
@@ -1304,8 +1318,13 @@ mod rate_limit_regressions {
                                         if let Some((key, m2)) = srp_srv.verify_and_m2(&a_pub, m1) {
                                             let mut r = plist::Dictionary::new();
                                             r.insert("M2".into(), plist::Value::Data(m2));
+                                            if b.apple_after_code && already_validated {
+                                                r.insert("spd".into(), plist::Value::Data(encrypt_spd_for_test(&key, true, TOKEN_AFTER_CODE)));
+                                                return_gs(&mut stream, gs_response(r, 0, 200, None)).await;
+                                                return;
+                                            }
                                             let include_keys = b.hsc != 409 || b.include_session_keys_on_409;
-                                            r.insert("spd".into(), plist::Value::Data(encrypt_spd_for_test(&key, include_keys)));
+                                            r.insert("spd".into(), plist::Value::Data(encrypt_spd_for_test(&key, include_keys, TOKEN_BEFORE_CODE)));
                                             let eff_au = if b.hsc == 409 && already_validated && !b.include_session_keys_on_409 {
                                                 None
                                             } else {
@@ -1328,7 +1347,9 @@ mod rate_limit_regressions {
                                         if let Some(hook) = b.on_apptokens {
                                             hook();
                                         }
+                                        let before_code = s(req, "t") == Some(TOKEN_BEFORE_CODE);
                                         let (app_status, app_ec, app_em) = match (call_num, &b.second_apptokens) {
+                                            _ if b.apple_after_code && before_code => (401, -22411, "This action cannot be completed at this time".to_string()),
                                             (n, Some((st, ec, em))) if n >= 2 => (*st, *ec, em.clone()),
                                             _ => (b.apptokens_status, b.apptokens_ec, b.apptokens_em.clone()),
                                         };
@@ -1541,7 +1562,7 @@ mod rate_limit_regressions {
     }
 
     #[test]
-    fn verified_code_uses_session_directly_without_second_sign_in() {
+    fn verified_code_signs_in_again_without_a_second_code() {
         run_in_vault(async {
             let mock = start_mock_gsa(MockBehavior::default()).await;
             let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
@@ -1552,11 +1573,56 @@ mod rate_limit_regressions {
             signer.finish_sign_in(pending, "654321").await.unwrap();
             let c = mock.counts.lock().unwrap().clone();
             assert_eq!(c.device_validate, 1, "validated code once");
-            assert_eq!(c.srp_complete, 1, "must use the session directly and NOT call sign_in_once a second time");
-            assert_eq!(c.trusted_device_push, 1, "total codes requested in one sign-in must be 1");
+            assert_eq!(c.srp_complete, 2, "signs in once more after the code");
+            assert_eq!(c.total_codes_sent(), 1, "total codes requested in one sign-in must be 1");
 
             let token = signer.token().await.unwrap();
             assert_eq!(token.token, "xcode-auth-token-ok");
+        });
+    }
+
+    /// Apple turns away app tokens for the 409 session from before the code (hsc 401, ec -22411)
+    /// and answers the next password step with 200. A sign-in with a code must still end with an
+    /// app token, which is what the team list and every signing step need, after one code.
+    #[test]
+    fn sign_in_with_a_code_gets_an_app_token_after_one_code() {
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior { apple_after_code: true, ..MockBehavior::default() }).await;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            let pending = signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().expect("needs code");
+            signer.finish_sign_in(pending, "654321").await.unwrap();
+
+            let token = signer.token().await.expect("an app token after the code");
+            assert_eq!(token.token, "xcode-auth-token-ok");
+            let c = mock.counts.lock().unwrap().clone();
+            assert_eq!(c.total_codes_sent(), 1, "one code for the whole sign-in");
+            assert_eq!(c.apptokens, 1);
+            assert!(!signer.is_rate_limited(), "no cooldown");
+        });
+    }
+
+    /// -22411 with hsc 401 is Apple turning the session away, not a rate limit: the person is asked
+    /// to sign in again, and nothing is locked for an hour.
+    #[test]
+    fn apptokens_401_with_ec_22411_asks_to_sign_in_again_without_cooldown() {
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior {
+                hsc: 200,
+                au: None,
+                apptokens_status: 401,
+                apptokens_ec: -22411,
+                apptokens_em: "This action cannot be completed at this time".into(),
+                ..MockBehavior::default()
+            })
+            .await;
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+            assert!(signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap().is_none());
+
+            let err = signer.token().await.unwrap_err();
+            assert!(!is_rate_limit(&err), "401 with -22411 is not a rate limit, got: {err}");
+            assert!(err.to_string().to_lowercase().contains("sign in again"), "asks to sign in again, got: {err}");
+            assert!(!signer.is_rate_limited(), "no one-hour cooldown");
+            assert_eq!(mock.counts.lock().unwrap().total_codes_sent(), 0);
         });
     }
 
