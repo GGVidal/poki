@@ -117,7 +117,9 @@ final class InProcessWDA: HTTPTransport, @unchecked Sendable {
             case refuse(code: String, detail: String)
         }
 
-        private static let staleOpening: Duration = .seconds(15)
+        /// Longer than iOS keeps its passcode screen up (about a minute): an open still waiting for the
+        /// owner's passcode is never taken as stale, so a second open cannot bring up a second screen.
+        private static let staleOpening: Duration = .seconds(90)
         private(set) var phase: Phase = .awaitingFirstBootOpen
         private(set) var inFront = true
 

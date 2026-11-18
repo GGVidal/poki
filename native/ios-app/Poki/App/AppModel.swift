@@ -273,7 +273,7 @@ final class AppModel {
         case .inProcessWarm(let reason):
             warmInProcess(reason)
         case .runnerStart(let reconnectLocal):
-            startSession(reconnectLocal: reconnectLocal)
+            startSession(reconnectLocal: reconnectLocal, byOwner: true)
         }
     }
     func cancelPasscodeHeadsUp() {
@@ -645,7 +645,7 @@ final class AppModel {
         guard automationPath == .inProcess, setup.loopback != .none, !probeDriven else { return }
         if !sessionOn {
             pendingPrepareForTask = true
-            startSession(byOwner: false)
+            startSession()
         }
         guard sessionOn, runnerPaused else { return }
         pendingPrepareForTask = false
@@ -672,7 +672,9 @@ final class AppModel {
             return
         }
         if inProcessWarming {
-            guard Date().timeIntervalSince(inProcessWarmStarted) > Self.staleOpen else { return }
+            // An open held by iOS's passcode screen is the owner typing, not a stale open: iOS
+            // answers it within about a minute, and a second open would bring up a second screen.
+            guard !inProcessPasscode, Date().timeIntervalSince(inProcessWarmStarted) > Self.staleOpen else { return }
             log.add("runner", "the in-process open under way has not answered in \(Int(Self.staleOpen)) s: asking again for \(why)")
         }
         log.add("session-timing", String(format: "session_requested uptime=%.6f", ProcessInfo.processInfo.systemUptime))
@@ -845,7 +847,7 @@ final class AppModel {
         Task {
             await tunnel.refresh()
             await diskImage.ensureChecked()
-            if wantsOn, !sessionOn, pairingPath != nil, diskImage.hasFiles { startSession(reconnectLocal: false, byOwner: false) }
+            if wantsOn, !sessionOn, pairingPath != nil, diskImage.hasFiles { startSession(reconnectLocal: false) }
         }
     }
 
@@ -1056,14 +1058,15 @@ final class AppModel {
         return await task.value
     }
 
-    func startSession(reconnectLocal: Bool = true, byOwner: Bool = true) {
+    func startSession(reconnectLocal: Bool = true, byOwner: Bool = false) {
         if passcodeConfirmationPending {
             if byOwner { _ = transitionPasscodeConsent(.request(.runnerStart(reconnectLocal: reconnectLocal), byOwner: true)) }
             return
         }
         guard !sessionOn, !sessionStarting else { return }
         diskImage.refreshAvailability()
-        // Turning on is the owner asking for automation again, after a cancelled passcode screen too.
+        // The owner turning Poki on asks for automation again, after a cancelled passcode screen too.
+        // An agent turning it on does not.
         if byOwner { InProcessWDA.transitionGate(.ownerReenabled) }
         // The first automation after a restart (or ever) brings up iOS's own passcode screen. With
         // Poki in front, the owner is told first that it is expected and that Poki cannot see it.
@@ -1495,9 +1498,8 @@ final class AppModel {
 
     /// Starts a paused runner again (the next agent request, or the owner).
     func wakeRunner(asked: String = "an agent asked", byOwner: Bool = false) {
-        let ownerReenabling = byOwner || ownerPaused
         ownerPaused = false
-        if ownerReenabling {
+        if byOwner {
             InProcessWDA.transitionGate(.ownerReenabled)
             if inProcessSession == .passcodeMissed { inProcessSession = .idle }
         }
@@ -1508,7 +1510,7 @@ final class AppModel {
                 return
             }
             if inProcessSession == .idle { inProcessSession = .opening }
-            if !runnerPaused { warmInProcess(asked, byOwner: ownerReenabling); return }
+            if !runnerPaused { warmInProcess(asked, byOwner: byOwner); return }
         }
         guard sessionOn, runnerPaused else { return }
         runnerPaused = false
@@ -1516,7 +1518,7 @@ final class AppModel {
         lastAgentActivity = Date()
         log.add("runner", automationPath == .inProcess ? "\(asked): opening the automation session again" : "\(asked): starting the runner")
         activity.update { $0.runnerPaused = false; $0.phase = .working; $0.headline = "Starting the runner"; $0.since = Date() }
-        if automationPath == .inProcess, runner.isRunning { warmInProcess(asked, byOwner: ownerReenabling); return }
+        if automationPath == .inProcess, runner.isRunning { warmInProcess(asked, byOwner: byOwner); return }
         launchRunner()
     }
 
@@ -2016,7 +2018,7 @@ final class AppModel {
         if name == "status" || name == "routines" { return await core.callTool(name, arguments: arguments, localSession: localSession) }
         if probeDriven { return await core.callTool(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps) }
         if !sessionOn {
-            if !sessionStarting { startSession(byOwner: false) }
+            if !sessionStarting { startSession() }
             if let task = sessionStartTask { await task.value }
         }
         if passcodeConfirmationPending {

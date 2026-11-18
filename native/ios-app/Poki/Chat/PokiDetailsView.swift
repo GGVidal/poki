@@ -430,7 +430,7 @@ struct ConnectionView: View {
         } else if model.sessionOn {
             model.wakeRunner(asked: "turned on by the owner", byOwner: true)
         } else {
-            model.startSession()
+            model.startSession(byOwner: true)
         }
     }
 }
