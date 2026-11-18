@@ -205,6 +205,10 @@ struct PokiFlight: View {
 struct PokiHead: View {
     var sizes = HomeSizes()
     var home: Bool
+    /// Settings › Models, for the menu's Add Model.
+    var openModel: () -> Void = {}
+    /// A tap on the pill: the bear says hi while the menu opens.
+    var openDetails: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -214,11 +218,17 @@ struct PokiHead: View {
             // its place stays, and the bar keeps its height on both pages.
             ZStack {
                 if !home {
-                    Text(verbatim: "Poki")
-                        .font(.caption.weight(.semibold)).foregroundStyle(Color(.label))
-                        .padding(.horizontal, 12).frame(minHeight: 24)
-                        .glassSurface(in: Capsule())
-                        .glassAppearing()
+                    // The menu is the name pill alone: the system draws its own glass around a menu's
+                    // label in a glass group, and a label that held the picture's place too put the
+                    // whole of Poki in one pill. The glass is on the menu, so it opens from the pill.
+                    PokiMenu(openModel: openModel, tapped: openDetails) {
+                        Text(verbatim: "Poki")
+                            .font(.caption.weight(.semibold)).foregroundStyle(Color(.label))
+                            .padding(.horizontal, 12).frame(minHeight: 24)
+                            .contentShape(Capsule())
+                    }
+                    .glassSurface(in: Capsule())
+                    .glassAppearing()
                 }
             }
             .frame(minHeight: 24)
@@ -289,12 +299,11 @@ struct ChatTopBar: View {
                 }
             }
             .padding(.top, (sizes.avatar - sizes.button) / 2)
-            PokiMenu(openModel: openModel, tapped: openDetails) {
-                PokiHead(home: home).contentShape(.rect)
-            }
+            PokiHead(home: home, openModel: openModel, openDetails: openDetails)
             .allowsHitTesting(!home)
             .accessibilityHidden(home)
-            .accessibilityElement(children: .ignore)
+            // Combined, not ignored: the menu inside is what VoiceOver's activate opens.
+            .accessibilityElement(children: .combine)
             .accessibilityLabel(Text(verbatim: "Poki, " + PokiStatusCopy.word(status)))
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("chat.header.details")
