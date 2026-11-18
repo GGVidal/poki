@@ -53,7 +53,8 @@ enum VoiceApps {
             if ids.first == settingsID, let link = URL(string: "App-prefs:\(route)"), await openLink(link) {
                 // Settings slides the page in; read it once it holds still.
                 let read = await tool("do", #"{"actions":[{"wait_until":{"settled":true,"ms":2500}}]}"#)
-                return ("opened Settings on its \(page) page by its link\n" + read.text, read.failed, read.screen)
+                // The link can land on Settings' first page when iOS no longer knows the route.
+                return ("opened Settings by the link to its \(page) page. If the screen is not that page, tap it in Settings.\n" + read.text, read.failed, read.screen)
             }
             note = ids.first == settingsID
                 ? "The \(page) page could not be opened by its link (Poki opens links only while it is in front); Settings is open: tap the page, using scroll_to when it is not listed.\n"
