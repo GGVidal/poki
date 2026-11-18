@@ -101,6 +101,9 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
     private var capturedBytes = 0
     private var capturedChunks = 0
     private var playedBytes = 0
+    private var microphoneOn = false
+    private var observers: [NSObjectProtocol] = []
+    private var restart: Task<Void, Never>?
 
     @MainActor
     init(adapter: VoiceSocketAdapter,
@@ -247,8 +250,6 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
         onClosed(reason)
     }
 
-    // TODO: no observer for AVAudioEngineConfigurationChange or audio session interruptions yet; a route
-    // change (headphones, a call) stops the engine and the talk goes silent until it ends.
     @MainActor
     private func startAudio(microphone: Bool) throws {
         let audio = AVAudioSession.sharedInstance()
@@ -269,6 +270,7 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
             try audio.setActive(true)
         }
         audioStarted = true
+        microphoneOn = microphone
 
         if !playerAttached {
             engine.attach(player)
@@ -276,9 +278,20 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
             playerAttached = true
         }
         player.volume = remoteVolume
+        try runEngine()
+        watchAudio()
+    }
 
-        if microphone {
+    /// Taps the microphone in the format the hardware has now and starts the engine. Called again after
+    /// a route change, since headphones or a car change the microphone's sample rate.
+    @MainActor
+    private func runEngine() throws {
+        if microphoneOn {
             let input = engine.inputNode
+            if tapInstalled {
+                input.removeTap(onBus: 0)
+                tapInstalled = false
+            }
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0, format.channelCount > 0,
                   let pcm = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: adapter.inputSampleRate, channels: 1, interleaved: false),
@@ -306,6 +319,71 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
         engine.prepare()
         try engine.start()
         player.play()
+    }
+
+    /// A route change (headphones, a car) stops the engine, and a phone call or Siri interrupts the
+    /// audio session. Either way the talk would stay silent until it ended, so the engine starts again.
+    @MainActor
+    private func watchAudio() {
+        guard observers.isEmpty else { return }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.restartAudio(reactivate: false) }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended
+            MainActor.assumeIsolated {
+                if ended { self?.restartAudio(reactivate: true) } else { self?.audioInterrupted() }
+            }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.restartAudio(reactivate: true) }
+        })
+    }
+
+    /// Whatever Poki was saying when the audio stopped is gone; say so, or the talk waits for it to end.
+    @MainActor
+    private func dropPlayback() {
+        let speaking = playback.pendingBuffers > 0
+        playback.invalidate()
+        player.stop()
+        if speaking { onEvent(["type": "output_audio_buffer.stopped"]) }
+    }
+
+    @MainActor
+    private func audioInterrupted() {
+        guard !closed, audioStarted else { return }
+        restart?.cancel()
+        dropPlayback()
+    }
+
+    /// Several notifications arrive for one change, so the restart waits a moment and runs once.
+    @MainActor
+    private func restartAudio(reactivate: Bool) {
+        guard !closed, audioStarted else { return }
+        restart?.cancel()
+        restart = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, !Task.isCancelled, !self.closed, self.audioStarted else { return }
+            if !reactivate, self.engine.isRunning { return }
+            self.dropPlayback()
+            self.engine.stop()
+            do {
+                if reactivate {
+                    let audio = AVAudioSession.sharedInstance()
+                    if self.microphoneOn {
+                        try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                    } else {
+                        try audio.setCategory(.playback, mode: .default)
+                    }
+                    try audio.setActive(true)
+                }
+                try self.runEngine()
+            } catch {
+                guard let socket = self.socket else { return }
+                self.reportFailure(socket, reason: "voice audio did not start again: \(error.localizedDescription)")
+            }
+        }
     }
 
     private static func installTap(_ input: AVAudioInputNode, format: AVAudioFormat,
@@ -423,6 +501,10 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
         closing?.cancel(with: .normalClosure, reason: nil)
         network.finishTasksAndInvalidate()
         playback.invalidate()
+        restart?.cancel()
+        restart = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
         if tapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             tapInstalled = false
