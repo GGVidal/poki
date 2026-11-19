@@ -55,6 +55,9 @@ struct AccountPage: View {
             }
             if signer.sessionExpired {
                 Section { SessionExpiredLabel() }
+                    // Apple may take the sign-in again by now (its developer service turned one token
+                    // away, then took the next). Opening the page checks once, as it does when signed in.
+                    .task { if signer.working == nil, !signer.needsCode, !signer.rateLimited { await signer.loadTeams() } }
             }
             Section {
                 TextField("Apple ID", text: $appleID)
@@ -74,6 +77,10 @@ struct AccountPage: View {
             }
             // Signing in again is for the same account, so its Apple ID is already there.
             .onAppear { if appleID.isEmpty, signer.sessionExpired { appleID = signer.status?.apple_id ?? "" } }
+            // The account is still stored, so it can be signed out here as when its sign-in works.
+            if signer.sessionExpired, signer.signedIn {
+                Section { Button("Sign Out", role: .destructive) { Task { await signer.signOut() } } }
+            }
         }
         SignerActivityRows(signer: signer, offersSignIn: false)
     }
@@ -115,23 +122,19 @@ struct SignerActivityRows: View {
                 if let f = signer.fraction { ProgressView(value: f) { Text(verbatim: local(working)) } } else { LabeledContent { ProgressView() } label: { Text(verbatim: local(working)) } }
             }
         }
-        if signer.sessionExpired {
-            // Apple's sign-in ran out: say so plainly, with the way back right under it.
-            // Where the sign-in form is already on screen, it says this above the form instead.
-            if offersSignIn {
-                Section {
-                    SessionExpiredLabel()
-                    NavigationLink {
-                        Form { AccountPage() }
-                            .navigationTitle(AppLocalization.text("Apple Account"))
-                            .navigationBarTitleDisplayMode(.inline)
-                    } label: {
-                        Label("Sign In Again", systemImage: "person.crop.circle.badge.checkmark")
-                    }
-                    .disabled(signer.working != nil)
+        // Apple's sign-in ran out: say so plainly, with the way back right under it. Where the sign-in
+        // form is already on screen, the page says this above the form instead.
+        if signer.sessionExpired, offersSignIn {
+            Section {
+                SessionExpiredLabel()
+                NavigationLink { AppleAccountPage() } label: {
+                    SettingsLabel("Sign In Again", systemImage: "person.crop.circle.badge.checkmark")
                 }
+                .disabled(signer.working != nil)
             }
-        } else if let error = signer.lastError {
+        }
+        // Every failure but Apple's expired sentence itself, which the row above or the form says.
+        if let error = signer.shownError {
             // The signer's words are English; those the strings table knows are shown in the owner's language.
             Section { problem(Text(verbatim: local(error))) }
         }
