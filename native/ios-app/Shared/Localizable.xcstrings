@@ -34634,22 +34634,6 @@
         }
       }
     },
-    "An experiment. Poki reads the text of the app in front only after you start here, and keeps it on this iPhone. Leave Poki after starting. A run ends when its time is up, when the iPhone locks, or when iOS ends Poki's time in the background. Password fields are left out, and nothing is sent anywhere." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "实验功能。只有在这里开始后，Poki 才会读取前台应用的文字，并只保存在这台 iPhone 上。开始后请离开 Poki。时间到、iPhone 锁定，或 iOS 结束 Poki 的后台时间时，读取就会停止。密码栏不会被读取，也不会发送到任何地方。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "實驗功能。只有在這裡開始後，Poki 才會讀取前景 App 的文字，並只保存在這台 iPhone 上。開始後請離開 Poki。時間到、iPhone 鎖定，或 iOS 結束 Poki 的背景時間時，讀取就會停止。密碼欄不會被讀取，也不會傳送到任何地方。"
-          }
-        }
-      }
-    },
     "Enter the Screen History PIN to forget this. It cannot be brought back." : {
       "localizations" : {
         "zh-Hans" : {
@@ -36777,6 +36761,70 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "只保留一個已下載的模型，下載此模型會移除之前的那個。在沒有 Apple Intelligence 的 iPhone 上，螢幕歷史用它來撰寫記錄。"
+          }
+        }
+      }
+    },
+    "Show Ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示就绪"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "顯示就緒"
+          }
+        }
+      }
+    },
+    "Poki shows Ready on the Lock Screen and in the Dynamic Island while it waits for a task." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 等待任务时，会在锁定屏幕和灵动岛上显示“就绪”。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 等待任務時，會在鎖定畫面和動態島上顯示「就緒」。"
+          }
+        }
+      }
+    },
+    "Poki stays ready in the background with nothing on the Lock Screen. Tasks you start in Poki still show their progress. Agents’ tasks and approvals arrive as notifications." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 会在后台保持就绪，锁定屏幕上不显示任何内容。你在 Poki 中开始的任务仍会显示进度。智能体的任务和批准请求将以通知形式送达。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 會在背景保持就緒，鎖定畫面上不顯示任何內容。你在 Poki 中開始的任務仍會顯示進度。智慧體的任務和批准請求將以通知形式送達。"
+          }
+        }
+      }
+    },
+    "An experiment. While Screen History is on, Poki reads the text of the app in front and keeps it on this iPhone. Reading waits while the iPhone is locked or an agent works, then goes on by itself. Stop holds it until you open Poki again. Password fields are left out, and nothing is sent anywhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验功能。屏幕历史开启时，Poki 会读取前台应用的文字，并只保存在这台 iPhone 上。iPhone 锁定或智能体工作时读取会等待，之后自动继续。点停止后，下次打开 Poki 前不再读取。密码栏不会被读取，也不会发送到任何地方。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "實驗功能。螢幕歷史開啟時，Poki 會讀取前景 App 的文字，並只保存在這台 iPhone 上。iPhone 鎖定或代理工作時讀取會等待，之後自動繼續。點一下停止後，下次打開 Poki 前不再讀取。密碼欄不會被讀取，也不會傳送到任何地方。"
           }
         }
       }
