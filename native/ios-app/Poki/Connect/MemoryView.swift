@@ -27,9 +27,9 @@ struct MemoryView: View {
                         .swipeActions { Button("Forget", role: .destructive) { _ = store.forget(r.name); reload() } }
                 }
             } header: {
-                SettingsHeader("Routines")
+                SettingsHeader("Skills")
             } footer: {
-                Text("An agent saves a routine after a task that worked; the next time it repeats the task in one step and stops where the screen differs. Swipe a routine to forget it.")
+                Text("When a task succeeds, an agent saves a skill to repeat it in one step next time, and stops if the screen changes. Swipe to forget.")
             }
 
             Section {
@@ -55,7 +55,7 @@ struct MemoryView: View {
             } header: {
                 SettingsHeader("Move or Back Up")
             } footer: {
-                Text(message ?? AppLocalization.text(LocalizedStringResource("One file with every routine and note. Importing merges it in; the newer copy of a routine wins. Poki Setup on your computer can back it up and put it back.")))
+                Text(message ?? AppLocalization.text(LocalizedStringResource("Exports all skills and notes into a single file. Importing merges entries and keeps newer versions. You can also back up and restore data using Poki Setup on your computer.")))
             }
 
             Section {
@@ -84,7 +84,7 @@ struct MemoryView: View {
                 message = error.localizedDescription
             }
         }
-        .confirmationDialog("Clear all routines and notes on this iPhone?", isPresented: $confirmClear, titleVisibility: .visible) {
+        .confirmationDialog("Clear all skills and notes on this iPhone?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear Memory", role: .destructive) { store.clearAll(); reload() }
         }
     }
@@ -124,10 +124,18 @@ private struct RoutineRow: View {
         }
     }
 
+    private var appName: String {
+        guard let app = routine.app, !app.isEmpty else {
+            return AppLocalization.text(LocalizedStringResource("Other"))
+        }
+        return AppIconStore.name(app) ?? app
+    }
+
     private var detail: String {
+        let sep = AppLocalization.locale.language.languageCode?.identifier == "zh" ? "，" : ", "
         let steps = AppLocalization.text(LocalizedStringResource("\(routine.steps.count) steps"))
         let runs = routine.runs == 0 ? AppLocalization.text(LocalizedStringResource("not run yet")) : AppLocalization.text(LocalizedStringResource("worked \(routine.ok) of \(routine.runs)"))
-        let base = "\(steps) · \(runs) · \(routine.savedBy)"
-        return routine.stale ? AppLocalization.text(LocalizedStringResource("Needs redoing: stopped twice in a row")) + " · " + base : base
+        let base = [appName, steps, runs, routine.savedBy].joined(separator: sep)
+        return routine.stale ? AppLocalization.text(LocalizedStringResource("Needs redoing: stopped twice in a row")) + sep + base : base
     }
 }

@@ -216,7 +216,7 @@ final class AppModel {
     let host = AppCoreHost()
     /// Poki Runner or Poki's own process, fixed for this launch (Debug tab).
     let automationPath = AutomationPath.current
-    private let core: LiveCore
+    let core: LiveCore
     private let launcher: RunnerLauncher
     private let pairer: DevicePairing
     private let pairingKeepAlive = KeepAlive()
@@ -2039,7 +2039,7 @@ final class AppModel {
     }
 
     func runTool(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil) async -> PokiCore.ToolAnswer {
-        if name == "status" || name == "routines" || name == "screen_history" { return await core.callTool(name, arguments: arguments, localSession: localSession) }
+        if name == "status" || name == "skills" || name == "routines" || name == "screen_history" { return await core.callTool(name, arguments: arguments, localSession: localSession) }
         if probeDriven { return await core.callTool(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps) }
         if !sessionOn {
             if !sessionStarting { startSession() }

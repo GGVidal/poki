@@ -1018,7 +1018,7 @@ final class ChatModel {
                 }
                 let actions = args["actions"] as? [[String: Any]] ?? []
                 if args["finish"] as? Bool == true || actions.contains(where: { $0["launch"] != nil || $0["run"] != nil || $0["button"] != nil }) {
-                    return splitViewRefusal("Keep both apps in place. Do not launch apps, use hardware buttons, or run routines. Finish with finish_task.")
+                    return splitViewRefusal("Keep both apps in place. Do not launch apps, use hardware buttons, or run skills. Finish with finish_task.")
                 }
             case "report_plan", "finish_task", "status", "screen_history": break
             default:
