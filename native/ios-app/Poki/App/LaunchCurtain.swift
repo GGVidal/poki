@@ -84,11 +84,12 @@ enum LaunchMotion {
     /// The launch screen held still before anything moves.
     static let hold = 0.12
     static let sink = 0.55
-    static let lift = 0.35
+    static let lift = 0.25
     static let wordRise: CGFloat = 12
-    /// The light's picture starts to fade once the bear is under way, so the bear is not seen sinking
-    /// through a page that is already changing.
-    static let revealDelay = 0.2
+    /// The light's picture starts to fade once the word is gone and the bear is under way, so the word
+    /// is never seen over the home page's picture of Poki, nor the bear sinking through a page that is
+    /// already changing.
+    static let revealDelay = 0.25
     static let reveal = 0.4
     /// With Reduce Motion, the whole launch screen fades out.
     static let fade = 0.3
