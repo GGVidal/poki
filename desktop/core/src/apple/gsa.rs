@@ -299,7 +299,10 @@ fn apple_error(st: &Status) -> Error {
         return rate_limited();
     }
     let text = match st.ec {
-        -20101 | -22406 | -20970 => "Apple ID or password is wrong.".to_string(),
+        // Apple also answers -22406 to a password that is right: after several new sign-ins in a few
+        // minutes, and for a sign-in it does not trust. So it is not called wrong, and the code shows.
+        -22406 => REFUSED_PASSWORD.to_string(),
+        -20101 | -20970 => format!("Apple ID or password is wrong (error {}).", st.ec),
         -20209 | -20751 => "This Apple ID is locked. Unlock it at iforgot.apple.com and try again.".to_string(),
         -22421 => "Apple refused the sign-in from this computer's identity (anisette). Try again in a minute, or choose another anisette server in Settings.".to_string(),
         -23782 => "Apple refused the Mac identity Poki signs in with (it asks for macOS 10.13 or later). Update Poki and Poki Setup to the latest version, then try again.".to_string(),
@@ -308,6 +311,49 @@ fn apple_error(st: &Status) -> Error {
         _ => st.em.clone(),
     };
     Error::apple(st.ec, text)
+}
+
+/// What a password looks like, for the log: never the password. Enough to tell a stray space, a
+/// character from another keyboard, or an unexpected length.
+fn password_shape(password: &str) -> String {
+    let chars = password.chars().count();
+    let mut kinds = Vec::new();
+    if password.chars().any(|c| c.is_ascii_lowercase()) { kinds.push("lower"); }
+    if password.chars().any(|c| c.is_ascii_uppercase()) { kinds.push("upper"); }
+    if password.chars().any(|c| c.is_ascii_digit()) { kinds.push("digit"); }
+    if password.chars().any(|c| c.is_ascii_punctuation()) { kinds.push("symbol"); }
+    if password.chars().any(|c| c.is_whitespace()) { kinds.push("SPACE"); }
+    if password.chars().any(|c| c.is_control()) { kinds.push("CONTROL"); }
+    if !password.is_ascii() { kinds.push("NON-ASCII"); }
+    let edge = password.starts_with(char::is_whitespace) || password.ends_with(char::is_whitespace);
+    format!("{chars} chars / {} bytes [{}]{}", password.len(), kinds.join(" "), if edge { " space at an end" } else { "" })
+}
+
+/// What the Apple ID looks like, for the log: its domain and form, never the name.
+fn account_shape(apple_id: &str) -> String {
+    let id = apple_id.trim();
+    let form = match id.rsplit_once('@') {
+        Some((name, domain)) => format!("{} chars @{}", name.chars().count(), domain.to_lowercase()),
+        None => format!("{} chars, no @", id.chars().count()),
+    };
+    let mut notes = String::new();
+    if id.chars().any(|c| c.is_uppercase()) { notes.push_str(" has capitals"); }
+    if !id.is_ascii() { notes.push_str(" NON-ASCII"); }
+    if id.chars().any(|c| c.is_whitespace()) { notes.push_str(" SPACE inside"); }
+    format!("{form}{notes}")
+}
+
+/// Whether this process is told to reach the internet through a proxy. Apple can treat a sign-in
+/// from a proxy's address differently from one straight from the phone.
+fn proxy_in_use() -> &'static str {
+    let set = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"].iter().any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
+    if set { "set in the environment" } else { "not set in the environment" }
+}
+
+/// Seconds this computer's clock is ahead of the time in Apple's `Date` header.
+fn clock_skew(date: &str) -> Option<i64> {
+    let apple = time::OffsetDateTime::parse(date, &time::format_description::well_known::Rfc2822).ok()?;
+    Some(time::OffsetDateTime::now_utc().unix_timestamp() - apple.unix_timestamp())
 }
 
 impl Client {
@@ -348,6 +394,11 @@ impl Client {
         let http_status = res.status();
         if http_status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(rate_limited());
+        }
+        if let Some(skew) = res.headers().get(reqwest::header::DATE).and_then(|d| d.to_str().ok()).and_then(clock_skew) {
+            if skew.abs() > 90 {
+                tracing::warn!("this computer's clock is {skew} s away from Apple's; the sign-in headers carry this computer's time");
+            }
         }
         let bytes = res.bytes().await?;
         if let Ok(v) = plist::from_bytes::<plist::Value>(&bytes) {
@@ -449,9 +500,17 @@ impl Client {
         init.insert("o".into(), "init".into());
         init.insert("ps".into(), plist::Value::Array(vec!["s2k".into(), "s2k_fo".into()]));
         init.insert("u".into(), apple_id_clean.clone().into());
+        tracing::info!(
+            "sign-in start: account {}, password {}, client {:?}, proxy {}",
+            account_shape(apple_id),
+            password_shape(password),
+            anisette.get("X-Mme-Client-Info").unwrap_or(""),
+            proxy_in_use()
+        );
         let r1 = self.gs_request(anisette, init).await?;
         let st = status(&r1);
         if st.ec != 0 {
+            tracing::warn!("sign-in refused at the first step (init), before the password was checked: ec={}", st.ec);
             return Err(apple_error(&st));
         }
         let sp = s(&r1, "sp").unwrap_or("s2k");
@@ -472,6 +531,7 @@ impl Client {
         let r2 = self.gs_request(anisette, complete).await?;
         let st = status(&r2);
         if st.ec != 0 {
+            tracing::warn!("sign-in refused at the password step (complete): ec={} protocol={sp} iterations={iterations} salt={}B B={}B", st.ec, salt.len(), b_pub.len());
             return Err(apple_error(&st));
         }
         let m2 = data(&r2, "M2").ok_or_else(|| Error::msg("sign-in: no M2"))?;
@@ -780,6 +840,7 @@ fn next_step(hsc: i64, au: Option<&str>) -> Step<'_> {
 }
 
 pub const RATE_LIMITED: &str = "Apple has had too many sign-in attempts or codes for this Apple Account. Wait about an hour before you sign in again, because each new try asks Apple for another code.";
+pub const REFUSED_PASSWORD: &str = "Apple did not accept this password (error -22406). If it is right, Apple may be refusing new sign-ins for now. Wait 30 minutes, then try once more.";
 pub const SESSION_EXPIRED: &str = "Your Apple session has expired. Sign in again.";
 const WRONG_CODE_MARKER: &str = "That verification code is incorrect.";
 pub const WRONG_CODE_FIRST: &str = "That verification code is incorrect. Check the 6-digit code and enter the newest code you received.";
@@ -958,6 +1019,27 @@ fn decrypt_gcm(sk: &[u8], et: &[u8]) -> Result<plist::Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refused_password_shows_the_code_and_does_not_call_it_wrong() {
+        let st = |ec| super::Status { ec, em: "Enter the correct password for this Apple Account.".into(), hsc: 401, au: None };
+        let refused = super::apple_error(&st(-22406)).to_string();
+        assert!(refused.contains("-22406") && !refused.contains("is wrong"), "{refused}");
+        let wrong = super::apple_error(&st(-20101)).to_string();
+        assert!(wrong.contains("is wrong") && wrong.contains("-20101"), "{wrong}");
+    }
+
+    #[test]
+    fn log_shapes_never_carry_the_password_or_the_name() {
+        let shape = super::password_shape("Tr0ub4dor&3 ");
+        assert_eq!(shape, "12 chars / 12 bytes [lower upper digit symbol SPACE] space at an end");
+        assert!(!shape.contains("Tr0ub"));
+        assert!(super::password_shape("p\u{e4}ss").contains("NON-ASCII"));
+        let account = super::account_shape(" Jane.Doe@iCloud.com ");
+        assert_eq!(account, "8 chars @icloud.com has capitals");
+        assert_eq!(super::clock_skew("Thu, 19 Nov 2026 19:28:16 GMT").map(|s| s > -100_000_000), Some(true));
+        assert_eq!(super::clock_skew("not a date"), None);
+    }
+
     use super::*;
 
     #[test]
