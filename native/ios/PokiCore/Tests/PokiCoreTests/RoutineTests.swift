@@ -63,6 +63,55 @@ final class RoutineTests: XCTestCase {
         XCTAssertTrue(routine.expect.contains("About") || routine.expect.contains("iOS Version"), "\(routine.expect)")
     }
 
+    /// A phone that holds WeChat and Little Red Book: `launch` brings the app in front and the read shows its screen.
+    final class TwoApps: @unchecked Sendable {
+        static let wechat = "com.tencent.xin", redbook = "com.xingin.discover"
+        static let screens: [String: (name: String, nodes: [Node])] = [
+            wechat: ("微信", [Node("Button", "Discover", [16, 100, 358, 44]), Node("Button", "Me", [16, 144, 358, 44])]),
+            redbook: ("小红书", [Node("Button", "Search", [16, 100, 358, 44]), Node("Button", "Notes", [16, 144, 358, 44])]),
+        ]
+        let wda: FakeWDA
+        init(_ wda: FakeWDA) {
+            self.wda = wda
+            show(Self.wechat)
+            wda.set("POST /wda/apps/activate") { [self] body in
+                self.show(body?["bundleId"]?.string ?? "")
+                return (200, ["value": .null])
+            }
+        }
+        func show(_ bundle: String) {
+            guard let screen = Self.screens[bundle] else { return }
+            wda.tree(screen.nodes, app: screen.name)
+            wda.set("GET /wda/activeAppInfo") { _ in (200, ["value": ["bundleId": .string(bundle), "name": .string(screen.name)]]) }
+        }
+    }
+
+    /// The Memory page lists a skill under its app: "Search a topic" was done in Little Red Book,
+    /// after WeChat was used first in the same task.
+    func testASkillBelongsToTheAppItWorkedInNotTheFirstOneOpenedInTheTask() async throws {
+        let store = RoutineStore(url: nil)
+        let wda = FakeWDA()
+        let phone = TwoApps(wda)
+        let (core, _, _) = makeCore(wda) { $0.memory = store }
+        let wechat = await core.call("look", [:])
+        let discover = try XCTUnwrap(number(of: "Discover", in: wechat.text), wechat.text)
+        _ = await core.call("do", ["actions": [["tap": .number(Double(discover))]]])
+        let redbook = await core.call("do", ["actions": [["launch": .string(TwoApps.redbook)]]])
+        let search = try XCTUnwrap(number(of: "Search", in: redbook.text), redbook.text)
+        _ = await core.call("do", ["actions": [["tap": .number(Double(search))]]])
+        let saved = await core.call("routines", ["action": "save", "name": "Search a topic", "description": "search a topic in Little Red Book"])
+        XCTAssertTrue(saved.text.contains("saved \"Search a topic\""), saved.text)
+        XCTAssertEqual(store.routine(named: "Search a topic")?.app, TwoApps.redbook)
+        XCTAssertEqual(store.skills.filter { $0.app == TwoApps.wechat }.map(\.name), [], "it must not be listed under WeChat")
+
+        // Run from WeChat again: the run still starts where its first step is, not in the app it ends in.
+        phone.show(TwoApps.wechat)
+        _ = await core.call("look", [:])
+        let run = await core.call("do", ["actions": [["run": "Search a topic"]]])
+        XCTAssertTrue(run.text.contains("run \"Search a topic\": 3 steps"), run.text)
+        XCTAssertFalse(run.isError, run.text)
+    }
+
     func testARunRepeatsTheRoutineInOneCallAndReadsTheValue() async {
         let (core, wda, pages) = core()
         _ = await recordAbout(core)
