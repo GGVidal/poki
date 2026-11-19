@@ -278,9 +278,9 @@ def build_faces(rig, expr_coll, skin_mat):
             dx = u * 0.094
             dz = -0.018 + 0.046 * (u * u)
             slp_pts.append((cx + dx * ct - dz * st, 0.902 + dx * st + dz * ct))
-        make_tube_on_head(f"Expr_SleepArc_{side}", slp_pts, 0.0150, mat_mouth, lift=0.007, taper_ends=0.74, toward_cam=True)
+        make_tube_on_head(f"Expr_SleepArc_{side}", slp_pts, 0.0150, mat_mouth, lift=0.026, taper_ends=0.74, toward_cam=True)
     slp_m_pts = [(0.002 + (-1.0 + 2.0 * i / 24.0) * 0.027, 0.806 + 0.010 * (-1.0 + 2.0 * i / 24.0) ** 2) for i in range(25)]
-    make_tube_on_head("Expr_SleepMouth", slp_m_pts, 0.0074, mat_mouth, lift=0.0065, toward_cam=True)
+    make_tube_on_head("Expr_SleepMouth", slp_m_pts, 0.0074, mat_mouth, lift=0.020, toward_cam=True)
 
     # SURPRISE: a four-pointed star and a small dot of light in each eye, and a round open mouth.
     for side, sx_c, sz_c, dx2, dz2 in (("R", pupil_r + 0.0323, 0.952, -0.058, -0.068), ("L", pupil_l + 0.0316, 0.950, -0.058, -0.068)):
@@ -288,7 +288,7 @@ def build_faces(rig, expr_coll, skin_mat):
         for k in range(48):
             a = 2.0 * math.pi * k / 48
             w = 0.5 + 0.5 * math.cos(4.0 * a)
-            r = 0.014 + (0.037 - 0.014) * (w ** 1.35)
+            r = 0.019 + (0.037 - 0.019) * (w ** 1.1)
             star_pts.append((sx_c + r * math.cos(a), sz_c + r * math.sin(a)))
         make_patch_on_head(f"Expr_SurpStar_{side}", star_pts, (sx_c, sz_c), 0.015, mat_cl, subdiv=0, toward_cam=True)
         dot_pts = [(sx_c + dx2 + 0.0125 * math.cos(2 * math.pi * k / 24), sz_c + dz2 + 0.0125 * math.sin(2 * math.pi * k / 24)) for k in range(24)]
@@ -306,6 +306,9 @@ def main():
     scene, rig = load_bear(glb)
     skin = bpy.data.materials["PokiSkin"]
     bpy.ops.wm.usd_import(filepath=old_usdz)  # the thinking meshes and their materials
+    # Keep only the thinking meshes from it, so that a file made by this script can be its own input.
+    for ob in [o for o in bpy.data.objects if o.name.startswith("Expr_") and not o.name.startswith("Expr_Think")]:
+        bpy.data.objects.remove(ob, do_unlink=True)
     expr_coll = bpy.data.collections.new("Expressions")
     scene.collection.children.link(expr_coll)
     build_faces(rig, expr_coll, bpy.data.materials.get("ExprSkin") or skin)
