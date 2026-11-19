@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://poki.bot"><img src="docs/images/poki-hero.png" width="100%" alt="Poki uses your iPhone like you do. An agent that taps, types and swipes on your real iPhone."></a>
+  <a href="https://poki.bot"><img src="docs/images/poki-hero.gif" width="100%" alt="Poki uses your iPhone like you do. An agent that taps, types and swipes on your real iPhone."></a>
 </p>
 
 <h3 align="center">Copy this prompt and send it to your coding agent</h3>
@@ -39,9 +39,9 @@ Poki is an open-source iPhone agent that operates your entire iPhone for you. Th
 ## Why Poki
 
 <p align="center">
-  <img src="docs/images/why-1-errands.png" width="32%" alt="Poki's step-by-step plan for ordering beef noodle soup, shown in chat">
-  <img src="docs/images/why-2-routines.png" width="32%" alt="Poki in the Dynamic Island while it works in another app">
-  <img src="docs/images/why-3-standalone.png" width="32%" alt="Poki asking for approval before a payment: Allow payment?">
+  <img src="docs/images/why-1-errands.gif" width="32%" alt="Poki taking an order in chat and adding a dish to the cart in Uber Eats">
+  <img src="docs/images/why-2-routines.gif" width="32%" alt="Poki booking an Uber ride in the real Uber app">
+  <img src="docs/images/why-3-standalone.gif" width="32%" alt="Poki reporting back with the pickup spot and fare estimate">
 </p>
 
 - **Skip multi-app tapping for everyday errands.** Ask Poki in chat, hold the Action Button, or trigger Siri to look things up in the built-in browser, check tomorrow's weather, or create a note. On iPhone Duo, Poki works across two apps side by side in Split View.

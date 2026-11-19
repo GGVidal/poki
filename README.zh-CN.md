@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://poki.bot"><img src="docs/images/poki-hero.zh-CN.png" width="100%" alt="Poki 像你一样使用你的 iPhone：在真机上替你点按、打字、滑动的智能体"></a>
+  <a href="https://poki.bot"><img src="docs/images/poki-hero.zh-CN.gif" width="100%" alt="Poki 像你一样使用你的 iPhone：在真机上替你点按、打字、滑动的智能体"></a>
 </p>
 
 <h3 align="center">复制这段话，发给你的编码智能体</h3>
@@ -39,9 +39,9 @@ Poki 是开源的 iPhone agent，能替你操作整台 iPhone。Poki 应用直�
 ## 为什么用 Poki
 
 <p align="center">
-  <img src="docs/images/why-1-errands.png" width="32%" alt="聊天中显示的 Poki 点牛肉面分步计划">
-  <img src="docs/images/why-2-routines.png" width="32%" alt="Poki 在其他应用中工作时显示在灵动岛">
-  <img src="docs/images/why-3-standalone.png" width="32%" alt="Poki 在付款前请求批准：允许付款吗？">
+  <img src="docs/images/why-1-errands.gif" width="32%" alt="Poki 在聊天中接收点餐指令，并在 Uber Eats 中将菜品加入购物车">
+  <img src="docs/images/why-2-routines.gif" width="32%" alt="Poki 在真实的 Uber 应用中预约乘车">
+  <img src="docs/images/why-3-standalone.gif" width="32%" alt="Poki 回复上车地点与预估车费">
 </p>
 
 - **日常杂事不必跨多个应用来回点按。** 直接在对话里交代 Poki，或长按操作按钮、呼叫 Siri，就能用内置浏览器查资料、看明天天气或新建备忘录。在 iPhone Duo 上，Poki 还能在分屏视图中同时操作两个应用。
