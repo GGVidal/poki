@@ -120,12 +120,13 @@ final class VoiceModelTests: XCTestCase {
         private(set) var microphone: [Bool] = []
         var link: FakeConnection { links.last! }
 
-        @MainActor init(phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("", false, nil) }) {
+        @MainActor init(phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("", false, nil) },
+                        tasks: VoiceTasks = VoiceTasks { _, _ in ("result: done", false) }) {
             let time = FakeTime()
             self.time = time
             var made: (() -> FakeConnection)!
             var held: ((Bool) -> Void)!
-            voice = VoiceModel(clearTap: { _, _, _ in .clear }, phoneTool: phoneTool, holdMicrophone: { held($0) },
+            voice = VoiceModel(clearTap: { _, _, _ in .clear }, phoneTool: phoneTool, tasks: tasks, holdMicrophone: { held($0) },
                                connection: { onEvent, onClosed in let link = made(); link.onEvent = onEvent; link.onClosed = onClosed; return link }, time: time.clock)
             made = { [unowned self] in let link = FakeConnection(); self.links.append(link); return link }
             held = { [unowned self] in self.microphone.append($0) }
@@ -442,14 +443,17 @@ final class VoiceLanguageTests: XCTestCase {
             "- Speak English, the iPhone's language, from your first sentence to your last.",
             "- Never change language on your own: not for tool results, screen text, screenshots or notes from Poki in another language, not for a short sound, a word or a name in another language, and not for audio you could not make out. Change only when the user asks you to speak another language.",
             "- When the latest audio holds no request (a filler or backchannel such as 嗯, 哦, 啊, uh-huh or ok, a cough, noise, or a word cut off as the talk opens), call wait_for_user and say nothing.",
-            "- A clear request to do something on the phone: first say only \"好\" (\"OK\" in English), one word, then call the tool in the same turn.",
+            "- A clear request to do something on the phone: first say only \"好\" (\"OK\" in English), one word and nothing after it, then call the tool in the same turn.",
+            "- When a request leaves out what it is about (帮我打开 with no app named, 发给他 with nobody named), ask for that one thing in a few words (打开哪个？) and call no tool. Never fill it in from earlier in the talk.",
+            "- After you call run_task, say nothing until its result arrives: no \"我来处理\", no \"稍等\", no \"已经加到任务里\", no \"正在处理中\".",
+            "- To scroll the screen in front (往下翻, 往上翻, 下一页), go back one page (返回, 返回上一页) or go to the Home Screen (回到桌面, 回主屏幕), call phone_step: it is done at once.",
             "- A request that sends something to someone (a message, a file, an email): first say in one short sentence what you will send to whom (\"我把 hello 发给文件传输助手\"), then call run_task in the same turn. Do not wait for the user to confirm; they can say stop.",
             "- When the user says stop (停, 别说了, stop) at any time: stop talking, and call stop_task at once when a task is running.",
             "- To open an app and do nothing more in it, call open_app with its name: it opens at once.",
             "- Short commands are phone actions too: 往下翻, 翻一下 and 下一页 mean scroll.",
         ] { XCTAssertTrue(instructions.contains(line), line) }
         let tools = (session["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
-        for tool in ["wait_for_user", "open_app", "run_task", "stop_task"] {
+        for tool in ["wait_for_user", "open_app", "phone_step", "run_task", "stop_task"] {
             XCTAssertTrue(tools.contains(tool), "\(tool) in \(tools)")
             XCTAssertTrue(token.local_tools.contains(tool), "the phone answers \(tool) itself")
         }
@@ -778,33 +782,61 @@ extension VoiceModelTests {
         XCTAssertFalse(h.voice.isOn)
     }
 
-    /// A 嗯 while Poki answers: over WebRTC the server drops the rest of an answer at any speech it
-    /// detects (interrupt_response false too), so speech detection is off from the start of each answer
-    /// until its audio has played, and the answer is said to its end. An answer that is only a tool call
-    /// turns it back on at once, so a 停 during the task is heard.
-    func testSpeechDetectionIsOffWhilePokiAnswers() async {
+    /// Speech while Poki answers is heard at once. Speech detection used to be off from the start of each
+    /// answer until its audio had played: on a physical iPhone (2026-11-19) a request said over an answer
+    /// waited in the buffer and was taken as one turn, twice over, after the answer ("帮返回主菜单。帮返回主菜单。").
+    func testSpeechDetectionStaysOnWhilePokiAnswers() async {
         let h = Harness()
         await h.voice.start()
         let turn: [String: Any] = ["type": "server_vad", "threshold": 0.5, "create_response": true, "interrupt_response": true]
         h.link.play(["type": "session.created", "session": ["audio": ["input": ["turn_detection": turn]]]])
-        let detection = { () -> [String] in
-            h.link.sent.compactMap { event -> String? in
-                guard event["type"] as? String == "session.update",
-                      let input = ((event["session"] as? [String: Any])?["audio"] as? [String: Any])?["input"] as? [String: Any] else { return nil }
-                return input["turn_detection"] is NSNull ? "off" : (input["turn_detection"] as? [String: Any])?["type"] as? String
-            }
-        }
         h.link.play(["type": "input_audio_buffer.speech_started"], ["type": "input_audio_buffer.speech_stopped"],
-                    ["type": "response.created", "response": ["id": "r1"]], ["type": "output_audio_buffer.started"])
-        XCTAssertEqual(detection(), ["off"])
-        h.link.play(["type": "response.done", "response": ["id": "r1", "output": [["type": "message"]]]])
-        XCTAssertEqual(detection(), ["off"], "the answer is still playing")
-        h.link.play(["type": "output_audio_buffer.stopped"])
-        XCTAssertEqual(detection(), ["off", "server_vad"])
+                    ["type": "response.created", "response": ["id": "r1"]], ["type": "output_audio_buffer.started"],
+                    ["type": "response.done", "response": ["id": "r1", "output": [["type": "message"]]]], ["type": "output_audio_buffer.stopped"])
+        XCTAssertEqual(h.link.sent.filter { $0["type"] as? String == "session.update" }.count, 0, "Poki turned speech detection off")
+    }
 
+    /// A 嗯 that cuts Poki off (over WebRTC the server drops the rest of an answer at any speech): the model
+    /// closes it with wait_for_user, and Poki asks for the rest of the answer, not the whole answer again.
+    /// A 嗯 while Poki only listens is still left unanswered.
+    func testABackchannelThatCutsPokiOffGetsTheRestOfTheAnswer() async {
+        let h = Harness()
+        await h.talk()
         h.link.play(["type": "input_audio_buffer.speech_started"], ["type": "input_audio_buffer.speech_stopped"],
-                    ["type": "response.created", "response": ["id": "r2"]],
-                    ["type": "response.done", "response": ["id": "r2", "output": [["type": "function_call"]]]])
-        XCTAssertEqual(detection(), ["off", "server_vad", "off", "server_vad"])
+                    ["type": "response.created", "response": ["id": "r1"]], ["type": "output_audio_buffer.started"],
+                    ["type": "input_audio_buffer.speech_started"], ["type": "output_audio_buffer.cleared"],
+                    ["type": "response.done", "response": ["id": "r1", "status": "cancelled"]],
+                    ["type": "input_audio_buffer.speech_stopped"], ["type": "response.created", "response": ["id": "r2"]],
+                    ["type": "response.output_item.done", "item": ["type": "function_call", "call_id": "c1", "name": "wait_for_user", "arguments": "{}"]],
+                    ["type": "response.done", "response": ["id": "r2"]])
+        await h.time.settle()
+        let sent = h.link.sent
+        let output = sent.firstIndex { ($0["item"] as? [String: Any])?["call_id"] as? String == "c1" }
+        let note = sent.firstIndex { (($0["item"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String == VoiceModel.resume }
+        let ask = sent.lastIndex { $0["type"] as? String == "response.create" }
+        guard let output, let note, let ask else { return XCTFail("the rest of the answer was not asked for: \(sent.compactMap { $0["type"] as? String })") }
+        XCTAssertTrue(output < note && note < ask)
+
+        // Said over nothing: no answer.
+        let asked = h.link.sent.filter { $0["type"] as? String == "response.create" }.count
+        h.link.play(["type": "input_audio_buffer.speech_started"], ["type": "input_audio_buffer.speech_stopped"],
+                    ["type": "response.created", "response": ["id": "r3"]],
+                    ["type": "response.output_item.done", "item": ["type": "function_call", "call_id": "c2", "name": "wait_for_user", "arguments": "{}"]],
+                    ["type": "response.done", "response": ["id": "r3"]])
+        await h.time.settle()
+        XCTAssertEqual(h.link.sent.filter { $0["type"] as? String == "response.create" }.count, asked)
+    }
+
+    /// Something added to the running task (再打开小红书 while it works): its result is the answer, so Poki
+    /// asks for none now. On a physical iPhone it said "好的，我已经把……加到正在进行的任务里" each time.
+    func testSomethingAddedToTheRunningTaskIsNotAnsweredUntilTheTaskEnds() async {
+        let h = Harness(tasks: VoiceTasks { _, _ in (VoiceTasks.added + " the running task takes this in.", false) })
+        await h.talk()
+        h.link.play(["type": "response.created", "response": ["id": "r1"]],
+                    ["type": "response.output_item.done", "item": ["type": "function_call", "call_id": "c1", "name": "run_task", "arguments": #"{"task":"打开小红书"}"#]],
+                    ["type": "response.done", "response": ["id": "r1"]])
+        await h.time.settle()
+        XCTAssertTrue(h.link.sent.contains { ($0["item"] as? [String: Any])?["call_id"] as? String == "c1" })
+        XCTAssertFalse(h.link.sent.contains { $0["type"] as? String == "response.create" }, "Poki talks while the task runs")
     }
 }
