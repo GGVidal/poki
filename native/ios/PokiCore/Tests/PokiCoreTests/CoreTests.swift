@@ -1131,15 +1131,15 @@ final class ApprovalTests: XCTestCase {
             ("支付 5 元，59秒后失效", "支付 5 元，58秒后失效", true),
             ("Confirm payment 04:59", "Confirm payment 04:58", true),
         ]
+        // Collected and asserted once: XCTest dropped failures from later turns of a loop here.
+        var wrong: [String] = []
         for c in cases {
             let (text, taps) = try await grantThenTap(approved: c.approved, shown: c.shown)
-            if c.covered {
-                XCTAssertEqual(taps, 1, "the grant for \(c.approved) was lost when it read \(c.shown): \(text)")
-            } else {
-                XCTAssertTrue(text.contains("approval_required"), "\(c.approved) -> \(c.shown): \(text)")
-                XCTAssertEqual(taps, 0, "the grant for \(c.approved) pressed \(c.shown)")
-            }
+            let ran = taps == 1 && !text.contains("approval_required")
+            let asked = taps == 0 && text.contains("approval_required")
+            if c.covered ? !ran : !asked { wrong.append("\(c.approved) -> \(c.shown): \(c.covered ? "grant lost" : "grant pressed it")") }
         }
+        XCTAssertEqual(wrong, [])
     }
 
     /// Words such as "left" or 剩余 next to another number, or "check in" and 后 next to a time of
@@ -1154,11 +1154,23 @@ final class ApprovalTests: XCTestCase {
             ("支付 20 元，10:30后入场", "支付 20 元，14:30后入场"),
             ("支付 20 元，剩余 0:59，10:30 场", "支付 20 元，剩余 0:58，14:30 场"),
         ]
+        var pressed: [String] = []
         for (approved, shown) in cases {
             let (text, taps) = try await grantThenTap(approved: approved, shown: shown)
-            XCTAssertTrue(text.contains("approval_required"), "\(approved) -> \(shown): \(text)")
-            XCTAssertEqual(taps, 0, "the grant for \(approved) pressed \(shown)")
+            if taps != 0 || !text.contains("approval_required") { pressed.append("\(approved) -> \(shown)") }
         }
+        XCTAssertEqual(pressed, [], "the grant pressed a time of day that moved")
+    }
+
+    /// A reading that went up, even by a second or two read at once, is not a countdown.
+    func testAReadingThatGoesUpAsksAgain() async throws {
+        var pressed: [String] = []
+        for (approved, shown) in [("Confirm payment 04:59", "Confirm payment 05:00"),
+                                  ("Pay $20 for the 10:30 table", "Pay $20 for the 10:31 table")] {
+            let (text, taps) = try await grantThenTap(approved: approved, shown: shown)
+            if taps != 0 || !text.contains("approval_required") { pressed.append("\(approved) -> \(shown)") }
+        }
+        XCTAssertEqual(pressed, [], "the grant pressed a control whose time reading went up")
     }
 
     /// A button whose text ends in a countdown that runs on the real clock from 4:59.

@@ -175,14 +175,14 @@ enum Countdown {
     }
 
     /// The same control read again `elapsed` seconds later: the same text, or text whose readings
-    /// that changed each went down by the time that passed, within `slack`. A reading that went up,
-    /// went down faster or slower than the clock, or a time of day that moved (10:30 to 14:30) makes
-    /// it another control.
+    /// that changed are each lower and went down by the time that passed, within `slack`. A reading
+    /// that went up by any amount, went down faster or slower than the clock, or a time of day that
+    /// moved (10:30 to 14:30) makes it another control.
     static func sameControl(before: String, after: String, elapsed: Double) -> Bool {
         guard before != after else { return true }
         let b = readings(before), a = readings(after)
         guard b.masked == a.masked else { return false }
-        return zip(b.seconds, a.seconds).allSatisfy { old, new in old == new || abs(Double(old - new) - elapsed) <= slack }
+        return zip(b.seconds, a.seconds).allSatisfy { old, new in old == new || (new < old && abs(Double(old - new) - elapsed) <= slack) }
     }
 }
 
