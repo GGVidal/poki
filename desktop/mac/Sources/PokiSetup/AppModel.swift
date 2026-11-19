@@ -464,6 +464,15 @@ final class AppModel: ObservableObject {
         } catch { report(error) }
     }
 
+    func renewalPrefs() async -> RenewalPrefs? {
+        if demo { return RenewalPrefs(updateOnRenew: true) }
+        return try? await bridge.call("renewal_prefs")
+    }
+
+    func setRenewalPrefs(_ prefs: RenewalPrefs) async throws -> RenewalPrefs {
+        try await bridge.call("set_renewal_prefs", ["prefs": ["update_on_renew": prefs.updateOnRenew]])
+    }
+
     func setAnisette(_ source: AnisetteSource) async throws {
         try await bridge.run("set_anisette", ["source": source.wire])
         await refreshAccount()

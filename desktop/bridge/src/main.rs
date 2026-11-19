@@ -338,6 +338,12 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
             with_signer(state, async |s| s.choose_team(&team_id)).await?;
             ok(true)
         }
+        "renewal_prefs" => ok(keeper::renewal_prefs()),
+        "set_renewal_prefs" => {
+            let prefs: keeper::RenewalPrefs = arg(a, "prefs")?;
+            keeper::set_renewal_prefs(&prefs)?;
+            ok(keeper::renewal_prefs())
+        }
         "set_anisette" => {
             let source: Source = arg(a, "source")?;
             with_signer(state, async |s| s.set_anisette(source)).await?;

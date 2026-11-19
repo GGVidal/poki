@@ -878,6 +878,9 @@ pub fn delete_downloads() -> Result<State> {
     Ok(state())
 }
 
+/// Renewals sign a device's test build again instead of the release (Developer > Test Builds).
+pub fn keeps_test_builds() -> bool { read_settings().prefs.keep_on_renew }
+
 /// For a renewal: the device's test build, downloaded again if the cache lost it, when renewals
 /// keep test builds. None means sign the release instead.
 pub async fn for_renewal(r: &BuildRef, reporter: &Reporter) -> Option<(PathBuf, Option<PathBuf>)> {

@@ -24,6 +24,10 @@ settings:
     POKI_DISPLAY_NAME: Poki
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # YES on every build that is not a release (Xcode, Actions runs by hand). Release builds pass NO;
+    # Poki then leaves updates to the person (Signing & Updates > Advanced), and Poki Setup keeps the
+    # build when it renews.
+    POKI_DEVELOPER_BUILD: "YES"
     SWIFT_VERSION: "5.0"
     # iPhone and iPad; on iPad (windows, Stage Manager) and on the iPhone Duo's inner display Poki
     # sits beside the app it drives, so iPad takes every orientation and any window size.
@@ -49,6 +53,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         PokiAppGroup: $(POKI_APP_GROUP)
+        PokiDeveloperBuild: $(POKI_DEVELOPER_BUILD)
         # English, Simplified Chinese and Traditional Chinese (Shared/Localizable.xcstrings, Poki/InfoPlist.xcstrings); Poki
         # follows the iPhone's language.
         CFBundleDevelopmentRegion: en

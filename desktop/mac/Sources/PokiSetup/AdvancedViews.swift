@@ -257,6 +257,8 @@ struct SettingsView: View {
     @State private var choice = ""
     @State private var custom = ""
     @State private var message: SetupMessage?
+    /// Renewals of a release build sign the newest release (nil until the core has answered).
+    @State private var updateOnRenew: Bool?
 
     private let customTag = "custom"
     private let systemTag = "system"
@@ -292,6 +294,18 @@ struct SettingsView: View {
                 Text(localized("Apple's sign-in wants proof that it talks to a Mac or PC (“anisette”). A server provides it; it never sees your Apple Account or password. If sign-in fails, try another one."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Section {
+                Toggle(localized("Update Poki When Renewing"), isOn: Binding(get: { updateOnRenew ?? true }, set: { v in
+                    updateOnRenew = v
+                    Task { await saveRenewal(v) }
+                }))
+                .disabled(updateOnRenew == nil)
+            } header: {
+                Text(localized("Poki Updates"))
+            } footer: {
+                Text(localized("When this is off, renewing signs the build that is on the iPhone again instead of the newest release. Test builds are always kept."))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section(localized("About")) {
                 LabeledContent(localized("Version")) { Text(displayVersion(model.info?.version ?? "")).foregroundStyle(.secondary) }
             }
@@ -306,6 +320,16 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520, height: 560)
         .onAppear(perform: load)
+        .task { updateOnRenew = await model.renewalPrefs()?.updateOnRenew }
+    }
+
+    private func saveRenewal(_ on: Bool) async {
+        do {
+            updateOnRenew = try await model.setRenewalPrefs(RenewalPrefs(updateOnRenew: on)).updateOnRenew
+        } catch {
+            updateOnRenew = !on
+            message = .verbatim(error.localizedDescription)
+        }
     }
 
     private func load() {

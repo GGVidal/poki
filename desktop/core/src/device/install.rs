@@ -14,6 +14,9 @@ pub struct InstalledApp {
     /// `TeamIdentifier` from the app's signing, when iOS reports it.
     pub team: Option<String>,
     pub path: Option<String>,
+    /// The app says PokiDeveloperBuild YES in its Info.plist: a test build, not a release.
+    #[serde(default)]
+    pub developer_build: bool,
 }
 
 /// Installs every profile the signer produced. A profile that is already there is replaced.
@@ -115,6 +118,7 @@ pub async fn find_apps(phone: &Phone, prefix: &str) -> Result<Vec<InstalledApp>>
             build: s("CFBundleVersion").unwrap_or_default(),
             team: s("TeamIdentifier").or_else(|| s("ApplicationDSID")),
             path: s("Path"),
+            developer_build: s("PokiDeveloperBuild").is_some_and(|v| v.eq_ignore_ascii_case("yes")),
         });
     }
     out.sort_by(|a, b| a.bundle_id.cmp(&b.bundle_id));

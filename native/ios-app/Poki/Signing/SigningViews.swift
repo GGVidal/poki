@@ -223,6 +223,9 @@ struct SigningSection: View {
                 ? AppLocalization.text(LocalizedStringResource("Installing closes Poki for a moment. Your chats and setup stay."))
                 : (model.signingBusyReason ?? "") + " " + AppLocalization.text(LocalizedStringResource("Install is available when Poki isn’t running a task."))
         }
+        if !signer.automaticUpdates {
+            return AppLocalization.text(LocalizedStringResource("Poki automatically prepares a renewal \(Int(SelfSigner.refreshWithDaysLeft)) days before signing expires. Automatic updates are off. Nothing is installed until you tap Install."))
+        }
         return AppLocalization.text(LocalizedStringResource("Poki automatically prepares a renewal \(Int(SelfSigner.refreshWithDaysLeft)) days before signing expires, or prepares an update when one is available. Nothing is installed until you tap Install."))
     }
 }
@@ -306,9 +309,9 @@ struct ExpiryWarning {
     }
 }
 
-/// Signing & Updates › Advanced: the release channel Poki follows, and the server that helps Poki
-/// sign in to the Apple Account (the core's anisette server). Poki's own server is used until the
-/// person names another.
+/// Signing & Updates › Advanced: the release channel Poki follows, whether Poki prepares updates by
+/// itself, and the server that helps Poki sign in to the Apple Account (the core's anisette server).
+/// Poki's own server is used until the person names another.
 struct SigningOptionsPage: View {
     @Environment(AppModel.self) private var model
     @State private var address = ""
@@ -334,6 +337,11 @@ struct SigningOptionsPage: View {
                 } footer: {
                     Text("Poki receives updates from the selected release channel.")
                 }
+            }
+            Section {
+                Toggle("Automatic Updates", isOn: Binding(get: { signer.automaticUpdates }, set: { signer.automaticUpdates = $0 }))
+            } footer: {
+                Text("When this is off, Poki only renews the build that is installed, so a test build stays in place. You can still download an update on Signing & Updates.")
             }
             Section {
                 ChoiceRow(title: Text("Default"), selected: saved == nil) {

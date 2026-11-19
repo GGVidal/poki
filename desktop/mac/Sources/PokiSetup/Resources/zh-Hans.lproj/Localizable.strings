@@ -307,3 +307,6 @@
 "this Apple Account" = "此 Apple 账户";
 "this device" = "此设备";
 "try %lld" = "第 %lld 次尝试";
+"Update Poki When Renewing" = "续期时更新 Poki";
+"Poki Updates" = "Poki 更新";
+"When this is off, renewing signs the build that is on the iPhone again instead of the newest release. Test builds are always kept." = "关闭后，续期会重新签名 iPhone 上现有的版本，而不是换成最新发布版本。测试版本始终会保留。";

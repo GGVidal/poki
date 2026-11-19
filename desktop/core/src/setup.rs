@@ -644,6 +644,10 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
         make_sure_poki_is_closed(&phone, path, opts.close_poki, reporter).await?;
     }
     device::install::install_ipa(&phone, &built.ipa, upgrade, reporter).await?;
+    // A renewal signs this same build again when it is a test build, or when renewals keep builds.
+    if let Err(e) = keeper::keep_build(&phone.udid, &built.version, &built.build, &ipa, signing_zip.as_deref()) {
+        tracing::warn!(error = %e, "could not keep a copy of the installed build");
+    }
 
     reporter.step("pairing_file", "Giving Poki its pairing file");
     let mut handed = false;
@@ -775,14 +779,49 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
         let facts = device::info::read(&phone).await?;
         let teams = signer.teams().await?;
         let team = teams.into_iter().find(|t| t.team_id == rec.team_id).ok_or_else(|| Error::msg(format!("The Apple ID signed in is not on team {} any more.", rec.team_name)))?;
+        // What is on the phone now. It can differ from the record: Poki updates itself on the
+        // iPhone, and other tools install builds too.
+        let installed = device::install::find_apps(&phone, &rec.bundle_id).await.ok().and_then(|apps| apps.into_iter().find(|a| a.bundle_id == rec.bundle_id));
+        let on_phone = installed.as_ref().map(|a| (a.version.clone(), a.build.clone())).unwrap_or_else(|| (rec.version.clone(), rec.build.clone()));
+        let same_as_record = on_phone == (rec.version.clone(), rec.build.clone());
+        let source = renewal_source(&rec, installed.as_ref(), same_as_record, crate::devbuilds::keeps_test_builds(), keeper::renewal_prefs().update_on_renew);
         // A test build is signed again while renewals keep test builds (Developer > Test Builds).
-        let kept = match &rec.test_build {
-            Some(b) => crate::devbuilds::for_renewal(b, reporter).await.map(|found| (found, b.clone())),
-            None => None,
+        let from_actions = match (&source, &rec.test_build) {
+            (RenewalSource::SameBuild, Some(b)) if same_as_record => crate::devbuilds::for_renewal(b, reporter).await.map(|found| (found, b.clone())),
+            _ => None,
         };
-        let (ipa, zipp, tag, test_build) = match kept {
-            Some(((ipa, zipp), b)) => (ipa, zipp, b.tag(), Some(b)),
-            None => {
+        let kept = keeper::kept_build(udid).filter(|k| (k.version.clone(), k.build.clone()) == on_phone);
+        let (ipa, zipp, tag, test_build) = match (source, from_actions, kept) {
+            (RenewalSource::SameBuild, Some(((ipa, zipp), b)), _) => (ipa, zipp, b.tag(), Some(b)),
+            (RenewalSource::SameBuild, None, Some(k)) => {
+                reporter.step("release", &format!("Signing Poki {} ({}) again", k.version, k.build));
+                let tag = if same_as_record { rec.release_tag.clone() } else { format!("kept:{}-{}", k.version, k.build) };
+                (k.ipa, k.signing_zip, tag, if same_as_record { rec.test_build.clone() } else { None })
+            }
+            (RenewalSource::SameBuild, None, None) => {
+                // A release build is fetched again when it is still the newest on the channel.
+                let test = renewal_source(&rec, installed.as_ref(), same_as_record, crate::devbuilds::keeps_test_builds(), true) == RenewalSource::SameBuild;
+                let rel = if test { None } else { release::latest().await.ok().filter(|r| (r.version.clone(), r.build.clone()) == on_phone) };
+                match rel {
+                    Some(rel) => {
+                        let (ipa, zipp) = release::fetch(&rel, reporter).await?;
+                        (ipa, zipp, rel.tag, None)
+                    }
+                    None if test => {
+                        return Err(Error::msg(format!(
+                            "Poki {} ({}) on this iPhone is a test build that Poki Setup has no copy of, so it was not replaced. Install the build again with Poki Setup, then renewals keep it.",
+                            on_phone.0, on_phone.1
+                        )));
+                    }
+                    None => {
+                        return Err(Error::msg(format!(
+                            "Update Poki When Renewing is off, and Poki Setup has no copy of Poki {} ({}) on this iPhone, so it was not replaced. Install Poki again with Poki Setup, or turn the setting back on.",
+                            on_phone.0, on_phone.1
+                        )));
+                    }
+                }
+            }
+            (RenewalSource::NewestRelease, _, _) => {
                 let rel = release::latest().await?;
                 let (ipa, zipp) = release::fetch(&rel, reporter).await?;
                 (ipa, zipp, rel.tag, None)
@@ -792,9 +831,12 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
         let built = sign_for_team(signer, &team, Some((udid, &facts.name)), &ipa, zipp.as_deref(), &out, reporter).await?;
         device::install::install_profiles(&phone, &built.profiles, reporter).await?;
         // A renewal runs by itself, or after the person was asked: it closes Poki first.
-        let path = device::install::find_apps(&phone, &rec.bundle_id).await.ok().and_then(|apps| apps.into_iter().find(|a| a.bundle_id == rec.bundle_id).and_then(|a| a.path));
+        let path = installed.and_then(|a| a.path);
         make_sure_poki_is_closed(&phone, path, true, reporter).await?;
         device::install::install_ipa(&phone, &built.ipa, true, reporter).await?;
+        if let Err(e) = keeper::keep_build(udid, &built.version, &built.build, &ipa, zipp.as_deref()) {
+            tracing::warn!(error = %e, "could not keep a copy of the renewed build");
+        }
         let apple_id = signer.account.apple_id().unwrap_or("").to_string();
         hand_signing_identity(&phone, &built, &apple_id, reporter).await;
         Ok(keeper::Record { version: built.version, build: built.build, release_tag: tag, test_build, signed_at: keeper::now(), profile_expires_at: built.profile_expires_at, last_checked_at: Some(keeper::now()), last_error: None, wifi_address: facts.wifi_address.clone().or(rec.wifi_address.clone()), ..rec.clone() })
@@ -810,6 +852,25 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
             Err(e)
         }
     }
+}
+
+/// Which build a renewal signs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenewalSource {
+    /// The build that is on the phone, signed again.
+    SameBuild,
+    /// The newest release on the channel (an update).
+    NewestRelease,
+}
+
+#[cfg(feature = "device")]
+/// A test build is never replaced by a release when it is renewed: one marked PokiDeveloperBuild,
+/// one from Developer > Test Builds (while renewals keep test builds) or an IPA chosen by hand. A
+/// release build takes the newest release unless the person turned off Update Poki When Renewing.
+pub fn renewal_source(rec: &keeper::Record, installed: Option<&device::install::InstalledApp>, same_as_record: bool, keeps_test_builds: bool, update_on_renew: bool) -> RenewalSource {
+    let marked = installed.is_some_and(|a| a.developer_build);
+    let recorded = same_as_record && ((rec.test_build.is_some() && keeps_test_builds) || rec.release_tag.starts_with("local:") || rec.release_tag.starts_with("kept:"));
+    if marked || recorded || !update_on_renew { RenewalSource::SameBuild } else { RenewalSource::NewestRelease }
 }
 
 #[cfg(feature = "device")]
@@ -831,4 +892,34 @@ pub async fn renew_due(signer: &mut Signer, reporter: &Reporter) -> Vec<(String,
     }
     signer.set_caller(prev_caller);
     out
+}
+
+#[cfg(all(test, feature = "device"))]
+mod renewal_source_tests {
+    use super::*;
+
+    fn rec(tag: &str) -> keeper::Record {
+        keeper::Record {
+            udid: "U".into(), phone_name: "Phone".into(), ios: "27.3".into(), apple_id: "a@b".into(), team_id: "T".into(), team_name: "T".into(), team_is_free: true,
+            bundle_id: "nz.zheha.poki.T".into(), app_group: "group.nz.zheha.poki.T".into(), version: "0.4.5".into(), build: "50".into(), release_tag: tag.into(),
+            signed_at: 0, profile_expires_at: 0, last_checked_at: None, last_error: None, wifi_address: None, pairing_handed_off: false, test_build: None,
+        }
+    }
+
+    fn app(developer_build: bool) -> device::install::InstalledApp {
+        device::install::InstalledApp { bundle_id: "nz.zheha.poki.T".into(), name: "Poki".into(), version: "0.4.5".into(), build: "50".into(), team: None, path: None, developer_build }
+    }
+
+    #[test]
+    fn test_builds_are_signed_again_and_releases_follow_the_setting() {
+        use RenewalSource::*;
+        // A release build takes the newest release, unless the person turned that off.
+        assert_eq!(renewal_source(&rec("ios-v0.4.5"), Some(&app(false)), true, true, true), NewestRelease);
+        assert_eq!(renewal_source(&rec("ios-v0.4.5"), Some(&app(false)), true, true, false), SameBuild);
+        // A build marked PokiDeveloperBuild, or an IPA chosen by hand, is never swapped for a release.
+        assert_eq!(renewal_source(&rec("ios-v0.4.5"), Some(&app(true)), false, true, true), SameBuild);
+        assert_eq!(renewal_source(&rec("local:Poki-unsigned.ipa"), Some(&app(false)), true, true, true), SameBuild);
+        // The record is about an earlier build than the one on the phone now: it says nothing.
+        assert_eq!(renewal_source(&rec("local:Poki-unsigned.ipa"), Some(&app(false)), false, true, true), NewestRelease);
+    }
 }

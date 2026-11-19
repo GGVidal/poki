@@ -15,6 +15,7 @@ export type Facts = { udid: string; name: string; product_type: string; ios: str
 export type BuildRef = { artifact_id: number; run_id: number; run_number: number; workflow: string; branch: string; sha: string; pr?: number | null };
 export type Record_ = { udid: string; phone_name: string; ios: string; apple_id: string; team_id: string; team_name: string; team_is_free: boolean; bundle_id: string; version: string; build: string; release_tag: string; signed_at: number; profile_expires_at: number; last_error: string | null; pairing_handed_off: boolean; test_build?: BuildRef | null };
 export type PhoneRow = { phone: { udid: string; link: Link }; facts: Facts | null; error: string | null; record: Record_ | null };
+export type RenewalPrefs = { update_on_renew: boolean };
 export type Anisette = { kind: "system" } | { kind: "remote"; url: string };
 export type Account = { signed_in: boolean; needs_reauth?: boolean; apple_id: string | null; name: string | null; team_id: string | null; password_kept: boolean; anisette: Anisette; pending_factor: "trusted_device" | "sms" | null };
 export type Team = { team_id: string; name: string; kind: string; is_free: boolean };
@@ -48,6 +49,8 @@ export function buildRef(b: TestBuild): BuildRef | null {
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   phones: () => invoke<PhoneRow[]>("phones"),
+  renewalPrefs: () => invoke<RenewalPrefs>("renewal_prefs"),
+  setRenewalPrefs: (prefs: RenewalPrefs) => invoke<RenewalPrefs>("set_renewal_prefs", { prefs }),
   pair: (udid: string) => invoke<void>("pair", { udid }),
   sharePairing: (udid: string) => invoke<Handoff>("share_pairing", { udid }),
   stopSharing: () => invoke<void>("stop_sharing"),

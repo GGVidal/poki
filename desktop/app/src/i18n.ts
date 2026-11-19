@@ -153,6 +153,8 @@ const zh: Record<string, string> = {
   "Alpha": "Alpha 版",
   "Pre-alpha": "预览版",
   "Newest Poki": "最新 Poki",
+  "Update Poki When Renewing": "续期时更新 Poki",
+  "When this is off, renewing signs the build that is on the iPhone again instead of the newest release. Test builds are always kept.": "关闭后，续期会重新签名 iPhone 上现有的版本，而不是换成最新发布版本。测试版本始终会保留。",
   "None published": "尚未发布",
   "Stable has tested releases only. Beta adds test builds. Alpha adds early builds. Pre-alpha adds every snapshot, which can break. Poki Setup installs and renews Poki from this channel and checks it for its own updates.": "稳定版只有经过测试的版本。测试版另含测试构建。Alpha 版另含早期构建。预览版包含每个快照，可能不稳定。Poki Setup 从这个通道安装和续签 Poki，并检查自身更新。",
   "Up to date": "已是最新",
