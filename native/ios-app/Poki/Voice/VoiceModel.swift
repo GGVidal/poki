@@ -49,9 +49,9 @@ struct VoiceBridge: Equatable {
         }
     }
 
-    /// Poki's interface language goes along: the one the session speaks from its first sentence.
+    /// The iPhone's language goes along: the one the session hears and speaks.
     func token() async throws -> Token {
-        let url = base.appending(path: "token").appending(queryItems: [URLQueryItem(name: "language", value: AppLocalization.language)])
+        let url = base.appending(path: "token").appending(queryItems: [URLQueryItem(name: "language", value: VoiceDirect.systemLanguage)])
         let (data, response) = try await URLSession.shared.data(from: url)
         try Self.check(response, data)
         return try JSONDecoder().decode(Token.self, from: data)
@@ -254,6 +254,15 @@ final class VoiceModel {
     /// The person spoke over Poki's answer, or stopped it: the talk's screens say so for `interruptedShows`.
     private(set) var interrupted = false
     private var interruptedLapse: Task<Void, Never>?
+    /// The session's turn detection, from session.created: off (null) from the start of each answer until
+    /// its audio has played, then back. Over WebRTC the server drops the rest of an answer at any speech
+    /// it detects, whatever interrupt_response says, so a 嗯 cut Poki off mid-sentence; while detection
+    /// is off nothing said over the answer is heard. The owner chose that over a cut-off answer
+    /// (2026-11-19); answers are one short sentence, and stop works while a task runs.
+    private var turnDetection: Any?
+    private var deaf = false
+    /// The current answer's audio has played to its end or was cleared.
+    private var played = false
     static let interruptedShows: Duration = .milliseconds(1400)
     #if DEBUG && targetEnvironment(simulator)
     /// A screenshot's state, held whatever the session does next (`-pokiTalkHold`).
@@ -293,7 +302,7 @@ final class VoiceModel {
     private var inBackground = UIApplication.shared.applicationState == .background
 
     /// How long the conversation waits after an answer for the person to go on before it ends.
-    static let followUp: Duration = .seconds(8)
+    static let followUp: Duration = .seconds(15)
     /// A conversation opened this soon after the last one ended is told the last turns.
     static let carryOver: TimeInterval = 5 * 60
     static let carriedLines = 6
@@ -600,6 +609,8 @@ final class VoiceModel {
         screenItem = nil
         holdingMicrophone = false
         ready = false
+        turnDetection = nil
+        deaf = false
         activeResponse = nil
         wantsResponse = false
         awaitingAnswer = false
@@ -789,6 +800,8 @@ final class VoiceModel {
         switch type {
         case "session.created":
             log.add("voice", "session created, session \(number)")
+            turnDetection = ((event["session"] as? [String: Any])?["audio"] as? [String: Any])
+                .flatMap { ($0["input"] as? [String: Any])?["turn_detection"] }
             ready = true
             watchForStall(session: number)
             phase = .listening
@@ -802,6 +815,7 @@ final class VoiceModel {
             if phase == .speaking { markInterrupted() }
             phase = .hearing
         case "input_audio_buffer.speech_stopped":
+            log.add("voice", "speech stopped")
             phase = .thinking
             awaitingAnswer = true
             clock = TurnClock(said: Date())
@@ -811,6 +825,8 @@ final class VoiceModel {
             if let text = event["transcript"] as? String, !text.isEmpty { lines.append(VoiceLine(role: .you, text: text.trimmingCharacters(in: .whitespacesAndNewlines))) }
         case "response.created":
             activeResponse = (event["response"] as? [String: Any])?["id"] as? String
+            played = false
+            hear(false)
             keepOpen()
             awaitingAnswer = false
             requestedAnswer = nil
@@ -818,6 +834,9 @@ final class VoiceModel {
             let response = event["response"] as? [String: Any]
             if let usage = response?["usage"] as? [String: Any] { clock.add(usage: usage) }
             if response?["id"] as? String == activeResponse { activeResponse = nil }
+            // An answer with speech hears again once its audio has played; one with only a tool call, now.
+            let spoke = (response?["output"] as? [[String: Any]])?.contains { $0["type"] as? String == "message" } ?? false
+            if !spoke || played { hear(true) }
             flush()
             endIfDone()
         case "response.output_audio_transcript.done":
@@ -835,10 +854,13 @@ final class VoiceModel {
         case "output_audio_buffer.stopped", "output_audio_buffer.cleared":
             // Cleared because the person started speaking over the answer: they are still being heard.
             if phase != .hearing { phase = calls.contains { $0.state == .running } ? .thinking : .listening }
+            played = true
+            if activeResponse == nil { hear(true) }
             endIfDone()
         case "response.output_item.done":
             guard let item = event["item"] as? [String: Any], item["type"] as? String == "function_call",
                   let id = item["call_id"] as? String, let name = item["name"] as? String else { return }
+            if name == VoiceDirect.waitForUser { leaveUnanswered(id); return }
             run(VoiceCall(id: id, name: name, arguments: item["arguments"] as? String ?? "{}", session: number))
         case "error":
             let message = ((event["error"] as? [String: Any])?["message"] as? String) ?? "unknown error"
@@ -855,6 +877,22 @@ final class VoiceModel {
         default:
             break
         }
+    }
+
+    /// Turns the session's speech detection off while Poki answers and back on after (`turnDetection`).
+    private func hear(_ on: Bool) {
+        guard deaf == on, let turnDetection, let link else { return }
+        deaf = !on
+        let detection: Any = on ? turnDetection : NSNull()
+        link.send(["type": "session.update", "session": ["type": "realtime", "audio": ["input": ["turn_detection": detection]]]])
+    }
+
+    /// wait_for_user: the latest audio needed no answer (a 嗯, a cough). The call is closed and no answer
+    /// is asked for, so Poki says nothing and listens on.
+    private func leaveUnanswered(_ id: String) {
+        link?.send(["type": "conversation.item.create", "item": ["type": "function_call_output", "call_id": id, "output": "ok"]])
+        if phase == .thinking { phase = .listening }
+        log.add("voice", "nothing to answer: listening on")
     }
 
     /// Runs a call once. The same call_id again (a repeated event) is ignored.

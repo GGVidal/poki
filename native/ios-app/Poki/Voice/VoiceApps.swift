@@ -62,6 +62,8 @@ enum VoiceApps {
         }
         var answer: PhoneAnswer = ("", true, nil)
         for id in ids {
+            // The moment the app is asked to open, for the 5 s from the end of speech to the app on screen.
+            AppLog.shared.add("voice", "open_app: launching \(id)")
             answer = await tool("do", #"{"actions":[{"launch":"\#(id)"}]}"#)
             guard answer.failed, answer.text.contains(notInstalled) else { break }
         }

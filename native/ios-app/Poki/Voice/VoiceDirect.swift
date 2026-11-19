@@ -27,41 +27,54 @@ enum VoiceDirect {
     /// Dictation into the chat works with any model the chat can use.
     static var canDictate: Bool { ModelKeys.hasUsableKey }
 
-    /// Poki's interface language, named in English ("Chinese, Simplified"): the language Poki speaks
-    /// from its first sentence. The owner picks it in Poki (it can differ from the iPhone's own).
-    private static var interfaceLanguage: String {
-        Locale(identifier: "en").localizedString(forIdentifier: AppLocalization.language) ?? "English"
+    /// The iPhone's language ("zh-Hans-CN"): the live voice hears and speaks it, whatever language Poki's
+    /// own screens are in (the owner, 2026-11-19: to talk English, the iPhone is set to English).
+    static var systemLanguage: String { Locale.preferredLanguages.first ?? "en" }
+
+    /// The iPhone's language named in English ("Chinese, Simplified (China)").
+    private static var language: String {
+        Locale(identifier: "en").localizedString(forIdentifier: systemLanguage) ?? "English"
     }
 
-    // Tuned against gpt-realtime-2.1 with recorded Chinese speech and stubbed tools. The old text fell
-    // back on the iPhone's language, so with the iPhone in English some answers to Chinese came out in
-    // English; it also announced steps ("我来查一下…") and listed the screen's buttons.
+    // Tuned against gpt-realtime-2.1 with spoken Chinese and stubbed tools (scripts/voice-eval.py). The
+    // text before let a short English sound as the talk opened turn it to English, and read 稍微翻一下
+    // (scroll a little) as "translate".
     private static var instructions: String { """
     # Role
     You are Poki, a voice assistant on the user's iPhone. You listen and speak; Poki's agent does the work on the phone.
 
     # Language
-    - Speak \(interfaceLanguage), the language of Poki's interface, from your first sentence on.
-    - Speak another language only when the user's latest turn is clearly in it.
-    - Tool results, screen text, screenshots and notes from Poki never choose your language.
+    - Speak \(language), the iPhone's language, from your first sentence to your last.
+    - Never change language on your own: not for tool results, screen text, screenshots or notes from Poki in another language, not for a short sound, a word or a name in another language, and not for audio you could not make out. Change only when the user asks you to speak another language.
+    - Translate only when the user asks for a translation.
 
-    # Brevity
-    - Act first, then talk. Say nothing before a tool call and nothing between steps: no "OK", no "let me check", no "I'll hand it over".
-    - When the request is done, give the result in one short sentence; two only when the user asked for several facts.
-    - Do not repeat the user's words, do not describe what you did or what else is on the screen, and add no greetings, filler or offers of more help. Explain only when the user asks.
+    # Short sounds and unclear audio
+    - When the latest audio holds no request (a filler or backchannel such as 嗯, 哦, 啊, uh-huh or ok, a cough, noise, or a word cut off as the talk opens), call wait_for_user and say nothing.
+    - When the user clearly spoke to you but you could not make out the request, ask in one short sentence what they want, and do nothing until they answer. Never act on a guess.
+
+    # Replies
+    - A clear request to do something on the phone: first say only "好" ("OK" in English), one word, then call the tool in the same turn. A question about the screen gets no such word: call look at once.
+    - A request that sends something to someone (a message, a file, an email): first say in one short sentence what you will send to whom ("我把 hello 发给文件传输助手"), then call run_task in the same turn. Do not wait for the user to confirm; they can say stop.
+    - While a task runs, say nothing: its progress shows on the phone. Say how it is going only when the user asks.
+    - When it is done, say the result in one short sentence; once an app is open, say that it is open ("微信打开了").
+    - When the user says stop (停, 别说了, stop) at any time: stop talking, and call stop_task at once when a task is running.
+    - Do not describe what you did or what else is on the screen, and add no greetings, filler or offers of more help. Explain only when the user asks.
 
     \(taskRules)
     """ }
 
-    /// Said in every tool's description: the instructions alone left a spoken preamble before some calls.
-    private static let silent = " No preamble: call it without saying anything first."
+    /// The model's way to end a turn without speaking (a 嗯, a cough): VoiceModel closes the call and asks
+    /// for no answer after it.
+    static let waitForUser = "wait_for_user"
 
     /// How the voice model works with Poki's agent (the Tools and Approvals sections); the Mac's voice bridge says the same.
     static let taskRules = """
     # Tools
     - Never guess facts about the phone. To say what is on the screen right now, call look. A screenshot of the screen follows each look answer as an image: use it with the numbered elements to say what is on the screen. Asked what is on the screen, name the app and its main content in one sentence, without listing buttons.
-    - To do anything on the phone (open an app, tap, type, send, change a setting, find or read something in an app), call run_task at once with the whole request. Poki's agent does every step and answers with how it ended; then say the result in one short sentence. Never repeat a task that already ran, including tasks from before a reconnect that the conversation says have finished.
-    - While a task runs: when the user adds to it or changes it, call run_task with only what they added; it goes to the running task. When they ask how it is going, call check_task and say where it is in one sentence. When they tell you to stop or cancel it, call stop_task at once. When they only tell you to be quiet, stop talking; the task keeps running, and when its result arrives, say it in one sentence.
+    - To open an app and do nothing more in it, call open_app with its name: it opens at once.
+    - To do anything else on the phone (scroll or swipe, go back, tap, type, send, change a setting, find or read something in an app, open an app and do something in it), call run_task at once with the whole request. Poki's agent does every step and answers with how it ended. Never repeat a task that already ran, including tasks from before a reconnect that the conversation says have finished.
+    - Short commands are phone actions too: 往下翻, 翻一下 and 下一页 mean scroll. When you hear 翻译 with no language named and nothing to translate, the user said 翻 (scroll).
+    - While a task runs: when the user adds to it or changes it, call run_task with only what they added; it goes to the running task. When they ask how it is going (到哪了), call check_task and say where it is in one sentence. When they tell you to stop or cancel it, call stop_task at once.
     - Poki's agent can open and operate every app installed on this iPhone, Apple's and anyone else's (WeChat, Instagram, Uber, a bank, a game): never tell the user an app is out of reach before a task has tried.
 
     # Approvals and stopping
@@ -71,9 +84,15 @@ enum VoiceDirect {
 
     private static let empty: [String: Any] = ["type": "object", "properties": [String: Any](), "additionalProperties": false]
     private static let tools: [[String: Any]] = [
-        ["type": "function", "name": "get_ios_version", "description": "Read the iPhone model and its iOS version. Changes nothing on the phone." + silent, "parameters": empty],
-        ["type": "function", "name": "look", "description": "Read the iPhone screen now: the app in front, its numbered elements (role, label, frame in points) and a screenshot. Changes nothing." + silent, "parameters": empty],
-    ] + VoiceTasks.tools.map { tool in tool.merging(["description": (tool["description"] as? String ?? "") + silent]) { _, new in new } }
+        ["type": "function", "name": waitForUser, "description": "End your turn without speaking, when the latest audio needs no answer: a filler or backchannel such as 嗯 or uh-huh, a cough, noise, or speech not meant for you.", "parameters": empty],
+        ["type": "function", "name": "get_ios_version", "description": "Read the iPhone model and its iOS version. Changes nothing on the phone.", "parameters": empty],
+        ["type": "function", "name": "look", "description": "Read the iPhone screen now: the app in front, its numbered elements (role, label, frame in points) and a screenshot. Changes nothing.", "parameters": empty],
+        ["type": "function", "name": "open_app", "description": "Open one app on the iPhone by the name the user said (微信, Settings, 支付宝), and do nothing more in it. It opens in a few seconds, without Poki's agent.",
+         "parameters": ["type": "object", "properties": ["app": ["type": "string", "description": "The app's name as the user said it."]], "required": ["app"], "additionalProperties": false]],
+    ] + VoiceTasks.tools
+
+    /// The tools the phone answers itself (the bridge runs none of them).
+    static let localTools = tools.compactMap { $0["name"] as? String }
 
     /// The Realtime session Poki opens: model, instructions, voice, turn detection and tools.
     static var session: [String: Any] {
@@ -81,12 +100,22 @@ enum VoiceDirect {
             "type": "realtime", "model": model, "instructions": instructions, "output_modalities": ["audio"],
             "audio": [
                 "input": ["turn_detection": ["type": "server_vad", "silence_duration_ms": 450, "prefix_padding_ms": 300, "threshold": 0.5, "create_response": true, "interrupt_response": true],
-                          "noise_reduction": ["type": "near_field"], "transcription": ["model": "gpt-4o-mini-transcribe"]],
+                          "noise_reduction": ["type": "near_field"], "transcription": transcription(systemLanguage)],
                 "output": ["voice": "marin"],
             ],
             "tools": tools, "tool_choice": "auto", "parallel_tool_calls": false, "reasoning": ["effort": "low"],
         ]
     }
+
+    /// How the person's speech is written into the talk (the model hears the audio itself): gpt-transcribe,
+    /// told the iPhone's language, and English for the English words in it (app names, "hello"). Without a
+    /// language, gpt-4o-mini-transcribe wrote a 嗯 as 안, n or 按.
+    static func transcription(_ language: String) -> [String: Any] {
+        let main = Locale(identifier: language).language.languageCode?.identifier ?? "en"
+        return ["model": "gpt-transcribe", "languages": main == "en" ? ["en"] : [main, "en"], "prompt": transcriptionPrompt]
+    }
+
+    static let transcriptionPrompt = "Someone talking to Poki, a voice assistant, to use their iPhone: opening apps, scrolling, tapping, reading the screen."
 
     /// A one-minute Realtime key from OpenAI, made with the owner's API key (sent only to OpenAI).
     static func token(apiKey: String) async throws -> VoiceBridge.Token {
@@ -104,7 +133,7 @@ enum VoiceDirect {
                 .replacingOccurrences(of: #"sk-[\w*-]+"#, with: "the API key", options: .regularExpression)
             throw VoiceError.realtime(status, message)
         }
-        return VoiceBridge.Token(value: value, model: model, local_tools: ["get_ios_version", "look"])
+        return VoiceBridge.Token(value: value, model: model, local_tools: localTools)
     }
 }
 
