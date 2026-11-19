@@ -45,7 +45,7 @@
     </scenes>
     <resources>
         <image name="LaunchBackdrop" width="402" height="874"/>
-        <image name="LaunchBear" width="508" height="336.66665649414062"/>
+        <image name="LaunchBear" width="508" height="336.5"/>
         <image name="LaunchWordmark" width="132" height="64"/>
     </resources>
 </document>

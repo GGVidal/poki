@@ -76,12 +76,15 @@ LAUNCH="$HERE/Poki/LaunchArt"
 mkdir -p "$APP/LaunchBackdrop.imageset"
 cp "$LAUNCH/LaunchBackdrop.png" "$APP/LaunchBackdrop.imageset/picture.png"
 echo '{"images":[{"filename":"picture.png","idiom":"universal","scale":"1x"}],"info":{"version":1,"author":"poki"}}' > "$APP/LaunchBackdrop.imageset/Contents.json"
-for name in LaunchWordmark LaunchBear; do
+# The word at 3x, the bear at 2x (make-launch-art.swift says why).
+for spec in LaunchWordmark:3 LaunchBear:2; do
+  name="${spec%:*}"
+  scale="${spec#*:}"
   mkdir -p "$APP/$name.imageset"
-  echo '{"images":[{"filename":"picture@3x.png","idiom":"universal","scale":"3x"}],"info":{"version":1,"author":"poki"}}' > "$APP/$name.imageset/Contents.json"
+  echo "{\"images\":[{\"filename\":\"picture@${scale}x.png\",\"idiom\":\"universal\",\"scale\":\"${scale}x\"}],\"info\":{\"version\":1,\"author\":\"poki\"}}" > "$APP/$name.imageset/Contents.json"
 done
 swift "$HERE/scripts/make-launch-art.swift" "$HERE/Shared/Fonts/Geist-SemiBold.ttf" "$LAUNCH/LaunchBear.png" \
-  "$APP/LaunchWordmark.imageset/picture@3x.png" "$APP/LaunchBear.imageset/picture@3x.png"
+  "$APP/LaunchWordmark.imageset/picture@3x.png" "$APP/LaunchBear.imageset/picture@2x.png"
 
 WIDGET="$HERE/PokiWidgets/Assets.xcassets"
 catalog "$WIDGET"
