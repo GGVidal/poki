@@ -257,7 +257,7 @@ final class ChatHarnessTests: XCTestCase {
         }
         VoiceDirect.enabled = false
         let link = FakeConnection()
-        let voice = VoiceModel(clearTap: { _, _, _ in .clear }, phoneTool: { _, _ in ("", false) }, tasks: .chat { chat },
+        let voice = VoiceModel(clearTap: { _, _, _ in .clear }, phoneTool: { _, _ in ("", false, nil) }, tasks: .chat { chat },
                                connection: { onEvent, onClosed in link.onEvent = onEvent; link.onClosed = onClosed; return link })
         _ = voice.setBridge(BridgeStub.address)
         await voice.start(microphone: false)
