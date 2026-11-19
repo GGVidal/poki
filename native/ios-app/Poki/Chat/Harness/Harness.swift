@@ -1,6 +1,7 @@
 // Poki's chat harness shares its core execution rules and harness tools (report_plan, finish_task)
 // with agent/task-runner.mjs and agent/prompts/pi-app.md, adapted to the app's in-process tools
-// (look, do, routines, status) and sandbox browser tools (WebTools).
+// (look, do, routines, status) and sandbox browser tools (WebTools). finish_task also takes a result
+// card, which the chat draws and the Mac agent's terminal and message channels do not.
 import Foundation
 import PokiCore
 
@@ -17,7 +18,9 @@ enum Harness {
         return text
     }()
 
-    static var instructions: String { [system, PokiCore.toolInstructions, WebTools.instructions].joined(separator: "\n\n") }
+    static var instructions: String {
+        [system, PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.isEnabled), WebTools.instructions].joined(separator: "\n\n")
+    }
 
     static let splitViewInstructions = """
     You are Poki, the owner's personal assistant, completing their task across two visible iPhone Split View apps while Poki stays in the background. Keep replies brief and reply in the owner's language. Publish a short plan with report_plan before acting.
@@ -29,8 +32,10 @@ enum Harness {
     /// The instructions for a task: the above, then the saved notes and the routines that fit it.
     @MainActor static func instructions(for task: String, inSplitView: Bool = false) -> String {
         if inSplitView {
-            if ApprovalClassifier.mode == .reply { return splitViewInstructions + "\n\n" + replyApprovals }
-            return splitViewInstructions
+            var parts = [splitViewInstructions]
+            if HistoryCapture.isEnabled { parts.append(PokiCore.screenHistoryInstructions) }
+            if ApprovalClassifier.mode == .reply { parts.append(replyApprovals) }
+            return parts.joined(separator: "\n\n")
         }
         let brief = PokiCore.memoryBrief(for: task)
         var parts = [instructions]
@@ -44,10 +49,14 @@ enum Harness {
         if ApprovalClassifier.mode == .reply {
             parts.append(replyApprovals)
         }
+        parts.append(recipients)
         if let apps = appIDs(for: task) { parts.append(apps) }
         if !brief.isEmpty { parts.append(brief) }
         return parts.joined(separator: "\n\n")
     }
+
+    /// A result card's send button names the recipient only when the notes do (the card's description).
+    private static let recipients = "When the owner asks to send something and neither the request nor the long-term notes name the recipient, ask the owner who to send it to before acting."
 
     private static let replyApprovals = "Approvals in this chat come from the owner's messages. When a step is declined, ask in plain words whether to run that named step, and resend the identical step once confirmed."
 
@@ -63,23 +72,30 @@ enum Harness {
     }
 
     /// Poki's sandbox browser tools sit beside the phone tools.
-    static let tools: [ToolSpec] = phoneTools + WebTools.specs + [reportPlan, finishTask]
+    static var tools: [ToolSpec] {
+        catalogTools(includeScreenHistory: HistoryCapture.isEnabled) + WebTools.specs + [reportPlan, finishTask]
+    }
 
-    static let splitViewTools: [ToolSpec] = [
-        ToolSpec(name: "look", description: "Read the app, numbered UI elements and screenshot of the left or right pane. Select a pane explicitly when you first read and whenever moving between apps. Points use the selected screenshot’s own coordinates.",
-                 schema: object(["pane": ["type": "string", "enum": ["left", "right"]], "full": ["type": "boolean"]], [])),
-        ToolSpec(name: "do", description: "Act in the selected pane, then read it. Actions include {tap: ref or [x,y]}, {type: text, ref?: number}, {key: return|delete|tab|space|escape}, {scroll_to: text}, {swipe: direction}, {back: true}, {wait_until: text}, {handoff: {kind, text}}, and {drag: {from: ref or [x,y], to: [x,y], to_pane: left or right}} for a continuous cross-pane drag. Read the destination first and the source second. The drop point uses destination-local coordinates. Read the destination after sending the drag. Do not switch apps or end Split View.",
-                 schema: object(["actions": ["type": "array", "items": ["type": "object"], "minItems": 0, "maxItems": 20], "full": ["type": "boolean"]], ["actions"])),
-    ] + phoneTools.filter { $0.name == "status" } + [reportPlan, finishTask]
+    static var splitViewTools: [ToolSpec] {
+        [
+            ToolSpec(name: "look", description: "Read the app, numbered UI elements and screenshot of the left or right pane. Select a pane explicitly when you first read and whenever moving between apps. Points use the selected screenshot’s own coordinates.",
+                     schema: object(["pane": ["type": "string", "enum": ["left", "right"]], "full": ["type": "boolean"]], [])),
+            ToolSpec(name: "do", description: "Act in the selected pane, then read it. Actions include {tap: ref or [x,y]}, {type: text, ref?: number}, {key: return|delete|tab|space|escape}, {scroll_to: text}, {swipe: direction}, {back: true}, {wait_until: text}, {handoff: {kind, text}}, and {drag: {from: ref or [x,y], to: [x,y], to_pane: left or right}} for a continuous cross-pane drag. Read the destination first and the source second. The drop point uses destination-local coordinates. Read the destination after sending the drag. Do not switch apps or end Split View.",
+                     schema: object(["actions": ["type": "array", "items": ["type": "object"], "minItems": 0, "maxItems": 20], "full": ["type": "boolean"]], ["actions"])),
+        ] + catalogTools(includeScreenHistory: HistoryCapture.isEnabled).filter { $0.name == "status" || $0.name == "screen_history" } + [reportPlan, finishTask]
+    }
 
     /// PokiCore's catalog: look, do and status.
-    static let phoneTools: [ToolSpec] = {
-        guard let data = PokiCore.toolCatalogJSON.data(using: .utf8), let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
+    static let phoneTools: [ToolSpec] = catalogTools(includeScreenHistory: false)
+
+    private static func catalogTools(includeScreenHistory: Bool) -> [ToolSpec] {
+        guard let data = PokiCore.toolCatalogJSON(includeScreenHistory: includeScreenHistory).data(using: .utf8),
+              let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
         return list.compactMap { tool in
             guard let name = tool["name"] as? String, let description = tool["description"] as? String, let schema = tool["inputSchema"] as? [String: Any] else { return nil }
             return ToolSpec(name: name, description: description, schema: schema)
         }
-    }()
+    }
 
     private static func object(_ properties: [String: Any], _ required: [String]) -> [String: Any] {
         ["type": "object", "properties": properties, "required": required, "additionalProperties": false]
@@ -102,11 +118,46 @@ enum Harness {
                 "items": ["type": "array", "items": object(["ref": string, "field": ["type": "string", "enum": ["label", "value"]], "prefix": string, "suffix": string], ["ref", "field"])],
                 "start_ref": string, "end_ref": string,
             ], ["kind"]),
+            "card": resultCard,
         ], ["success", "summary", "details", "answer"]))
+
+    /// finish_task's card, with each look's fields (`ResultCardLooks`).
+    private static let resultCard: [String: Any] = {
+        let action = object(["label": string, "say": string], ["label", "say"])
+        let seat = object(["name": string, "left": string], ["name", "left"])
+        let item = object(["id": string, "title": string, "date": string, "from": string, "to": string, "depart": string, "arrive": string,
+                           "duration": string, "price": string, "note": string, "seats": ["type": "array", "items": seat]], ["id", "title"])
+        var card = object(["app": string, "kind": ["type": "string", "enum": [RailwayTrains.kind]],
+                           "items": ["type": "array", "items": item, "minItems": 2], "recommended": string,
+                           "primary": action, "next": action], ["app", "kind", "items", "recommended", "primary"])
+        card["description"] = cardDescription
+        return card
+    }()
+
+    // The fixed words and the reply's examples are agy's (ESP-904's copy record), except the main button,
+    // which says 查看 as the card's rules require, not agy's 预订.
+    private static let cardDescription = """
+        Only when the owner is choosing among two or more results of one app (trains, flights, products): those results as a card in the app's own look under the task card, which replaces listing them in the reply. Leave it out otherwise. Write its words in the owner's language; the examples are for a Chinese conversation.
+        kind 12306.trains, Railway 12306's train list: app "cn.12306.rails12306". Each item is one train as 12306 shows it: id and title the train number ("G1234"), date ("11月20日 周四"), from and to stations, depart and arrive times ("07:00"), duration ("4小时28分"), price ("¥626"), seats [{name: "二等座", left: "有", "候补", "无" or "5张"}], and note only for a fact that bears on the choice ("15:00 有冲突").
+        recommended is the id of the item that best fits the request; the card selects it until the owner taps another. primary and next are the card's buttons for the selected item: in label and say, {field} becomes that item's field. A tap sends say as the owner's message, so say stands alone with the item's key facts, written as {field}s so they follow the selection. primary: {label: "在 12306 查看", say: "在 12306 打开 {date} {title} 次（{from} {depart} 开）"}. next is the one obvious next step, or left out. To send the train to someone, name the recipient the long-term notes give: {label: "发到公司差旅群", say: "把这趟车发到公司差旅群：{date} {title} 次，{from} {depart} 开，{to} {arrive} 到，{price}"}; when the notes name none: {label: "发送车次", say: "把这趟车发出去：{date} {title} 次，{from} {depart} 开，{to} {arrive} 到，{price}"}. Never offer paying, booking or choosing seats.
+        """
 
     /// task-runner.mjs's answers to its harness tools.
     static let planPublished = "Plan published. Continue."
     static let resultRecorded = "Result recorded. Explain it briefly to the user."
+
+    /// finish_task's answer. Under a card the reply adds one conclusion; a card that could not be drawn
+    /// leaves the whole result to the reply.
+    static func recorded(_ result: TaskResult, cardShown: Bool) -> String {
+        if cardShown {
+            return "Result recorded. The card under the task shows the items and their buttons. Reply with one plain sentence the card does not show: why the recommended item fits, or what to watch for (\"这趟最早到，比其他车次贵 50 元。\", \"只剩这趟还有二等座余票。\", \"这趟最晚发车，到站后能赶上下午的会。\"). Do not repeat the items' numbers, stations, times or prices, or what the buttons do."
+        }
+        if let problem = result.cardProblem {
+            return "Result recorded. The card was not shown (\(problem)), so give the whole result in words, as without a card."
+        }
+        return resultRecorded
+    }
+
     static let invalidPlan = "Invalid model plan"
     static let invalidResult = "Invalid task result"
 }
