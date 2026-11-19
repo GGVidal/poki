@@ -134,7 +134,7 @@ enum Harness {
         return card
     }()
 
-    // The fixed words and the reply's examples are agy's (ESP-904's copy record), except the main button,
+    // The fixed words and the reply's examples are agy's (from its copy record), except the main button,
     // which says 查看 as the card's rules require, not agy's 预订.
     private static let cardDescription = """
         Only when the owner is choosing among two or more results of one app (trains, flights, products): those results as a card in the app's own look under the task card, which replaces listing them in the reply. Leave it out otherwise. Write its words in the owner's language; the examples are for a Chinese conversation.

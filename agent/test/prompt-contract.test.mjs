@@ -53,8 +53,9 @@ test('App Harness prompts preserve personal-assistant voice, tool, routing, evid
   for (const text of [agentSystem, harnessSwift]) {
     assert.doesNotMatch(text, /[—–]/, 'Public prompt files avoid em and en dashes');
     assert.doesNotMatch(text, /ESP-\d+/i, 'Public prompt files avoid internal ticket IDs');
-    assert.doesNotMatch(text, /\p{Script=Han}/u, 'Public prompt files stay in English');
   }
+  // The result card's description gives Chinese examples on purpose, for a Chinese conversation.
+  assert.doesNotMatch(agentSystem, /\p{Script=Han}/u, 'agent-system.md stays in English');
 });
 
 test('Agent prompts preserve personal-assistant voice, device execution, verification, and safety contracts', () => {
