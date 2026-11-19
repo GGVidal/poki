@@ -510,7 +510,8 @@ public final class RoutineStore: @unchecked Sendable {
         guard incoming.schema == Self.schema else { throw ImportError("a backup of a newer Poki (\(incoming.schema)); update Poki to import it") }
         var added = 0, replaced = 0, kept = 0, notes = 0
         // An agent's import brings what it says, but not the owner's say: nothing comes locked, and
-        // nothing claims to be the owner's, an import's or Dream's.
+        // nothing claims to be the owner's, an import's or Dream's. A note's "edited" and "heard"
+        // are the owner's change and one of our own conversations, so they are not carried either.
         let agent = !Self.isReserved(by)
         withFile(true) { f in
             for var r in incoming.routines where !r.name.isEmpty {
@@ -521,7 +522,7 @@ public final class RoutineStore: @unchecked Sendable {
                 } else { f.routines.append(r); added += 1 }
             }
             for var n in incoming.notes where !f.notes.contains(where: { $0.text.caseInsensitiveCompare(n.text) == .orderedSame }) {
-                if agent { n.locked = nil; if Self.isReserved(n.by) { n.by = by } }
+                if agent { n.locked = nil; n.edited = nil; n.heard = nil; if Self.isReserved(n.by) { n.by = by } }
                 // Another note's id would make forgetting or undoing by id reach the wrong one.
                 if f.notes.contains(where: { $0.id == n.id }) { n.id = String(UUID().uuidString.prefix(8)).lowercased() }
                 f.notes.append(n); notes += 1
