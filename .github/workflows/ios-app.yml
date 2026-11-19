@@ -176,7 +176,7 @@ jobs:
 
   app:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 130
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ inputs.ref }}" }
