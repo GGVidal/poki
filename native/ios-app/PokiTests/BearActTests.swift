@@ -12,6 +12,23 @@ final class BearActTests: XCTestCase {
         for act in held { XCTAssertNotEqual(BearStance.pose(act), BearIdle.Pose(), "\(act)") }
     }
 
+    /// Each state that has a face of its own draws that one and no other: thinking, needs you, asleep,
+    /// delighted (set-up), and the two reactions, done and gone wrong.
+    func testEachStateDrawsItsOwnFaceAndNoOther() throws {
+        let stances: [(BearAct, BearFace?)] = [
+            (.ready, nil), (.thinking, .think), (.working, nil), (.asking, .ask), (.waiting, nil),
+            (.paused, .sleep), (.lost, nil), (.listening, nil), (.speaking, nil), (.hello, .surprise),
+        ]
+        for (act, face) in stances {
+            let pose = BearStance.pose(act)
+            for other in BearFace.allCases { XCTAssertEqual(pose[other], other == face ? 1 : 0, "\(act) \(other)") }
+        }
+        for (act, face) in [(BearAct.done, BearFace.done), (.failed, .sad)] {
+            let pose = try XCTUnwrap(BearReaction(act, at: 0)).pose(at: BearReaction.rise + 0.2)
+            for other in BearFace.allCases { XCTAssertEqual(pose[other], other == face ? 1 : 0, "\(act) \(other)") }
+        }
+    }
+
     /// A reaction comes in, holds, and leaves the bear standing as it found it, in a few seconds.
     func testAReactionPlaysOnceAndEnds() throws {
         for act in [BearAct.done, .failed] {

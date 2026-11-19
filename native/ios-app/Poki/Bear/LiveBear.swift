@@ -237,6 +237,9 @@ private struct EyePads {
     private let shown: PhysicallyBasedMaterial
     private let hidden: PhysicallyBasedMaterial
     private var drawnOpen: Float = 1
+    /// Set while a face draws its own lights in the eyes: the model's catchlights are then hidden.
+    var hideHighlights = false
+    private var drawnHidden = false
 
     init?(bear: ModelEntity) {
         guard let model = bear.model, let skeleton = model.mesh.contents.skeletons.first else { return nil }
@@ -277,26 +280,42 @@ private struct EyePads {
             let x = min(max((transforms[eye].scale.y - Self.shutting) / (1 - Self.shutting), 0), 1)
             open = min(open, x * x * (3 - 2 * x))
         }
-        guard open != drawnOpen, var model = bear.model else { return }
+        guard open != drawnOpen || hideHighlights != drawnHidden, var model = bear.model else { return }
         drawnOpen = open
+        drawnHidden = hideHighlights
         var pads = white
         if case .transparent(let opacity) = white.blending {
             pads.blending = .transparent(opacity: .init(scale: opacity.scale * open, texture: opacity.texture))
         }
         model.materials[pad] = pads
-        model.materials[highlight] = open == 1 ? shown : hidden
+        model.materials[highlight] = open == 1 && !hideHighlights ? shown : hidden
         bear.model = model
     }
 }
 
 /// Manages standalone facial expression meshes (`PokiBear-expressions.usdz`) tracked rigidly to the
 /// Head joint chain so the base `PokiBear.usdz` stays untouched while expressions follow every turn.
+/// A face is every mesh whose name starts with its `BearFace.prefix`, found by name, so a face can be
+/// redrawn in the file without a change here.
 @MainActor
 private struct BearExpressionOverlay {
+    /// When a mesh of a face is drawn besides the face itself being on.
+    private enum Needs {
+        /// The eyes open and not blinking: lids, creases and the lights in the pupils.
+        case openEyes
+        /// The model's own mouth shut: a face's mouth and tongue.
+        case shutMouth
+        case nothing
+    }
+
+    private struct Part {
+        let face: BearFace
+        let entity: Entity
+        let needs: Needs
+    }
+
     let root: Entity
-    private let thinkLid: Entity?
-    private let thinkRim: Entity?
-    private let thinkMouth: Entity?
+    private let parts: [Part]
     private let headChain: [Int]
     private let headBindInverse: simd_float4x4
 
@@ -327,14 +346,6 @@ private struct BearExpressionOverlay {
         let content = template.clone(recursive: true)
         root.addChild(content)
 
-        func find(_ token: String, in entity: Entity) -> Entity? {
-            if entity.name == token || entity.name.contains(token) { return entity }
-            for child in entity.children {
-                if let hit = find(token, in: child) { return hit }
-            }
-            return nil
-        }
-
         func applyMaterial(_ material: PhysicallyBasedMaterial, to entity: Entity) {
             if let model = entity as? ModelEntity, var comp = model.model {
                 comp.materials = Array(repeating: material, count: max(comp.materials.count, 1))
@@ -343,21 +354,32 @@ private struct BearExpressionOverlay {
             for child in entity.children { applyMaterial(material, to: child) }
         }
 
-        let lid = find("Expr_ThinkLid_L", in: content)
-        let rim = find("Expr_ThinkRim_L", in: content)
-        let mouth = find("Expr_ThinkMouth", in: content)
-        if let lid, let skinMaterial { applyMaterial(skinMaterial, to: lid) }
-        lid?.isEnabled = false
-        rim?.isEnabled = false
-        mouth?.isEnabled = false
+        var parts: [Part] = []
+        func collect(_ entity: Entity) {
+            if entity is ModelEntity, let face = BearFace.allCases.first(where: { entity.name.hasPrefix($0.prefix) }) {
+                let name = entity.name
+                let needs: Needs
+                if name.contains("Mouth") || name.contains("Tongue") {
+                    needs = .shutMouth
+                } else if ["Lid", "Rim", "Catch", "Star", "Dot"].contains(where: { name.contains($0) }) {
+                    needs = .openEyes
+                } else {
+                    needs = .nothing
+                }
+                // A lid is the head's own skin, so that it is the same colour and shading as the head.
+                if name.contains("Lid"), let skinMaterial { applyMaterial(skinMaterial, to: entity) }
+                entity.isEnabled = false
+                parts.append(Part(face: face, entity: entity, needs: needs))
+            }
+            for child in entity.children { collect(child) }
+        }
+        collect(content)
 
         let skinWorld = skin.transformMatrix(relativeTo: nil)
         let bindHeadWorld = skinWorld * Self.chainMatrix(chain, in: bindJoints)
 
         self.root = root
-        self.thinkLid = lid
-        self.thinkRim = rim
-        self.thinkMouth = mouth
+        self.parts = parts
         self.headChain = chain
         self.headBindInverse = bindHeadWorld.inverse
     }
@@ -373,7 +395,7 @@ private struct BearExpressionOverlay {
     func update(
         skin: ModelEntity,
         joints: [Transform],
-        thinkWeight: Float,
+        faces: SIMD8<Float>,
         mouthOpen: Float,
         blinkClosed: Float,
         eyesClosed: Bool
@@ -382,10 +404,15 @@ private struct BearExpressionOverlay {
         let headWorld = skinWorld * Self.chainMatrix(headChain, in: joints)
         root.transform = Transform(matrix: headWorld * headBindInverse)
 
-        let showLid = thinkWeight > 0.35 && blinkClosed < 0.25 && !eyesClosed
-        thinkLid?.isEnabled = showLid
-        thinkRim?.isEnabled = showLid
-        thinkMouth?.isEnabled = thinkWeight > 0.35 && mouthOpen < 0.25
+        for part in parts {
+            var show = faces[part.face.rawValue] > 0.35
+            switch part.needs {
+            case .openEyes: show = show && blinkClosed < 0.25 && !eyesClosed
+            case .shutMouth: show = show && mouthOpen < 0.25
+            case .nothing: break
+            }
+            part.entity.isEnabled = show
+        }
     }
 }
 
@@ -769,7 +796,7 @@ private final class BearCanvas: UIView {
             overlay.update(
                 skin: skins[index],
                 joints: standing[index],
-                thinkWeight: finalMove.thinkExpression,
+                faces: finalMove.faces,
                 mouthOpen: finalMove.mouth,
                 blinkClosed: blinkMoment?.closedAmount ?? 0,
                 eyesClosed: eyesBusy
@@ -804,6 +831,7 @@ private final class BearCanvas: UIView {
                 settling = 3
             }
             guard let drawable = layer.nextDrawable() else { return }
+            pads?.hideHighlights = finalMove[.surprise] > 0.35
             pads?.follow()
             BearLog.note(now, playback.move, time * clips.fps)
             lastPose = pose
