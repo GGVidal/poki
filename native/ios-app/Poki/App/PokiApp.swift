@@ -15,8 +15,6 @@ struct PokiApp: App {
         // PokiLauncher (Rust) and the relay write to sockets the other side may have closed. In an app,
         // unlike a Rust executable, nothing ignores SIGPIPE, and it would end the whole app.
         signal(SIGPIPE, SIG_IGN)
-        // iOS 26: the background task that keeps Poki up is registered before launch ends, as iOS asks.
-        if #available(iOS 26.0, *) { ContinuedRun.registerAtLaunch() }
         // Settings an update, a reinstall or a re-sign lost come back from the Keychain, before anything
         // reads them; from here on every change is mirrored there.
         SettingsVault.restore()
@@ -47,6 +45,10 @@ struct PokiApp: App {
         // The three-dimensional bear loads while the app starts, to be there when Poki's picture first shows.
         BearModel.shared.load()
         let model = AppModel()
+        // Started by iOS in the background (a change of place, a shortcut) with Screen History on:
+        // reading starts without waiting for Poki to be opened.
+        if HistoryCapture.isEnabled { Task { @MainActor in HistoryCollector.shared.attach(model) } }
+        BackgroundRefresh.register { model.background.woke("background refresh") }
         _model = State(initialValue: model)
         let chat = ChatModel(app: model)
         _chat = State(initialValue: chat)
@@ -291,8 +293,9 @@ struct RootView: View {
             Text("The update is almost in. Poki will close to finish it. Open Poki again afterwards.")
         }
         .modifier(AutomationNotices(enabled: !detailsOpen))
+        .modifier(LoopbackPrompt(enabled: !detailsOpen && !welcoming && model.signer.installMessage == nil))
         .onChange(of: scenePhase, initial: true) { _, phase in
-            if phase == .active { model.becameActive(); AskPoki.refresh(); model.startSigner(); model.signer.maintain(); Task { await model.verifyPairing() } } else if phase == .background { model.wentToBackground() }
+            if phase == .active { model.becameActive(); HistoryCollector.shared.attach(model); AskPoki.refresh(); model.startSigner(); model.signer.maintain(); Task { await model.verifyPairing() } } else if phase == .background { model.wentToBackground(); if model.background.isOn { BackgroundRefresh.schedule() } else { BackgroundRefresh.cancel() } }
         }
         // A tap on the Live Activity opens the screen its state is about (ActivityFace.link): the chat,
         // the setup step, or the Activity Log for a problem; `poki://voice` brings the chat to the front.
@@ -355,6 +358,9 @@ struct RootView: View {
             if showsSidebar { openDetails([DetailsRoute.connection, step]) } else { home = NavigationPath([step]) }
         } else if url.host() == "setup", !url.absoluteString.contains("relay=") {
             openDetails([DetailsRoute.connection])
+        } else if url.host() == "reconnect" {
+            // A shortcut's last resort when Poki was not running: it opens Poki, which reconnects.
+            Task { _ = await HistoryCollector.shared.reconnect(model, by: "a link") }
         } else if url.host() == "log" {
             openDetails([DetailsRoute.history])
         } else if url.host() == "approvals" {

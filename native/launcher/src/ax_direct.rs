@@ -6,6 +6,9 @@
 //! A hit test sends no touch, and nothing here is an accessibility action.
 use super::*;
 
+/// In the error of a front read whose hit tests failed, as opposed to answered with no process.
+pub const HITS_FAILED: &str = "hit tests failed";
+
 /// What each step of a direct read did, for the test log.
 #[derive(Default, serde::Serialize)]
 pub struct Trace {
@@ -25,6 +28,8 @@ pub struct Direct {
     socket: Box<dyn ReadWrite>,
     orientation: Option<u64>,
     next_id: u32,
+    /// The bundle id of each process asked so far, so the app behind a web page is asked once.
+    bundles: std::collections::HashMap<u64, String>,
 }
 
 const STEP: Duration = Duration::from_secs(4);
@@ -98,7 +103,7 @@ impl Direct {
         )
         .await?;
         call(&mut socket, 2, "clientNeedsAccessibility:", true.into(), true).await?;
-        let mut direct = Self { socket, orientation: None, next_id: 10 };
+        let mut direct = Self { socket, orientation: None, next_id: 10, bundles: Default::default() };
         let _ = tokio::time::timeout(Duration::from_millis(1500), async {
             while direct.orientation.is_none() {
                 let message = Message::from_reader(&mut direct.socket).await?;
@@ -288,8 +293,56 @@ impl Direct {
                 Err(error) => trace.hits.push(json!({"x": x, "y": y, "error": error.to_string(), "ms": ms})),
             }
         }
-        let pid = trace.pid.ok_or("no point of the screen answered the hit test")?;
-        self.tree_of(pid, trace).await
+        let pid = match trace.pid {
+            Some(pid) => pid,
+            None => {
+                // A hit that failed is not a hit that found nothing: a dead connection must not
+                // read as a locked screen. The first failure travels with the error.
+                let failed: Vec<&str> = trace.hits.iter().filter_map(|hit| hit["error"].as_str()).collect();
+                return Err(match failed.first() {
+                    Some(first) => format!("no point of the screen answered the hit test ({HITS_FAILED}: {} of {}, first: {first})", failed.len(), trace.hits.len()).into(),
+                    None => "no point of the screen answered the hit test (every point answered with no process)".into(),
+                });
+            }
+        };
+        let mut tree = self.tree_of(pid, trace).await?;
+        let bundle = bundle_of(&tree);
+        if let Some(bundle) = &bundle {
+            self.bundles.insert(pid, bundle.clone());
+        }
+        // A web page is drawn by a process of its own (com.apple.WebKit.WebContent), one per tab,
+        // with no app's name. The app that shows it owns the bars at the screen's edges.
+        if bundle.as_deref().is_none_or(is_web) {
+            if let Some(host) = self.host_of(points, pid).await {
+                tree["host"] = json!({"bundle_id": host});
+            }
+        }
+        Ok(tree)
+    }
+
+    /// The app whose bars frame the web page that process `web` draws: the first process hit near
+    /// the bottom or the top edge that is an app, not a web process and not the Home Screen.
+    async fn host_of(&mut self, points: &[(f64, f64)], web: u64) -> Option<String> {
+        let (x, middle) = *points.first()?;
+        let height = middle * 2.0;
+        for share in [0.955, 0.9, 0.075, 0.12] {
+            let Ok(Some(pid)) = self.hit(x, height * share).await else { continue };
+            if pid == web {
+                continue;
+            }
+            let bundle = match self.bundles.get(&pid) {
+                Some(known) => known.clone(),
+                None => {
+                    let found = self.tree_of(pid, &mut Trace::default()).await.ok().and_then(|tree| bundle_of(&tree)).unwrap_or_default();
+                    self.bundles.insert(pid, found.clone());
+                    found
+                }
+            };
+            if !bundle.is_empty() && !is_web(&bundle) && !bundle.eq_ignore_ascii_case("com.apple.springboard") {
+                return Some(bundle);
+            }
+        }
+        None
     }
 
     pub async fn close(&mut self) {
@@ -297,6 +350,16 @@ impl Direct {
         let _ = call(&mut self.socket, id, "clientNeedsAccessibility:", false.into(), true).await;
         let _ = self.socket.shutdown().await;
     }
+}
+
+/// The bundle id a tree's one application names, if any.
+fn bundle_of(tree: &Json) -> Option<String> {
+    tree["applications"][0]["bundle_id"].as_str().map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned)
+}
+
+/// A WebKit process that draws or serves a page for some app.
+pub(crate) fn is_web(bundle: &str) -> bool {
+    bundle.to_ascii_lowercase().starts_with("com.apple.webkit")
 }
 
 /// The tree of the app shown at the first of `points` that hits a process.

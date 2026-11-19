@@ -41,7 +41,7 @@ struct HistorySpan: Identifiable, Hashable {
 
 @MainActor
 enum HistoryNames {
-    static func app(_ id: String) -> String { AppIconStore.name(id) ?? id }
+    static func app(_ id: String) -> String { HistoryAppNames.name(id) }
 
     static func status(_ status: HistoryCapture.Status) -> String {
         switch status {
@@ -62,6 +62,7 @@ enum HistoryNames {
         switch kind {
         case "leftOut": return "Left Out an App"
         case "cleared": return "History Cleared"
+        case "dropped": return "Reading Dropped"
         default: return kind
         }
     }
@@ -75,16 +76,24 @@ struct HistoryPage: View {
     @State private var layout = BacktapeLayout()
     @State private var loaded = false
 
+    /// What was read off the screen is behind the lock. With Screen History off the page holds only
+    /// what Poki and agents did, which the Activity Log shows openly.
+    private var locked: Bool { capture.enabled && !lock.unlocked }
+
     var body: some View {
         Group {
-            // The whole page opens only after Face ID, Touch ID or Poki's PIN.
-            if !lock.unlocked {
+            // With Screen History on, the whole page opens only after Face ID, Touch ID or Poki's PIN.
+            if locked {
                 BacktapeLockScreen()
             } else if layout.isEmpty {
                 List {
                     if loaded {
                         Section {
-                            Text("Nothing is kept yet. Start a read in Testing Options, use another app, then come back.").foregroundStyle(.secondary)
+                            if capture.enabled {
+                                Text("Nothing is kept yet. Start a read in Testing Options, use another app, then come back.").foregroundStyle(.secondary)
+                            } else {
+                                Text("Nothing here yet. What Poki and agents do on this iPhone shows up here.").foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -95,20 +104,24 @@ struct HistoryPage: View {
         .navigationTitle(AppLocalization.text("Screen History"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if lock.unlocked {
+            if !locked {
                 ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink { HistoryGate { BacktapeSettingsPage().settingsPage() } } label: {
+                    NavigationLink { HistoryGate(whenOff: true) { BacktapeSettingsPage().settingsPage() } } label: {
                         Image(systemName: "slider.horizontal.3")
                     }
                     .accessibilityLabel(Text("Screen History Settings"))
                 }
             }
         }
-        .task(id: capture.changes) { await load() }
+        .task(id: "\(capture.changes) \(capture.enabled)") { await load() }
     }
 
+    /// The owner's reads while Screen History is on, and what Poki did either way, newest first.
     private func load() async {
-        let entries = await HistoryStore.shared.recent()
+        await capture.tidy()
+        let kept = capture.enabled ? await HistoryStore.shared.recent() : []
+        let steps = BacktapeActivity.entries()
+        let entries = steps.isEmpty ? kept : (kept + steps).sorted { $0.at > $1.at }
         layout = BacktapeLayout.build(entries)
         loaded = true
     }
@@ -121,6 +134,7 @@ struct ScreenHistorySettingsView: View {
     @ObservedObject private var lock = HistoryLock.shared
     @State private var size: (entries: Int, bytes: Int64) = (0, 0)
     @State private var clearing = false
+    @State private var needsShortcut = false
 
     private var permissionsValue: String? {
         if capture.listMode == .include {
@@ -133,10 +147,15 @@ struct ScreenHistorySettingsView: View {
     var body: some View {
         List {
             Section {
-                Toggle(isOn: $capture.enabled) {
+                Toggle(isOn: HistoryReconnect.gated($capture.enabled, refused: $needsShortcut)) {
                     SettingsRow(title: "Screen History", symbol: "rectangle.stack")
                 }
                 .accessibilityIdentifier("screenHistory.enabled")
+                .alert("Set Up the Shortcut First", isPresented: $needsShortcut) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text("Screen History needs the shortcut that keeps Poki connected on cellular. Add it below, run it once, then turn Screen History on.")
+                }
             } footer: {
                 Text("When on, Poki can answer questions from text kept on this iPhone. Excluded apps and password fields are left out, and nothing leaves this iPhone.")
             }
@@ -169,6 +188,9 @@ struct ScreenHistorySettingsView: View {
                 .accessibilityIdentifier("screenHistory.excludedApps")
             }
 
+            // Always here: Screen History cannot be turned on before the shortcut ran once.
+            CellularShortcutSection()
+
             Section {
                 Button("Clear History", role: .destructive) {
                     clearing = true
@@ -196,6 +218,74 @@ struct ScreenHistorySettingsView: View {
     }
 }
 
+/// The shortcut that keeps the loopback on cellular: its link, the same automation by hand, and when
+/// it last ran. Shown where the loopback is set up (the owner, 2026-11-19: asked for in the same
+/// step) and in Screen History's settings.
+struct CellularShortcutSection: View {
+    @ObservedObject private var reconnect = HistoryReconnect.shared
+    @Environment(\.openURL) private var openURL
+
+    private var lastRun: String {
+        guard let at = reconnect.lastAt else { return AppLocalization.text(LocalizedStringResource("Never")) }
+        if !reconnect.lastWorked { return AppLocalization.text(LocalizedStringResource("Did Not Connect")) }
+        return at.formatted(.relative(presentation: .named))
+    }
+
+    var body: some View {
+        Section {
+            Button {
+                reconnect.asked = true
+                openURL(HistoryReconnect.shortcut)
+            } label: {
+                SettingsRow(title: "Get the Shortcut", symbol: "square.2.layers.3d", accessory: .leaves)
+            }
+            .accessibilityIdentifier("cellularShortcut.get")
+            NavigationLink {
+                HistoryShortcutGuide().settingsPage().onAppear { reconnect.asked = true }
+            } label: {
+                SettingsRow(title: "Set Up by Hand", symbol: "list.number")
+            }
+            SettingsRow(title: "Last Run", symbol: "arrow.triangle.2.circlepath", value: lastRun, warns: reconnect.lastAt != nil && !reconnect.lastWorked)
+                .accessibilityIdentifier("cellularShortcut.lastRun")
+        } header: {
+            SettingsHeader("On Cellular")
+        } footer: {
+            Text("On cellular, iOS lets Poki keep its connection but not open a new one. The shortcut runs when Wi-Fi disconnects. It turns Cellular Data off for a moment, lets Poki connect, and turns it back on. When you add it, turn its automation on, turn Confirm Before Run off, and choose your VPN app.")
+        }
+    }
+}
+
+/// The Wi-Fi automation built by hand, for an iPhone where the shared shortcut arrives without it
+/// or without Poki's action.
+struct HistoryShortcutGuide: View {
+    private let steps: [LocalizedStringKey] = [
+        "Open Shortcuts and go to Automation.",
+        "Add an automation for Wi-Fi, choose Disconnects From Network, and choose Run Immediately.",
+        "Add Set VPN, choose Connect and your VPN.",
+        "Add Set Cellular Data and set it to Off.",
+        "Add Set VPN again with the same VPN. With no network at all the first one may not start.",
+        "Add Reconnect Poki from the actions of Poki.",
+        "Add Set Cellular Data and set it to On.",
+    ]
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(verbatim: "\(index + 1)").font(.body.monospacedDigit().weight(.semibold)).foregroundStyle(.secondary)
+                        Text(step)
+                    }
+                }
+            } footer: {
+                Text("On older versions of iOS, automations are a separate tab in Shortcuts and do not come with a shared shortcut. These steps make the same one.")
+            }
+        }
+        .navigationTitle(AppLocalization.text("Set Up by Hand"))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 /// Everything that sets Backtape up, on a page of its own: the switch, pause, access times, apps,
 /// how long tape is kept, the reminder, the lock and the record.
 struct BacktapeSettingsPage: View {
@@ -206,7 +296,7 @@ struct BacktapeSettingsPage: View {
     var body: some View {
         List {
             Section {
-                Toggle("Screen History", isOn: $capture.enabled)
+                Toggle("Screen History", isOn: HistoryReconnect.gated($capture.enabled, refused: .constant(false)))
                 NavigationLink { HistoryGate { HistoryPermissionsPage().settingsPage() } } label: {
                     LabeledContent("Permissions") {
                         Text(LocalizedStringKey(capture.listMode == .exclude ? "Exclude These Apps" : "Include Only These Apps"))
@@ -279,9 +369,15 @@ private struct HistoryPermissionsPage: View {
         for app in suggested + seen + KnownApps.all.map(\.id) where !all.contains(where: { $0.caseInsensitiveCompare(app) == .orderedSame }) {
             all.append(app)
         }
-        let open = all.filter { app in !HistoryCapture.isPoki(app) && !chosen.contains { $0.caseInsensitiveCompare(app) == .orderedSame } }
+        let open = all.filter { app in
+            !HistoryCapture.isPoki(app) && !HistoryAppNames.isProcess(app) && !HistoryCapture.isWeb(app) && !chosen.contains { $0.caseInsensitiveCompare(app) == .orderedSame }
+        }
         let wanted = search.trimmingCharacters(in: .whitespaces)
-        guard !wanted.isEmpty else { return open }
+        // Unsearched, only what Poki can show properly: an app it knows or has an icon for. Anything
+        // else is still found by searching its name or bundle ID.
+        guard !wanted.isEmpty else {
+            return open.filter { KnownApps.byID[$0.lowercased()] != nil || AppIconStore.shared.icon($0) != nil || HistoryAppNames.isNamed($0) }
+        }
         return open.filter { $0.localizedCaseInsensitiveContains(wanted) || HistoryNames.app($0).localizedCaseInsensitiveContains(wanted) }
     }
 
@@ -310,7 +406,7 @@ private struct HistoryPermissionsPage: View {
                 ForEach(chosen, id: \.self) { app in
                     HStack(spacing: 12) {
                         AppIconView(app: app, size: 28)
-                        Text(verbatim: HistoryNames.app(app))
+                        HistoryAppName(app: app)
                     }
                     .swipeActions { Button("Remove", role: .destructive) { remove(app) } }
                 }
@@ -323,7 +419,7 @@ private struct HistoryPermissionsPage: View {
                     Button { add(app) } label: {
                         HStack(spacing: 12) {
                             AppIconView(app: app, size: 28)
-                            Text(verbatim: HistoryNames.app(app)).foregroundStyle(Color(.label))
+                            HistoryAppName(app: app).foregroundStyle(Color(.label))
                             Spacer()
                             Image(systemName: "plus.circle").foregroundStyle(.tint)
                         }
@@ -374,7 +470,8 @@ private struct HistoryRecordPage: View {
 
 // MARK: Testing Options
 
-/// General › Testing Options › Screen History: the only place a read starts.
+/// General › Testing Options › Screen History: a single read, a short run, and Stop for the
+/// collector's run (`HistoryCollector`), which starts by itself while Screen History is on.
 struct HistoryTestingSection: View {
     @ObservedObject var capture = HistoryCapture.shared
     @Environment(AppModel.self) private var model
@@ -383,7 +480,10 @@ struct HistoryTestingSection: View {
     var body: some View {
         Section {
             LabeledContent("Status") {
-                if let ends = capture.ends, capture.isRunning {
+                if let held = capture.held, capture.isRunning {
+                    // A run that waits says why: no local connection, or an agent's task.
+                    Text(LocalizedStringKey(HistoryNames.status(held)))
+                } else if let ends = capture.ends, capture.isRunning {
                     Text(timerInterval: Date()...max(Date(), ends), countsDown: true).monospacedDigit()
                 } else {
                     Text(LocalizedStringKey(HistoryNames.status(capture.status)))
@@ -397,12 +497,12 @@ struct HistoryTestingSection: View {
             .disabled(capture.isRunning)
             Button("Start Short Run") { capture.start(minutes: minutes, model: model) }
                 .disabled(capture.isRunning)
-            Button("Stop", role: .destructive) { capture.stop() }
+            Button("Stop", role: .destructive) { HistoryCollector.shared.ownerStop() }
                 .disabled(!capture.isRunning)
         } header: {
             Text("Screen History")
         } footer: {
-            Text("An experiment. Poki reads the text of the app in front only after you start here, and keeps it on this iPhone. Leave Poki after starting. A run ends when its time is up, when the iPhone locks, or when iOS ends Poki's time in the background. Password fields are left out, and nothing is sent anywhere.")
+            Text("An experiment. While Screen History is on, Poki reads the text of the app in front and keeps it on this iPhone. Reading waits while the iPhone is locked or an agent works, then goes on by itself. Stop holds it until you open Poki again. Password fields are left out, and nothing is sent anywhere.")
         }
     }
 }

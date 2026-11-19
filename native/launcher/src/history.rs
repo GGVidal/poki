@@ -49,6 +49,14 @@ const DEFAULT_READ_WITHIN: Duration = Duration::from_secs(10);
 
 /// The run in progress. A new run, or `cancel`, moves it on, and the older run ends at its next look.
 static RUN: AtomicU64 = AtomicU64::new(0);
+/// The run reads nothing while this is set, and keeps its tunnel: on cellular a tunnel that was
+/// closed cannot be opened again, so a wait (an agent's task) must not cost it.
+static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Holds or lets go the reads of the run in progress. A new run starts unheld.
+pub fn pause(on: bool) {
+    PAUSED.store(on, Ordering::SeqCst);
+}
 
 /// Ends the background run, if one is going. It answers with what it measured so far.
 pub fn cancel() {
@@ -59,19 +67,76 @@ struct Target {
     address: IpAddr,
     pairing_file: PathBuf,
     host_name: Option<String>,
+    /// The downloaded developer disk image. After a restart the phone has unmounted it, and the
+    /// accessibility audit service goes with it: a tunnel that finds it missing mounts it again,
+    /// so History does not wait for the owner to open Poki.
+    ddi_dir: Option<String>,
 }
+
+/// Apple's signing server and a ~20 MB upload over the phone's own loopback.
+const DDI_MOUNT_WITHIN: Duration = Duration::from_secs(120);
 
 impl Target {
     fn from(request: &Value) -> Result<Self, Failure> {
         let address = request["device_address"].as_str().unwrap_or("10.7.0.1");
         let address = address.parse().map_err(|_| Failure::new(format!("{address} is not an address")).code("config"))?;
         let pairing_file = request["pairing_file"].as_str().ok_or_else(|| Failure::new("this iPhone is not paired yet").fix(crate::device::PAIRING_FIX).code("pairing"))?;
-        Ok(Self { address, pairing_file: pairing_file.into(), host_name: request["host_name"].as_str().map(String::from) })
+        Ok(Self {
+            address,
+            pairing_file: pairing_file.into(),
+            host_name: request["host_name"].as_str().map(String::from),
+            ddi_dir: request["ddi_dir"].as_str().filter(|d| !d.is_empty()).map(String::from),
+        })
+    }
+
+    /// Mounts the image on a tunnel of its own, on a thread of its own: the mount's futures are
+    /// not all provably Send, and history requests run on the multi-threaded runtime.
+    async fn mount_on_own_thread(&self, dir: &str) -> Result<(), Failure> {
+        let (address, pairing_file, host_name, dir) = (self.address, self.pairing_file.clone(), self.host_name.clone(), dir.to_string());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("poki-history-ddi".into())
+            .stack_size(8 << 20)
+            .spawn(move || {
+                let answer = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    Ok(runtime) => runtime.block_on(async move {
+                        let mut pairing = Pairing::read(&pairing_file, host_name.as_deref())?;
+                        let mut device = Device::open(address, &mut pairing, OPEN_WITHIN).await?;
+                        match tokio::time::timeout(DDI_MOUNT_WITHIN, crate::ddi::mount(&mut device, &dir)).await {
+                            Ok(result) => result,
+                            Err(_) => Err(Failure::new(format!("mounting the developer disk image took over {} s", DDI_MOUNT_WITHIN.as_secs())).fix(crate::device::DDI_TIMEOUT_FIX).code("ddi_timeout")),
+                        }
+                    }),
+                    Err(e) => Err(Failure::new(format!("could not start the disk image mount: {e}"))),
+                };
+                let _ = tx.send(answer);
+            })
+            .map_err(|e| Failure::new(format!("could not start the disk image mount: {e}")))?;
+        rx.await.map_err(|_| Failure::new("the disk image mount ended without an answer"))?
     }
 
     async fn open(&self) -> Result<Device, Failure> {
         let mut pairing = Pairing::read(&self.pairing_file, self.host_name.as_deref())?;
-        let device = Device::open(self.address, &mut pairing, OPEN_WITHIN).await?;
+        let mut device = Device::open(self.address, &mut pairing, OPEN_WITHIN).await?;
+        if !crate::ddi::mounted(&device) {
+            if let Some(dir) = self.ddi_dir.as_deref().filter(|d| crate::ddi::files_present(d)) {
+                // A failure here may only mean the supervisor mounted it meanwhile: the new tunnel tells.
+                drop(device);
+                let failed = self.mount_on_own_thread(dir).await.err();
+                // The services list was fixed when the tunnel opened; a new one shows the image.
+                let mut tries = 0;
+                loop {
+                    device = Device::open(self.address, &mut pairing, OPEN_WITHIN).await?;
+                    if crate::ddi::mounted(&device) { break; }
+                    if tries >= 3 {
+                        return Err(failed.unwrap_or_else(|| Failure::new("the developer disk image was installed but its services did not appear").fix("Restart the phone, then open Poki again.")));
+                    }
+                    tries += 1;
+                    drop(device);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
         if !device.rsd.services.contains_key(ax::SERVICE) {
             return Err(Failure::new("this iPhone does not list the accessibility audit service")
                 .fix("The service comes with the developer disk image. Open Setup and wait until the image is ready, then try again.")
@@ -182,6 +247,7 @@ async fn run(request: &Value, emit: impl Fn(Value)) -> Result<Value, Failure> {
         None => vec![DEFAULT_READ_WITHIN],
     };
     let me = RUN.fetch_add(1, Ordering::SeqCst) + 1;
+    PAUSED.store(false, Ordering::SeqCst);
     let mut stats = RunStats::default();
     let mut device: Option<Device> = None;
     // Wall time, not the runtime's clock: a suspended app's time must show up as a gap.
@@ -194,6 +260,8 @@ async fn run(request: &Value, emit: impl Fn(Value)) -> Result<Value, Failure> {
     let include_text = request["include_text"].as_bool().unwrap_or(false);
     let include_tree = request["include_tree"].as_bool().unwrap_or(false);
     let mut ended = "finished";
+    // Reads in a row whose hit tests failed outright.
+    let mut unanswered = 0u32;
     loop {
         if RUN.load(Ordering::SeqCst) != me {
             ended = "stopped";
@@ -204,7 +272,16 @@ async fn run(request: &Value, emit: impl Fn(Value)) -> Result<Value, Failure> {
             break;
         }
         let asked = Instant::now();
+        if PAUSED.load(Ordering::SeqCst) {
+            // One line each round, so the caller can tell a held run from a silent one.
+            emit(json!({"paused": true, "at_s": at.as_secs()}));
+            while asked.elapsed() < interval && RUN.load(Ordering::SeqCst) == me && PAUSED.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            continue;
+        }
         let mut line = json!({"n": stats.reads + stats.failures + 1, "at_s": at.as_secs()});
+        let subscribed = direct.is_some();
         let result = async {
             if device.is_none() {
                 device = Some(target.open().await?);
@@ -229,6 +306,7 @@ async fn run(request: &Value, emit: impl Fn(Value)) -> Result<Value, Failure> {
         let took = milliseconds(asked.elapsed());
         match result {
             Ok(tree) => {
+                unanswered = 0;
                 let summary = summarize(&tree, true);
                 let text = hash_of(&summary["text"]);
                 let changed = last_text != Some(text);
@@ -240,6 +318,11 @@ async fn run(request: &Value, emit: impl Fn(Value)) -> Result<Value, Failure> {
                 line["ms"] = took.into();
                 line["elements"] = summary["elements"].clone();
                 line["app"] = front_name(&summary);
+                // The app that shows a web page, when the page's own process was the one read.
+                let host = bundle_name(&tree["host"]["bundle_id"]);
+                if !host.is_null() {
+                    line["host"] = host;
+                }
                 line["changed"] = changed.into();
                 // The capture loop asks for the text itself, and gets it only for a screen that changed.
                 if include_text && changed {
@@ -254,11 +337,29 @@ async fn run(request: &Value, emit: impl Fn(Value)) -> Result<Value, Failure> {
             Err(failure) => {
                 // A screen that shows no app (locked or off) is an answer, and the connection stays.
                 // Any other failure ends the tunnel; the next read opens a new one.
-                if !failure.detail.contains("no point of the screen") {
+                if failure.detail.contains(ax::direct::HITS_FAILED) {
+                    // Hit tests that failed (no answer, or a broken socket) may be a dead
+                    // subscription or a dead tunnel, and both would otherwise be kept for good.
+                    // After three in a row the subscription goes; the tunnel stays, and goes only
+                    // when the new subscribe fails on it (on cellular it could not be opened again).
+                    unanswered += 1;
+                    if unanswered >= 3 {
+                        unanswered = 0;
+                        if let Some(mut old) = direct.take() {
+                            let _ = tokio::time::timeout(Duration::from_secs(1), old.close()).await;
+                        }
+                    }
+                } else if !failure.detail.contains("no point of the screen") {
                     if let Some(mut old) = direct.take() {
                         let _ = tokio::time::timeout(Duration::from_secs(1), old.close()).await;
                     }
-                    device = None;
+                    // A read that failed on a subscription already open ends only the subscription:
+                    // the tunnel may still be alive, and on cellular a new one cannot be opened
+                    // while an open one keeps working. When the next subscribe fails on it too,
+                    // the tunnel goes.
+                    if !subscribed || points.is_none() {
+                        device = None;
+                    }
                 }
                 stats.failures += 1;
                 stats.last_error = Some(failure.detail.clone());
@@ -336,8 +437,12 @@ fn hash_of(value: &Value) -> u64 {
 
 fn front_name(summary: &Value) -> Value {
     let app = if summary["front"].is_object() { &summary["front"] } else { &summary["applications"][0] };
-    app["bundle_id"]
-        .as_str()
+    bundle_name(&app["bundle_id"])
+}
+
+/// A bundle id as the capture takes it, or null for anything that is not one.
+fn bundle_name(id: &Value) -> Value {
+    id.as_str()
         .filter(|id| {
             id.contains('.') && id.split('.').all(|part| !part.is_empty() && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'))
         })
@@ -568,6 +673,11 @@ mod tests {
             }
         }
         assert_eq!(front_name(&json!({"front": {"bundle_id": "com.example.Bank-2"}})), "com.example.Bank-2");
+        assert_eq!(bundle_name(&json!("com.apple.mobilesafari")), "com.apple.mobilesafari");
+        assert!(bundle_name(&json!("WidgetRenderer_Default")).is_null());
+        assert!(bundle_name(&Value::Null).is_null());
+        assert!(crate::ax::direct::is_web("com.apple.WebKit.WebContent"));
+        assert!(!crate::ax::direct::is_web("com.apple.mobilesafari"));
     }
 
     #[test]
