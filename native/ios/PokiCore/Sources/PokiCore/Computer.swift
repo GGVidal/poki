@@ -492,7 +492,7 @@ final class Computer: @unchecked Sendable {
         lines += did.map { "did: \($0)" }
         if let error { lines.append("error: \(error)") }
         lines += extra
-        lines.append("poki: Poki is in front, showing the owner's chat with you, so no screen of the task is read yet. Start the task in its app: do {launch: \"bundle id\"}, or do {run: \"name\"} for a saved routine.")
+        lines.append("poki: Poki is in front, showing the owner's chat with you, so no screen of the task is read yet. Start the task in its app: do {launch: \"bundle id\"}, or do {run: \"name\"} for a saved skill.")
         return ToolResult(text: lines.joined(separator: "\n"), jpeg: nil, isError: error != nil, screen: "poki", waitingForOwner: handoffWaiting)
     }
 
@@ -1738,7 +1738,7 @@ final class Computer: @unchecked Sendable {
             let name = spec.string ?? spec["name"]?.string ?? ""
             let routineApp = memory?.routine(named: name)?.app
             for bundle in [scan.front?.bundleID, routineApp].compactMap({ $0 }) where rules.guardedApps.contains(bundle) {
-                return "input in \(bundle == scan.front?.bundleID ? scan.front?.describe ?? bundle : bundle) (routine \"\(name)\")"
+                return "input in \(bundle == scan.front?.bundleID ? scan.front?.describe ?? bundle : bundle) (skill \"\(name)\")"
             }
             if let routineApp { scan.front = Foreground(bundleID: routineApp, name: nil) }
             scan.read = false; scan.typingTarget = nil
