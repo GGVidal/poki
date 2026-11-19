@@ -125,6 +125,14 @@ final class SigningPageTests: XCTestCase {
         }
     }
 
+    /// With Apple's saved sign-in expired, Settings says "Sign In Again" beside Signing & Updates. The value
+    /// keeps its width, so the name has to keep its line too.
+    func testSettingsKeepsSigningAndUpdatesOnOneLineBesideSignInAgain() {
+        let row = UIHostingController(rootView:
+            SettingsRow(title: "Signing & Updates", symbol: "signature", value: "Sign In Again", warns: true))
+        XCTAssertLessThan(row.sizeThatFits(in: CGSize(width: 321, height: 2_000)).height, 60)
+    }
+
     /// The first non-nil answer, asked again as the page settles, for at most five seconds.
     private func settle<T>(_ what: String, _ answer: () -> T?) async throws -> T {
         let deadline = CACurrentMediaTime() + 5

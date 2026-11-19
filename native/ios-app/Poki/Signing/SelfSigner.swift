@@ -251,6 +251,7 @@ final class SelfSigner {
             status = sample.status
             teams = sample.teams
             lastError = sample.error
+            sessionExpired = sample.expired
             return
         }
         do { status = try await decode(Status.self, ["op": "status"]) } catch { lastError = error.localizedDescription }
@@ -814,9 +815,9 @@ final class SelfSigner {
 
     /// `-pokiAppleID name@example.com`: a simulator's screenshots show the Signing pages with that Apple Account,
     /// with no sign-in to Apple. `-pokiAppleName` is its name, `-pokiAppleTeams 0|1|2` how many teams it has
-    /// (none, a free one, or two) and `-pokiAppleState code|reauth|error` the account waiting for a code,
-    /// needing a fresh sign-in, or with a failed renewal.
-    nonisolated private static func screenshotAccount() -> (status: Status, teams: [Team], error: String?)? {
+    /// (none, a free one, or two) and `-pokiAppleState code|reauth|expired|error` the account waiting for a code,
+    /// needing a fresh sign-in, with Apple's saved sign-in expired (Sign In Again), or with a failed renewal.
+    nonisolated private static func screenshotAccount() -> (status: Status, teams: [Team], error: String?, expired: Bool)? {
         #if targetEnvironment(simulator)
         let defaults = UserDefaults.standard
         guard let id = defaults.string(forKey: "pokiAppleID"), !id.isEmpty else { return nil }
@@ -833,7 +834,9 @@ final class SelfSigner {
                             rate_limited: nil, rate_limited_until: nil, resend_available_at: nil,
                             apple_id: id, name: name, team_id: teams.first?.team_id,
                             keeps_password: true, anisette: "", channel: "stable", channels: [])
-        return (status, teams, state == "error" ? "Apple did not accept the renewal. Try again in a few minutes." : nil)
+        let error = state == "error" ? "Apple did not accept the renewal. Try again in a few minutes."
+            : state == "expired" ? SelfSigner.sessionExpiredMessage : nil
+        return (status, teams, error, state == "expired")
         #else
         nil
         #endif
