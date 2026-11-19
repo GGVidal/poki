@@ -419,7 +419,10 @@ final class VoiceModel {
 
     /// How voice runs now, for the settings screen.
     var route: String {
-        if VoiceDirect.apiKey != nil { return AppLocalization.text(LocalizedStringResource("Your OpenAI key, straight from this iPhone")) }
+        if let provider = VoiceDirect.activeProvider {
+            if provider == .gemini { return AppLocalization.text(LocalizedStringResource("Your Gemini key, straight from this iPhone")) }
+            return AppLocalization.text(LocalizedStringResource("Your OpenAI key, straight from this iPhone"))
+        }
         if let bridge { return AppLocalization.text(LocalizedStringResource("Voice bridge at \(bridge.display)")) }
         if VoiceDirect.canDictate { return AppLocalization.text(LocalizedStringResource("Dictation to \(ModelKeys.selectedModelName); Poki reads the answer aloud")) }
         return AppLocalization.text(LocalizedStringResource("Not set up"))
@@ -463,12 +466,11 @@ final class VoiceModel {
     }
     #endif
 
-    /// The app's connection: OpenAI's Realtime API, or TalkRehearsal when a simulator build asked for it.
     static let connection: @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection = { onEvent, onClosed in
         #if DEBUG && targetEnvironment(simulator)
         if TalkRehearsal.asked { return TalkRehearsal(onEvent: onEvent, onClosed: onClosed) }
         #endif
-        return VoiceLink(onEvent: onEvent, onClosed: onClosed)
+        return VoiceDirect.makeConnection(for: VoiceDirect.activeProvider, onEvent: onEvent, onClosed: onClosed)
     }
 
     /// Only reached when `rehearsing`.
@@ -482,8 +484,8 @@ final class VoiceModel {
 
     func start(microphone: Bool = true) async {
         guard link == nil, dictation == nil, !isConnecting else { return }
-        // The OpenAI key on this iPhone first (no Mac needed), then the bridge, then dictation.
-        let key = VoiceDirect.apiKey
+        let activeProvider = VoiceDirect.activeProvider
+        let key = activeProvider.flatMap(ModelKeys.key)
         if key == nil, bridge == nil, !rehearsing {
             if VoiceDirect.canDictate, microphone { await startDictation() } else { phase = .lost(VoiceError.noBridge.words) }
             return
@@ -493,7 +495,7 @@ final class VoiceModel {
         let number = session
         do {
             let token: VoiceBridge.Token
-            if rehearsing { token = Self.rehearsalToken } else if let key { token = try await VoiceDirect.token(apiKey: key) } else { token = try await bridge!.token() }
+            if rehearsing { token = Self.rehearsalToken } else if let activeProvider, let key { token = try await VoiceDirect.sessionToken(for: activeProvider, apiKey: key) } else { token = try await bridge!.token() }
             // Ended (End, or the button again) while the key was exchanged.
             guard number == session else { return }
             localTools = Set(token.local_tools)
@@ -511,7 +513,7 @@ final class VoiceModel {
                 log.add("voice", "no network path opened (ICE \(ice)); trying again off VPN interfaces")
                 link.close()
                 let retry: VoiceBridge.Token
-                if let key { retry = try await VoiceDirect.token(apiKey: key) } else { retry = try await bridge!.token() }
+                if let activeProvider, let key { retry = try await VoiceDirect.sessionToken(for: activeProvider, apiKey: key) } else { retry = try await bridge!.token() }
                 guard number == session else { return }
                 link = connection({ [weak self] event in self?.handle(event, session: number) },
                                   { [weak self] reason in self?.closed(reason, session: number) })
