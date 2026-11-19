@@ -266,6 +266,29 @@ final class RoutineTests: XCTestCase {
         XCTAssertNotNil(other.routine(named: "iOS version"))
     }
 
+    func testAnAgentsImportDoesNotPassNotesOffAsTheOwnersEditsOrConversations() throws {
+        let source = RoutineStore(url: nil)
+        let heard = source.remember("Coffee is an iced Americano", by: "Poki", heard: NoteOrigin(session: "chat-1", app: "com.apple.mobilesafari"))!
+        let edited = source.remember("Mom is the contact Mama", by: "owner")!
+        source.editNote(edited.id, text: "Mom is the contact Mama (Mom)")
+        let file = try source.exportData()
+
+        // An MCP client's import: its notes are its own, not the owner's edit and not a chat of ours.
+        let fromAgent = RoutineStore(url: nil)
+        try fromAgent.importData(file, by: "Claude Code")
+        let agent = Dictionary(uniqueKeysWithValues: fromAgent.notes.map { ($0.id, $0) })
+        XCTAssertNil(agent[heard.id]?.heard, "a conversation of another phone's is not one to go back to")
+        XCTAssertNil(agent[edited.id]?.edited, "it must not show as the owner's change")
+        XCTAssertNil(agent[edited.id]?.locked)
+        XCTAssertEqual(agent[edited.id]?.by, "Claude Code")
+
+        // The owner restoring their own backup keeps all of it.
+        let restored = RoutineStore(url: nil)
+        try restored.importData(file, by: "restore")
+        XCTAssertNotNil(restored.notes.first { $0.id == edited.id }?.edited)
+        XCTAssertEqual(restored.notes.first { $0.id == heard.id }?.heard?.session, "chat-1")
+    }
+
     func testAFileThisVersionCannotReadIsSetAsideNotWrittenOver() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("poki-memory-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
