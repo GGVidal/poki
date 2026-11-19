@@ -357,6 +357,20 @@ impl Signer {
     }
 
     pub async fn teams(&mut self) -> Result<Vec<Team>> {
+        match self.teams_once().await {
+            // The portal no longer takes the saved Xcode token though it has not run out. Drop it and
+            // try once more: a fresh token, or with a kept password a fresh sign-in, usually does it.
+            // Without a password this ends in SESSION_EXPIRED, and the app asks the person to sign in again.
+            Err(e) if gsa::is_session_expired(&e) && self.account.xcode_token.is_some() => {
+                self.account.xcode_token = None;
+                self.persist()?;
+                self.teams_once().await
+            }
+            other => other,
+        }
+    }
+
+    async fn teams_once(&mut self) -> Result<Vec<Team>> {
         let token = self.token().await?;
         let session = self.account.session.clone().unwrap();
         let mut portal = Portal::new(&session, &token, self.client.anisette())?;

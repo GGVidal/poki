@@ -780,7 +780,7 @@ fn next_step(hsc: i64, au: Option<&str>) -> Step<'_> {
 }
 
 pub const RATE_LIMITED: &str = "Apple has had too many sign-in attempts or codes for this Apple Account. Wait about an hour before you sign in again, because each new try asks Apple for another code.";
-const SESSION_EXPIRED: &str = "Your Apple session has expired. Sign in again.";
+pub const SESSION_EXPIRED: &str = "Your Apple session has expired. Sign in again.";
 const WRONG_CODE_MARKER: &str = "That verification code is incorrect.";
 pub const WRONG_CODE_FIRST: &str = "That verification code is incorrect. Check the 6-digit code and enter the newest code you received.";
 pub const WRONG_CODE_WAIT: &str = "That verification code is incorrect. Stop and wait a few minutes before trying again so Apple does not lock this Apple Account, then enter the newest 6-digit code.";

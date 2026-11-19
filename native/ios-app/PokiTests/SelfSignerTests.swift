@@ -7,6 +7,7 @@ private final class FakeSignerTransport {
     var latestValue: [String: Any]
     var prepareError: SignerError?
     var finishError: SignerError?
+    var teamsError: SignerError?
     var finishClearsPendingAndRequiresReauth = false
     var holdTeams = false
     private var heldTeams: [CheckedContinuation<Void, Never>] = []
@@ -57,6 +58,7 @@ private final class FakeSignerTransport {
             if holdTeams {
                 await withCheckedContinuation { heldTeams.append($0) }
             }
+            if let teamsError { throw teamsError }
             return try JSONSerialization.data(withJSONObject: [
                 "v": [["team_id": "TEAMID1234", "name": "Tester", "kind": "Individual", "is_free": true]],
             ])
@@ -186,6 +188,32 @@ final class SelfSignerTests: XCTestCase {
         await second.value
 
         XCTAssertEqual(fake.ops.filter { $0 == "teams" }.count, 1)
+    }
+
+    func testExpiredAppleSessionOffersSignInAgainUntilSignedIn() async {
+        let fake = FakeSignerTransport(signedIn: true)
+        fake.teamsError = SignerError(message: "Your Apple session has expired. Sign in again.", code: SelfSigner.sessionExpiredCode)
+        let signer = SelfSigner(transport: { req, prog in try await fake.send(req, prog) })
+        await signer.reload()
+
+        await signer.loadTeams()
+        XCTAssertTrue(signer.sessionExpired, "an expired Apple session must surface Sign In Again even while an account is stored")
+        XCTAssertTrue(signer.signedIn)
+
+        fake.teamsError = nil
+        await signer.signIn(appleID: "tester@example.com", password: "pw", keepPassword: true)
+        XCTAssertFalse(signer.sessionExpired)
+        XCTAssertNil(signer.lastError)
+    }
+
+    func testOtherSignerFailuresDoNotAskToSignInAgain() async {
+        let fake = FakeSignerTransport(signedIn: true)
+        fake.teamsError = SignerError(message: "This Apple ID has no developer team.", code: "message")
+        let signer = SelfSigner(transport: { req, prog in try await fake.send(req, prog) })
+        await signer.reload()
+        await signer.loadTeams()
+        XCTAssertFalse(signer.sessionExpired)
+        XCTAssertNotNil(signer.lastError)
     }
 
     func testCancelSignInClearsPendingAndAllowsSwitchingAppleAccount() async {

@@ -136,6 +136,14 @@ final class SelfSigner {
     /// Apple took a code but never opened the session: nothing signs in until the person does.
     var needsReauth: Bool { status?.needs_reauth == true }
     static let reauthMessage = "Apple verified the code, but did not finish opening the session. Sign in again to start a fresh session."
+    /// Apple turned the saved sign-in away and Poki could not open a new one by itself (no kept
+    /// password). The signing page offers Sign In Again until a sign-in goes through.
+    private(set) var sessionExpired = false
+    static let sessionExpiredCode = "session_expired"
+
+    private func noteFailure(_ error: Error) {
+        if (error as? SignerError)?.code == Self.sessionExpiredCode { sessionExpired = true }
+    }
     var rateLimited: Bool { rateLimitRemainingSeconds() > 0 }
     var needsCodeSheet = false
     static let resendCooldown: TimeInterval = 60
@@ -237,6 +245,7 @@ final class SelfSigner {
         lastPrepareFailure = nil
         await run("Signing in") {
             _ = try await self.call(["op": "sign_in", "apple_id": appleID, "password": password, "keep_password": keepPassword])
+            self.sessionExpired = false
         }
         await reload()
         if signedIn, !needsCode, !rateLimited { await loadTeams() }
@@ -244,7 +253,10 @@ final class SelfSigner {
 
     func finishSignIn(code: String) async {
         lastPrepareFailure = nil
-        await run("Checking the code") { _ = try await self.call(["op": "finish_sign_in", "code": code]) }
+        await run("Checking the code") {
+            _ = try await self.call(["op": "finish_sign_in", "code": code])
+            self.sessionExpired = false
+        }
         await reload()
         if !needsCode { needsCodeSheet = false }
         if signedIn, !needsCode, !rateLimited { await loadTeams() }
@@ -318,6 +330,7 @@ final class SelfSigner {
         localResendAvailableAt = nil
         await run("Signing out") { _ = try await self.call(["op": "sign_out"]) }
         teams = []
+        sessionExpired = false
         await reload()
     }
 
@@ -330,8 +343,10 @@ final class SelfSigner {
         let task = Task { @MainActor in
             do {
                 teams = try await decode([Team].self, ["op": "teams"])
+                sessionExpired = false
             } catch {
                 lastError = error.localizedDescription
+                noteFailure(error)
                 if (error as? SignerError)?.code == "needs_code" {
                     await reload()
                     if needsCode { needsCodeSheet = true }
@@ -604,6 +619,7 @@ final class SelfSigner {
                 lastError = said
             }
             log.add("signing", "\(title ?? "signer"): \(said)")
+            noteFailure(error)
             if code == "needs_code" {
                 await reload()
                 if needsCode { needsCodeSheet = true }
