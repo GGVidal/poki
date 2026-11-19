@@ -78,6 +78,7 @@ enum BearStance {
             p.headRoll = 0.08
             p.gaze = [0.006, 0.006]
             p.raise = 0.9
+            p[.ask] = 1
         case .waiting:
             p.headYaw = 0.35; p.headPitch = 0.1
             // The head is turned and lowered onto the left paw, which goes down from under it.
@@ -89,6 +90,7 @@ enum BearStance {
             p.lower = [0, 0.5]
             p.shoulders = -0.1
             p.shut = 1
+            p[.sleep] = 1
         case .lost:
             p.headPitch = -0.1; p.headRoll = -0.1
             p.gaze = [-0.012, 0.014]
@@ -101,9 +103,10 @@ enum BearStance {
             p.headPitch = -0.05
             p.mouth = 1
         case .hello:
+            // Delighted: stars in the eyes and a round mouth of its own, which take the open mouth's place.
             p.raise = 1
-            p.mouth = 1
             p.sparkles = 1
+            p[.surprise] = 1
         }
         return p
     }
@@ -229,6 +232,7 @@ struct BearReaction: Equatable {
             p.shoulders = 0.12 * hop * w
             p.mouth = w
             p.sparkles = w
+            p[.done] = w
         case .sorrow:
             p.headPitch = 0.12 * w
             p.headRoll = 0.1 * w
@@ -237,6 +241,7 @@ struct BearReaction: Equatable {
             p.scratch = w
             p.lower = [0.04 * w, 0]
             p.rub = held < hold ? Float(sin(2 * .pi * 3 * held)) : 0
+            p[.sad] = w
         }
         return p
     }
