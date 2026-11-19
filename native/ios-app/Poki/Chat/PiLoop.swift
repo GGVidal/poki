@@ -39,7 +39,7 @@ final class PiLoop {
     /// prompt, the tools and the conversation so far from the cache instead of paying for them again.
     /// `thinking` is `.off` for a one-line job that needs no reasoning.
     init(provider: ModelProvider, model: Model, tools: [ToolSpec], inSplitView: Bool = false, carrying messages: [AgentMessage] = [],
-         session: String? = nil, thinking: ThinkingLevel = .low,
+         session: String? = nil, thinking: PiSwiftAgent.ThinkingLevel = .low,
          perform: @escaping @MainActor (ToolCall) async -> PokiCore.ToolAnswer) {
         self.provider = provider
         self.model = model
@@ -78,6 +78,8 @@ final class PiLoop {
         // agent/pi-session.mjs: low thinking, one tool call at a time.
         agent = Agent(AgentOptions(
             initialState: AgentState(model: model, thinkingLevel: thinking, tools: agentTools, messages: messages),
+            // Old screen reads go out without their element lists and screenshots (HistoryTrim).
+            transformContext: { messages, _ in HistoryTrim.trimmed(messages, taskStart: taskStart.value) },
             streamFn: endpoint.map { client -> StreamFn in
                 { model, context, options in
                     var options = options
@@ -85,8 +87,6 @@ final class PiLoop {
                     return try streamSimple(model: model, context: context, options: options)
                 }
             },
-            // Old screen reads go out without their element lists and screenshots (HistoryTrim).
-            transformContext: { messages, _ in HistoryTrim.trimmed(messages, taskStart: taskStart.value) },
             sessionId: session,
             getApiKey: { _ in await ModelCredential.apiKey(for: provider) },
             onPayload: Self.withoutReasoningSummary,
