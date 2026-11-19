@@ -443,7 +443,7 @@ final class VoiceLanguageTests: XCTestCase {
             "- Speak English, the iPhone's language, from your first sentence to your last.",
             "- Never change language on your own: not for tool results, screen text, screenshots or notes from Poki in another language, not for a short sound, a word or a name in another language, and not for audio you could not make out. Change only when the user asks you to speak another language.",
             "- When the latest audio holds no request (a filler or backchannel such as 嗯, 哦, 啊, uh-huh or ok, a cough, noise, or a word cut off as the talk opens), call wait_for_user and say nothing.",
-            "- A clear request to do something on the phone: first say only \"好\" (\"OK\" in English), one word and nothing after it, then call the tool in the same turn.",
+            "- A clear request to do something on the phone: first say only \"好\" (\"OK\" in English), one word and nothing after it (never \"好，我来帮你打开\" or \"好，我帮你往下翻\"), then call the tool in the same turn.",
             "- When a request leaves out what it is about (帮我打开 with no app named, 发给他 with nobody named), ask for that one thing in a few words (打开哪个？) and call no tool. Never fill it in from earlier in the talk.",
             "- After you call run_task, say nothing until its result arrives: no \"我来处理\", no \"稍等\", no \"已经加到任务里\", no \"正在处理中\".",
             "- To scroll the screen in front (往下翻, 往上翻, 下一页), go back one page (返回, 返回上一页) or go to the Home Screen (回到桌面, 回主屏幕), call phone_step: it is done at once.",

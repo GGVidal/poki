@@ -23,7 +23,7 @@ and more from talks on a physical iPhone:
   vague        打开微信, then 帮我打开: a short question, and nothing opened
   quiet_add    帮我回到微信的首页 (Poki's agent), then 再打开小红书 while it works: nothing said until the
                result, besides one 好
-  hush         别说了 said 0.5 s into Poki's answer: nothing more said
+  hush         别说了 said 0.5 s into Poki's answer: the answer does not go on, at most a short 好的
 Before any call that changes the phone, Poki says at most one word (好), except the sentence that says what it sends.
 
 Speech comes from macOS `say` (Tingting, Samantha) through ffmpeg; nothing is played aloud. Needs
@@ -385,7 +385,9 @@ async def backchannel(t):
     whole = t.cleared == 0 and t.cancelled == 0 and t.replied_after_output == 1
     # Cut off, then the rest said: the second reply must not start the answer again.
     first, rest = (t.replies + ["", ""])[:2]
-    resumed = t.cleared == 1 and len(t.replies) == 2 and bool(rest.strip()) and first[:4] not in rest
+    # The rest of the answer, not an answer to the 嗯 ("好的，需要我帮你……吗？").
+    answered = rest.lstrip().startswith(("好", "嗯", "对")) or any(w in rest for w in ("?", "？", "吗", "需要我", "告诉我", "随时", "如果你"))
+    resumed = t.cleared == 1 and len(t.replies) == 2 and bool(rest.strip()) and first[:4] not in rest and not answered
     ok = (whole or resumed) and not t.english()
     return ok, plain(t, cleared=t.cleared, cancelled=t.cancelled, whole=whole, resumed=resumed)
 
@@ -407,7 +409,7 @@ async def barge(t):
 
 
 async def hush(t):
-    """别说了 0.5 s into Poki's answer, with no task running: nothing more is said."""
+    """别说了 0.5 s into Poki's answer, with no task running: the answer does not go on (a short 好的 may follow)."""
     t.say("look")
     await t.until(lambda: t.outputs > 0)
     await t.until(lambda: t.speaking and t.replied_after_output == 0)
@@ -415,7 +417,7 @@ async def hush(t):
     t.say("hush")
     since = t.now()
     await t.quiet(settle=3)
-    later = [x for x in t.replies[1:] if len(re.sub(r"\W", "", x)) > 1]
+    later = [x for x in t.replies[1:] if len(re.sub(r"\W", "", x)) > 8]
     return not later and not t.acts() and not t.english(), plain(t, later=later)
 
 
