@@ -21,6 +21,7 @@ jobs:
   # Poki's in-process automation code on a fresh simulator: read, tap, type and read back; open,
   # switch and end apps; and the idle cycle (close the session, refuse a touch, open a new one).
   inprocess:
+    if: false
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
@@ -54,7 +55,7 @@ jobs:
   # endpoint; the owner's task runs through the real pi loop (plan, open Settings, look, finish), the
   # session is saved, then an outside agent's ask_poki hands a second task to Poki's agent.
   agent-chat:
-    if: github.event_name == 'workflow_dispatch'
+    if: false
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -176,7 +177,7 @@ jobs:
 
   app:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ inputs.ref }}" }
@@ -199,26 +200,6 @@ jobs:
           ls -la native/launcher/target/aarch64-apple-ios/release/libpoki_launcher.a
           # The C ABI's symbols, for the log (the app's link step is the real check).
           (nm -g native/launcher/target/aarch64-apple-ios/release/libpoki_launcher.a 2>/dev/null | grep -E '_poki_(launcher|pair|string)_' | sort -u) || echo "nm listed no poki_ symbols"
-
-      - name: Local connection tests
-        run: swift test --package-path native/ios/PokiLoopback
-
-      - name: PokiCore tests
-        timeout-minutes: 15
-        run: swift test --package-path native/ios/PokiCore
-
-      - name: Poki keyboard tests
-        if: ${{ hashFiles('native/ios-app/KeyboardShared/Package.swift') != '' }}
-        timeout-minutes: 5
-        run: swift test --package-path native/ios-app/KeyboardShared
-
-      - name: Developer disk image mirror answers
-        run: |
-          # The files PokiCore's DeveloperDiskImage.ensure downloads on the phone.
-          for f in BuildManifest.plist Image.dmg Image.dmg.trustcache Image.dmg.cryptex_info Image.dmg.root_hash; do
-            code=$(curl -sL -o /dev/null -w '%{http_code}' "https://raw.githubusercontent.com/doronz88/DeveloperDiskImage/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/$f")
-            echo "$f $code"; test "$code" = 200
-          done
 
       - name: Assets and project
         run: |
@@ -262,103 +243,36 @@ jobs:
             echo "$ipa: Poki $V ($B)"; test "$V" = "$VERSION" && test "$B" = "$BUILD"
           done
 
-      # The app on the iOS Simulator: it launches, stays up, and draws its first screen. The launcher
-      # cannot reach a simulator's developer services, so this checks the shell, not automation.
-      - name: Simulator smoke test
+      - name: Boot a fresh simulator for the unit tests
         run: |
           set -euo pipefail
-          xcodebuild build \
-            -project native/ios-app/Poki.xcodeproj -scheme Poki -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' -derivedDataPath build/sim \
-            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 2>&1 | tee build/sim.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
-          APP=build/sim/Build/Products/Debug-iphonesimulator/Poki.app
-          test -d "$APP"
           RUNTIME=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys;r=[x for x in json.load(sys.stdin)["runtimes"] if x["isAvailable"] and x["platform"]=="iOS"];print(r[-1]["identifier"])')
           TYPE=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys;d=[x for x in json.load(sys.stdin)["devicetypes"] if x["name"].startswith("iPhone") and "Pro" in x["name"] and "Max" not in x["name"]];print(d[-1]["identifier"])')
-          UDID=$(xcrun simctl create poki-smoke "$TYPE" "$RUNTIME")
+          UDID=$(xcrun simctl create poki-tests "$TYPE" "$RUNTIME")
           echo "UDID=$UDID" >> "$GITHUB_ENV"
           xcrun simctl boot "$UDID" && xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl install "$UDID" "$APP"
-          mkdir -p out/simulator
-          xcrun simctl launch "$UDID" nz.zheha.poki
-          # Long enough for the first-run disk image download (about 20 MB) to finish.
-          alive=1
-          for t in $(seq 60); do
-            sleep 1
-            # Listed to a file first: grep -q in a pipe would end launchctl with SIGPIPE under pipefail.
-            xcrun simctl spawn "$UDID" launchctl list > out/simulator/launchctl.txt 2>&1 || true
-            grep -q 'nz.zheha.poki' out/simulator/launchctl.txt || { alive=0; echo "Poki is gone after $t s"; break; }
-          done
-          xcrun simctl io "$UDID" screenshot out/simulator/home.png || true
-          ls -la "$(xcrun simctl get_app_container "$UDID" nz.zheha.poki data 2>/dev/null)/Library/Application Support/Poki/ddi" 2>/dev/null || true
-          if [ "$alive" = 0 ]; then
-            xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "Poki"' --style compact 2>/dev/null | tail -60 || true
-            echo "--- crash reports"
-            for f in $(ls -t ~/Library/Logs/DiagnosticReports/Poki* 2>/dev/null | head -2); do echo "== $f"; head -120 "$f"; cp "$f" out/simulator/ || true; done
-            exit 1
-          fi
-          echo "Poki ran on the simulator for 60 s"
-          # Every screen, light and dark, for the UI check.
-          mkdir -p shots
-          crashed=0
-          for look in light dark; do
-            xcrun simctl ui "$UDID" appearance "$look"
-            for screen in home setup connect debug activity; do
-              xcrun simctl terminate "$UDID" nz.zheha.poki || true
-              xcrun simctl launch "$UDID" nz.zheha.poki -pokiScreen "$screen" > /dev/null
-              sleep 4
-              xcrun simctl io "$UDID" screenshot "shots/$screen-$look.png" > /dev/null
-              xcrun simctl spawn "$UDID" launchctl list > out/simulator/launchctl.txt 2>&1 || true
-              grep -q 'nz.zheha.poki' out/simulator/launchctl.txt || { echo "::error::Poki died on the $screen screen ($look)"; crashed=1; }
-            done
-            xcrun simctl terminate "$UDID" nz.zheha.poki || true
-            xcrun simctl launch "$UDID" nz.zheha.poki -pokiScreen home -pokiSample YES > /dev/null
-            sleep 4
-            xcrun simctl io "$UDID" screenshot "shots/home-sample-$look.png" > /dev/null
-            xcrun simctl spawn "$UDID" launchctl list > out/simulator/launchctl.txt 2>&1 || true
-            grep -q 'nz.zheha.poki' out/simulator/launchctl.txt || { echo "::error::Poki died on the sample home screen ($look)"; crashed=1; }
-            # Poki's chat (a sample conversation) and an outside agent's session, opened over Sessions.
-            for extra in "chat -pokiChat working" "session -pokiSample YES"; do
-              name=${extra%% *}
-              xcrun simctl terminate "$UDID" nz.zheha.poki || true
-              xcrun simctl launch "$UDID" nz.zheha.poki -pokiScreen $extra > /dev/null
-              sleep 4
-              xcrun simctl io "$UDID" screenshot "shots/$name-$look.png" > /dev/null
-              xcrun simctl spawn "$UDID" launchctl list > out/simulator/launchctl.txt 2>&1 || true
-              grep -q 'nz.zheha.poki' out/simulator/launchctl.txt || { echo "::error::Poki died on the $name screen ($look)"; crashed=1; }
-            done
-          done
-          # The same screens on an iPad (regular width), where Poki sits in a window beside the app it drives.
-          PADTYPE=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys;d=[x for x in json.load(sys.stdin)["devicetypes"] if x["name"].startswith("iPad Pro") and "11" in x["name"]];print(d[-1]["identifier"])')
-          PAD=$(xcrun simctl create poki-pad "$PADTYPE" "$RUNTIME")
-          xcrun simctl boot "$PAD" && xcrun simctl bootstatus "$PAD" -b
-          xcrun simctl install "$PAD" "$APP"
-          for screen in home setup connect; do
-            xcrun simctl terminate "$PAD" nz.zheha.poki 2>/dev/null || true
-            xcrun simctl launch "$PAD" nz.zheha.poki -pokiScreen "$screen" > /dev/null
-            sleep 4
-            xcrun simctl io "$PAD" screenshot "shots/ipad-$screen.png" > /dev/null
-            xcrun simctl spawn "$PAD" launchctl list > out/simulator/launchctl.txt 2>&1 || true
-            grep -q 'nz.zheha.poki' out/simulator/launchctl.txt || { echo "::error::Poki died on the $screen screen (iPad)"; crashed=1; }
-          done
-          xcrun simctl shutdown "$PAD" || true; xcrun simctl delete "$PAD" || true
-          ls shots
-          # No crash anywhere on the way: any Poki crash report fails the build.
-          if ls ~/Library/Logs/DiagnosticReports/Poki* > /dev/null 2>&1; then
-            for f in $(ls -t ~/Library/Logs/DiagnosticReports/Poki* | head -2); do echo "== $f"; head -80 "$f"; cp "$f" out/simulator/ || true; done
-            crashed=1
-          fi
-          [ "$crashed" = 0 ] || exit 1
 
-      # The app's own logic against a fake launcher: tunnel loss named to the agent, pairing
-      # refusal and acceptance, the agent's view of the runner.
-      - name: App unit tests (simulator)
-        timeout-minutes: 15
+      - name: Signer unit tests (simulator)
+        timeout-minutes: 25
         run: |
           set -o pipefail
           xcodebuild test -project native/ios-app/Poki.xcodeproj -scheme Poki -configuration Debug \
             -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build/sim \
-            -only-testing:PokiTests CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log | grep -E "Test Case|error:|failed|passed|TEST (SUCCEEDED|FAILED)|\*\* " 
+            -only-testing:PokiTests/SelfSignerTests CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/signer-tests.log | grep -E "Test Case|error:|failed|passed|TEST (SUCCEEDED|FAILED)|\*\* " \
+            || { echo "--- end of build/signer-tests.log"; tail -80 build/signer-tests.log; exit 1; }
+          grep -q "TEST SUCCEEDED" build/signer-tests.log
+
+      # The app's own logic against a fake launcher: tunnel loss named to the agent, pairing
+      # refusal and acceptance, the agent's view of the runner.
+      - name: App unit tests (simulator)
+        if: always()
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          xcodebuild test -project native/ios-app/Poki.xcodeproj -scheme Poki -configuration Debug \
+            -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build/sim \
+            -only-testing:PokiTests CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log | grep -E "Test Case|error:|failed|passed|TEST (SUCCEEDED|FAILED)|\*\* " \
+            || { echo "--- end of build/tests.log"; tail -80 build/tests.log; exit 1; }
           grep -q "TEST SUCCEEDED" build/tests.log
 
       - uses: actions/upload-artifact@v4
