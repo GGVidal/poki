@@ -36846,6 +36846,86 @@
           }
         }
       }
+    },
+    "Screen History reads this iPhone through the loopback, and it is off. The last read was %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "屏幕历史通过回环连接读取这台 iPhone，但它现在是关闭的。上次读取是在%@。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "螢幕歷史透過回環連線讀取這台 iPhone，但它現在是關閉的。上次讀取是在%@。"
+          }
+        }
+      }
+    },
+    "Screen History reads this iPhone through the loopback, and it is off. Turn it on so Poki can keep reading." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "屏幕历史通过回环连接读取这台 iPhone，但它现在是关闭的。打开它，Poki 才能继续读取。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "螢幕歷史透過回環連線讀取這台 iPhone，但它現在是關閉的。打開它，Poki 才能繼續讀取。"
+          }
+        }
+      }
+    },
+    "Screen History reads this iPhone through the loopback, and on cellular iOS does not let it start. Connect to Wi-Fi and Poki turns it on again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "屏幕历史通过回环连接读取这台 iPhone，而在蜂窝网络下 iOS 不允许启动它。连接 Wi-Fi 后 Poki 会重新打开它。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "螢幕歷史透過回環連線讀取這台 iPhone，而在行動網路下 iOS 不允許啟動它。連接 Wi-Fi 後 Poki 會重新打開它。"
+          }
+        }
+      }
+    },
+    "Screen History reads this iPhone through the loopback, and on cellular iOS does not let it start. The Poki shortcut turns it on again when Wi-Fi disconnects. Add it once and Poki keeps reading on cellular." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "屏幕历史通过回环连接读取这台 iPhone，而在蜂窝网络下 iOS 不允许启动它。Poki 快捷指令会在 Wi-Fi 断开时重新打开它。添加一次，Poki 在蜂窝网络下也能继续读取。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "螢幕歷史透過回環連線讀取這台 iPhone，而在行動網路下 iOS 不允許啟動它。Poki 捷徑會在 Wi-Fi 斷開時重新打開它。加入一次，Poki 在行動網路下也能繼續讀取。"
+          }
+        }
+      }
+    },
+    "Turn On the Loopback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开回环连接"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打開回環連線"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
