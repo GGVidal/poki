@@ -495,9 +495,9 @@ struct BearIdleJoints {
             joints[idx].translation += eyeTransforms.left.translation
             joints[idx].rotation = eyeTransforms.left.rotation * joints[idx].rotation
         }
-        // Closed-eye/smile arcs follow only gently so blink lines stay cleanly centered in the sockets.
-        let arcRTransform = BearEyeBounds.spherical(side: .right, delta: eyeTransforms.right.clampedDelta * 0.25)
-        let arcLTransform = BearEyeBounds.spherical(side: .left, delta: eyeTransforms.left.clampedDelta * 0.25)
+        // Closed-eye/smile arcs stay centered in the sockets, following only gently with the shared gaze.
+        let arcRTransform = BearEyeBounds.spherical(side: .right, gazeDelta: eyeTransforms.right.gazeDelta * 0.25, includeBaseline: false)
+        let arcLTransform = BearEyeBounds.spherical(side: .left, gazeDelta: eyeTransforms.left.gazeDelta * 0.25, includeBaseline: false)
         if let idx = arcR, idx < joints.count {
             joints[idx].translation += arcRTransform.translation
             joints[idx].rotation = arcRTransform.rotation * joints[idx].rotation

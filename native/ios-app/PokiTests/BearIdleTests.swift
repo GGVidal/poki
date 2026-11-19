@@ -48,8 +48,8 @@ final class BearIdleTests: XCTestCase {
         }
     }
 
-    /// Pupils remain strictly inside their white sclera across extreme gazes, head angles, blinks,
-    /// and the thinking squinting eyelid.
+    /// Pupils always move in exact unison by the same gaze vector, never oppose each other, and
+    /// remain strictly inside their white sclera across extreme gazes, head angles, blinks, and thinking.
     func testPupilsNeverLeaveWhiteScleraAcrossAnglesAndExpressions() {
         let gazes: [SIMD2<Float>] = [
             SIMD2(0.011, 0.012), SIMD2(-0.011, 0.012), // ESP-871 thinking gaze that previously clipped
@@ -72,8 +72,11 @@ final class BearIdleTests: XCTestCase {
                                 thinkingLid: thinking,
                                 blinkAttenuation: atten
                             )
-                            let clearR = BearEyeBounds.minNormalizedClearance(side: .right, delta: tr.right.clampedDelta)
-                            let clearL = BearEyeBounds.minNormalizedClearance(side: .left, delta: tr.left.clampedDelta, lidTopLimit: leftLid)
+                            XCTAssertEqual(tr.right.gazeDelta, tr.left.gazeDelta, "eyes must move identically in sync")
+                            if gaze.x > 0 { XCTAssertGreaterThanOrEqual(tr.right.gazeDelta.x, 0, "right gaze must not push eye left") }
+                            if gaze.x < 0 { XCTAssertLessThanOrEqual(tr.right.gazeDelta.x, 0, "left gaze must not push eye right") }
+                            let clearR = BearEyeBounds.minNormalizedClearance(side: .right, totalDelta: tr.right.totalDelta)
+                            let clearL = BearEyeBounds.minNormalizedClearance(side: .left, totalDelta: tr.left.totalDelta, lidTopLimit: leftLid)
                             XCTAssertGreaterThan(clearR, 0, "Eye_R clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
                             XCTAssertGreaterThan(clearL, 0, "Eye_L clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
                         }
@@ -81,6 +84,15 @@ final class BearIdleTests: XCTestCase {
                 }
             }
         }
+        // Verify thinking gaze visibly shifts both eyes together in the same direction.
+        let thinkTr = BearEyeBounds.transforms(
+            desiredGaze: BearStance.pose(.thinking).gaze,
+            headYaw: BearStance.pose(.thinking).headYaw,
+            headPitch: BearStance.pose(.thinking).headPitch,
+            thinkingLid: 1
+        )
+        XCTAssertEqual(thinkTr.right.gazeDelta, thinkTr.left.gazeDelta)
+        XCTAssertGreaterThan(thinkTr.right.gazeDelta.x, 0.010, "both eyes should look right together while thinking")
     }
 
     /// Second-order spring dynamics produce subtle anticipation and elastic overshoot on transitions

@@ -64,8 +64,9 @@ enum BearStance {
             break
         case .thinking:
             p.headPitch = -0.065; p.headRoll = 0.085; p.headYaw = 0.04
-            // Thoughtful upward-sideways gaze staying strictly inside white sclera below the squinting lid.
-            p.gaze = [0.022, 0.004]
+            // Synchronized thoughtful gaze to the upper-right: both pupils move identically and stay
+            // strictly inside their white sclera below the squinting left eyelid.
+            p.gaze = [0.017, -0.002]
             // Left paw lifted snugly to chin side in ESP-871 thinking posture.
             p.raise = 0.54; p.bend = 0.45; p.reach = 0.68
             p.thinkExpression = 1
@@ -114,11 +115,11 @@ enum BearStance {
         case .ready, .done, .failed, .waiting:
             break
         case .thinking:
-            // Non-repeating ponderous head tilt, trailing chin-paw micro-motion, and subtle eye drift.
+            // Non-repeating ponderous head tilt, trailing chin-paw micro-motion, and subtle synchronized gaze drift.
             p.headRoll = 0.036 * Float(sin(t * 1.35)) + 0.015 * Float(sin(t * 0.61 + 1.2))
             p.headPitch = 0.018 * Float(sin(t * 1.05 + 0.5))
             p.bend = 0.038 * Float(sin(t * 1.35 - 0.55))
-            p.gaze = SIMD2(0.009 * Float(sin(t * 0.82)), 0.004 * Float(sin(t * 0.53 + 0.8)))
+            p.gaze = SIMD2(0.004 * Float(sin(t * 0.78)), 0.002 * Float(sin(t * 0.53 + 0.8)))
         case .working:
             p.tap = Float(sin(t * 2 * .pi * 2.5))
             p.headPitch = 0.02 * Float(sin(t * 2 * .pi * 1.25))
