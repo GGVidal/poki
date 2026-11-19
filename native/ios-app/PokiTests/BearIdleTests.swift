@@ -1,4 +1,5 @@
 import XCTest
+import RealityKit
 import simd
 @testable import Poki
 
@@ -114,6 +115,20 @@ final class BearIdleTests: XCTestCase {
             }
             XCTAssertLessThan(fastest, 0.18, "fastest pupil speed at \(rate) Hz, in model units a second")
         }
+    }
+
+    /// The eyes close for a state that shuts them (asleep, or its head down over its paws) even when
+    /// the smile spring that played for a reaction has not settled at exactly zero: it leaves about a
+    /// millionth, which used to count as a smile and kept the pupils open.
+    func testTheEyesShutAfterASmileThatHasNotSettledToZero() throws {
+        let joints = try XCTUnwrap(BearIdleJoints(names: ["Body", "Head", "Eye_R", "Eye_L", "SmileEye_R", "SmileEye_L"]))
+        var transforms = Array(repeating: Transform(), count: 6)
+        var pose = BearIdle.Pose()
+        pose.shut = 1
+        pose.smile = 1e-6
+        joints.apply(pose, to: &transforms)
+        XCTAssertEqual(transforms[joints.pupils[0]].scale.y, BearBlink.thin, accuracy: 1e-5, "the right pupil is flat")
+        XCTAssertEqual(transforms[joints.pupils[1]].scale.y, BearBlink.thin, accuracy: 1e-5, "the left pupil is flat")
     }
 
     /// Second-order spring dynamics produce subtle anticipation and elastic overshoot on transitions
