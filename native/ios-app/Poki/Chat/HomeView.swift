@@ -160,6 +160,8 @@ struct PokiFlight: View {
     var places: [PicturePlace: CGRect]
     var pokes: Int
     var tap: () -> Void
+    /// Settings › Models, for the menu's Add Model.
+    var openModel: () -> Void = {}
     /// The bottom of the picture over the greeting, in global points, for Poki's card to open under it.
     var landed: (CGFloat) -> Void = { _ in }
     /// How far the picture rises from over the greeting to the top bar, for the greeting to rise with it.
@@ -169,10 +171,12 @@ struct PokiFlight: View {
     var body: some View {
         let side = home ? sizes.homeAvatar : sizes.avatar
         if let place = places[home ? .home : .top] {
-            Button(action: tap) {
+            // Before a chat has begun the menu opens from the picture. In the conversation the picture
+            // lets the tap through to the top bar, where the menu opens from the pill with Poki's name.
+            PokiMenu(openModel: openModel, tapped: tap) {
                 PokiPicture(mood: status.mood, side: side, pokes: pokes).contentShape(.circle)
             }
-            .buttonStyle(.plain)
+            .allowsHitTesting(home)
             .accessibilityLabel(Text(verbatim: "Poki, " + PokiStatusCopy.word(status)))
             .accessibilityIdentifier("home.poki")
             .accessibilityHidden(!home)
@@ -201,6 +205,10 @@ struct PokiFlight: View {
 struct PokiHead: View {
     var sizes = HomeSizes()
     var home: Bool
+    /// Settings › Models, for the menu's Add Model.
+    var openModel: () -> Void = {}
+    /// A tap on the pill: the bear says hi while the menu opens.
+    var openDetails: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -210,11 +218,17 @@ struct PokiHead: View {
             // its place stays, and the bar keeps its height on both pages.
             ZStack {
                 if !home {
-                    Text(verbatim: "Poki")
-                        .font(.caption.weight(.semibold)).foregroundStyle(Color(.label))
-                        .padding(.horizontal, 12).frame(minHeight: 24)
-                        .glassSurface(in: Capsule())
-                        .glassAppearing()
+                    // The menu is the name pill alone: the system draws its own glass around a menu's
+                    // label in a glass group, and a label that held the picture's place too put the
+                    // whole of Poki in one pill. The glass is on the menu, so it opens from the pill.
+                    PokiMenu(openModel: openModel, tapped: openDetails) {
+                        Text(verbatim: "Poki")
+                            .font(.caption.weight(.semibold)).foregroundStyle(Color(.label))
+                            .padding(.horizontal, 12).frame(minHeight: 24)
+                            .contentShape(Capsule())
+                    }
+                    .glassSurface(in: Capsule())
+                    .glassAppearing()
                 }
             }
             .frame(minHeight: 24)
@@ -248,6 +262,8 @@ struct ChatTopBar: View {
     var newConversation: () -> Void
     /// A tap on Poki: the bear says hi while its card opens.
     var openDetails: () -> Void
+    /// Settings › Models, for the menu's Add Model.
+    var openModel: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Taps on New Conversation on the home page, for a light tap in the hand.
     @State private var homeTaps = 0
@@ -283,13 +299,11 @@ struct ChatTopBar: View {
                 }
             }
             .padding(.top, (sizes.avatar - sizes.button) / 2)
-            Button(action: openDetails) {
-                PokiHead(home: home).contentShape(.rect)
-            }
-            .buttonStyle(.plain)
+            PokiHead(home: home, openModel: openModel, openDetails: openDetails)
             .allowsHitTesting(!home)
             .accessibilityHidden(home)
-            .accessibilityElement(children: .ignore)
+            // Combined, not ignored: the menu inside is what VoiceOver's activate opens.
+            .accessibilityElement(children: .combine)
             .accessibilityLabel(Text(verbatim: "Poki, " + PokiStatusCopy.word(status)))
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("chat.header.details")
@@ -466,6 +480,8 @@ struct HomePage<Footer: View>: View {
     var sessionStore: SessionStore = .shared
     var shortcutStore: HomeShortcutStore = .shared
     var pick: (String) -> Void
+    /// A swipe down on the page while the message field has the keyboard: the keyboard goes down.
+    var putAway: () -> Void = {}
     @ViewBuilder var footer: () -> Footer
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -488,6 +504,8 @@ struct HomePage<Footer: View>: View {
     @State private var page = CGRect.zero
     /// Counts the long presses, for a tap in the hand.
     @State private var holds = 0
+    /// This swipe down has already put the keyboard away.
+    @State private var swiped = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -498,7 +516,9 @@ struct HomePage<Footer: View>: View {
                 ScrollView {
                     content(inset: inset, height: geometry.size.height, scrolls: true)
                 }
-                    .scrollBounceBehavior(.basedOnSize)
+                    // While the keyboard is up the page gives a little under a swipe down even when
+                    // it all fits, so the swipe can take the keyboard down with it.
+                    .scrollBounceBehavior(writing ? .always : .basedOnSize, axes: .vertical)
                     .scrollDismissesKeyboard(.interactively)
             } else {
                 content(inset: inset, height: geometry.size.height, scrolls: false)
@@ -579,6 +599,30 @@ struct HomePage<Footer: View>: View {
             Spacer().frame(height: 34)
         }
         .frame(maxWidth: .infinity, minHeight: height)
+        // The page has no scroll view of its own to take the keyboard down (its layout stays still as
+        // the keyboard comes), so once the keyboard is up a swipe down anywhere on it does. The whole
+        // page takes the swipe only then: otherwise its empty space is not there for a touch. In the
+        // scrolling layout the scroll view does it (`scrollDismissesKeyboard`).
+        .contentShape(writing && !scrolls ? AnyShape(Rectangle()) : AnyShape(NoTouch()))
+        .simultaneousGesture(swipeDown, including: writing && !scrolls ? .all : .subviews)
+    }
+
+    /// A mostly upright drag down: the keyboard goes down as soon as it has gone 28 points, or at its
+    /// end if it was a flick. A drag up or sideways does nothing.
+    private var swipeDown: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { drag in
+                let (dx, dy) = (drag.translation.width, drag.translation.height)
+                guard !swiped, dy > 28, dy > abs(dx) * 1.5 else { return }
+                swiped = true
+                putAway()
+            }
+            .onEnded { drag in
+                defer { swiped = false }
+                let (dx, dy) = (drag.translation.width, drag.predictedEndTranslation.height)
+                guard !swiped, dy > 60, drag.translation.height > abs(dx) * 1.5 else { return }
+                putAway()
+            }
     }
 
     /// The part of the pressed pill that shows, in the page's own points: a pill at an end of a row is
@@ -620,6 +664,11 @@ struct HomePage<Footer: View>: View {
 
     /// A pill's menu or its Edit popup is open, or about to: the rows stand still, and no pill is tapped.
     private var busy: Bool { held != nil || editing != nil || editNext != nil }
+}
+
+/// A shape with nothing in it: a view shaped so takes no touch of its own.
+private struct NoTouch: Shape {
+    func path(in rect: CGRect) -> Path { Path() }
 }
 
 /// A pill under a long press: the quick action, and where its pill is on the screen.

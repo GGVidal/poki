@@ -38,10 +38,9 @@ struct ChatView: View {
     /// How far Poki's picture rises from the home page into the top bar.
     @State private var flightRise: CGFloat = 0
 
-    /// A tap on Poki, on the home page or in the chat: the bear says hi and Poki's card opens.
+    /// A tap on Poki, on the home page or in the chat: the bear says hi while its menu opens.
     private func tapPoki() {
         pokes += 1
-        openDetails(isGreeting ? homeBottom : nil)
     }
     /// The message field has the keyboard.
     @State private var writing = false
@@ -127,7 +126,8 @@ struct ChatView: View {
             // The home page stays in the tree while the conversation is in front, neither seen nor
             // touched, so a new conversation brings it back on the same animation.
             HomePage(home: home, writing: writing, rise: flightRise, sessionStore: sessionStore, shortcutStore: shortcutStore,
-                     pick: { model.prepareForTask(); chat.setDraftActivity(true); draft.wrappedValue = $0; writing = true }) {
+                     pick: { model.prepareForTask(); chat.setDraftActivity(true); draft.wrappedValue = $0; writing = true },
+                     putAway: { writing = false }) {
                 if home, let update { UpdatePill(version: update, open: openUpdates) }
                 if home, let hint = homeHint {
                     SetupHintLine(hint: hint, openSetupStep: openSetupStep, openSetup: openSetup, openModel: openModel,
@@ -145,7 +145,7 @@ struct ChatView: View {
         .topBar {
             if !bare {
                 ChatTopBar(status: status, home: home, busy: busy, openThreads: openThreads,
-                           newConversation: { if home { restarts += 1 } else { chat.newConversation() } }, openDetails: tapPoki)
+                           newConversation: { if home { restarts += 1 } else { chat.newConversation() } }, openDetails: tapPoki, openModel: openModel)
             }
         }
         .bottomBar(softEdge: true) {
@@ -167,7 +167,7 @@ struct ChatView: View {
             GeometryReader { proxy in
                 if !bare {
                     PokiFlight(status: status, home: home, writing: writing, places: anchors.mapValues { proxy[$0] }, pokes: pokes,
-                               tap: tapPoki, landed: { homeBottom = $0 }, travel: { flightRise = $0 })
+                               tap: tapPoki, openModel: openModel, landed: { homeBottom = $0 }, travel: { flightRise = $0 })
                 }
             }
         }
@@ -1012,9 +1012,11 @@ struct MessageListHeader: View {
     var title: String = "Poki"
     var back: (() -> Void)? = nil
     var openDetails: () -> Void
+    /// Settings › Models, for the menu's Add Model.
+    var openModel: () -> Void = {}
 
     var body: some View {
-        Button(action: openDetails) {
+        PokiMenu(openModel: openModel, tapped: openDetails) {
             VStack(spacing: 4) {
                 PokiAvatar(size: 56)
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
