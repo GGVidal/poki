@@ -11,10 +11,15 @@ light fades into the light itself.
 | `LaunchBackdrop.png` | The home page's light at rest, light appearance, 402 by 874 points at one pixel a point | `scripts/make-launch-backdrop.sh`, which has a Debug build draw `HomeBackdrop` itself |
 | `LaunchBear.png` | The bear cut out of the app icon, on a clear ground | The design's own cut-out |
 
-`scripts/make-assets.sh` copies the light into the asset catalogue and draws the word and the bear with
-its shadow from these with `scripts/make-launch-art.swift`. The word's colour and weight are set once,
-at the top of that script. After a change to the home page's light, run `make-launch-backdrop.sh`
-again; `LaunchScreenTests` fails while the picture and the light differ.
+`scripts/make-assets.sh` copies the light into the asset catalogue and draws the word (at 3x) and the
+bear with its shadow (at 2x) from these with `scripts/make-launch-art.swift`. The word's colour and
+weight are set once, at the top of that script. After a change to the home page's light, run
+`make-launch-backdrop.sh` again; `LaunchScreenTests` fails while the picture and the light differ.
+
+iOS draws the launch screen on the iPhone itself before Poki runs, so every picture here stays small:
+each one fits in a single 4 MiB piece of the asset catalogue, as the old launch screen's bear did.
+The bear is drawn at 2x because its cut-out is 1024 pixels wide, fewer than a 3x picture would hold,
+so 3x only made it the largest picture in the app. `LaunchScreenTests` fails if a picture outgrows this.
 
 The light is drawn for one appearance only. In Dark Mode the launch screen is the same, and the
 curtain fades it into the dark home page.

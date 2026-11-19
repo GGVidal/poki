@@ -74,6 +74,16 @@ final class LaunchScreenTests: XCTestCase {
         }
     }
 
+    /// iOS draws the launch screen on the iPhone itself before Poki runs, so its pictures stay small:
+    /// each fits in one 4 MiB piece of the asset catalogue, as the old launch screen's bear did. The
+    /// bear is drawn at 2x for this (scripts/make-launch-art.swift); at 3x it was 1524 by 1010.
+    func testLaunchPicturesStaySmall() throws {
+        for name in ["LaunchBackdrop", "LaunchWordmark", "LaunchBear"] {
+            let picture = try XCTUnwrap(UIImage(named: name)?.cgImage, name)
+            XCTAssertLessThanOrEqual(picture.width * picture.height * 4, 4 << 20, "\(name) is \(picture.width) by \(picture.height)")
+        }
+    }
+
     /// The picture shrunk to 20 by 44 RGB samples, which evens out the grain.
     private func samples(_ image: CGImage) throws -> [UInt8] {
         let (width, height) = (20, 44)
