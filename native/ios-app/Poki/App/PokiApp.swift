@@ -36,6 +36,9 @@ struct PokiApp: App {
         #if DEBUG && targetEnvironment(simulator)
         TestCredential.importIfGiven()
         #endif
+        #if DEBUG
+        LaunchBackdropRender.writeIfAsked()
+        #endif
         // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in off the main thread.
         Self.scheduleStartupWork()
         // The three-dimensional bear loads while the app starts, to be there when Poki's picture first shows.
