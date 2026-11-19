@@ -67,7 +67,7 @@ enum BearStance {
             // Synchronized thoughtful gaze to the upper-right: both pupils move identically and stay
             // strictly inside their white sclera below the squinting left eyelid.
             p.gaze = [0.017, -0.002]
-            // Left paw lifted snugly to chin side in ESP-871 thinking posture.
+            // Left paw lifted snugly to chin side in the thinking posture.
             p.raise = 0.54; p.bend = 0.45; p.reach = 0.68
             p.thinkExpression = 1
         case .working:

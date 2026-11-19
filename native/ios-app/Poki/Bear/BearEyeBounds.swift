@@ -71,11 +71,10 @@ enum BearEyeBounds {
         desiredGaze: SIMD2<Float>,
         headYaw: Float,
         headPitch: Float,
-        thinkingLid: Float,
-        blinkAttenuation: Float = 1
+        thinkingLid: Float
     ) -> (right: SphericalTransform, left: SphericalTransform) {
         let shared = clampSharedGaze(
-            desired: desiredGaze * min(max(blinkAttenuation, 0), 1),
+            desired: desiredGaze,
             headYaw: headYaw,
             headPitch: headPitch,
             thinkingLid: thinkingLid

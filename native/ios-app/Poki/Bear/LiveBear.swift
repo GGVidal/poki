@@ -114,20 +114,27 @@ struct BearClips {
     }
 }
 
-/// Natural asymmetric blink: brisk close (0.085 s, ease-in), brief shut hold (0.035 s), softer open
-/// (0.145 s, ease-out) for 0.265 s total. Still swaps between pupils and arcs on whole frames only
-/// so the white eye pads never flash empty.
+/// The blink, at the pace the bear has always blinked: the lids come down over 0.14 s to a thin line,
+/// stay shut for 0.06 s as a low arc no taller than that line, and go up over 0.2 s, easing in and
+/// out each way: 0.4 s in all. The model's frames still give the shapes (open to half shut, its first
+/// two steps; the closed eye, its middle two; half open to open, its last two), and between the pupil
+/// and the arc the eyes are swapped at a whole frame only, since between two of them neither shows
+/// and the eye pads were blank and white.
 enum BearBlink {
-    static let closing: TimeInterval = 0.085, shut: TimeInterval = 0.035, opening: TimeInterval = 0.145
+    static let closing: TimeInterval = 0.14, shut: TimeInterval = 0.06, opening: TimeInterval = 0.2
     static var length: TimeInterval { closing + shut + opening }
     static let thin: Float = 0.12
     static let flat: Float = 0.3
-    /// Randomized gap between single blinks (seconds).
-    static let gap: ClosedRange<TimeInterval> = 2.0...5.0
+    /// Seconds of open eyes between one blink and the next, drawn at random. The bear blinks once every
+    /// 5.9 s on average (4 to 7 s of open eyes and the 0.4 s blink), and now and then twice: the
+    /// second blink comes `doubleGap` after the first and is on top of that rate, so the open stretch
+    /// after a pair is lengthened to make up for it, 6.3 s on average:
+    /// (6.3 + 0.4 + 0.15 * (0.13 + 0.4)) / 1.15 = 5.9.
+    static let gap: ClosedRange<TimeInterval> = 4.6...8.0
     /// Short pause between the first and second blink in an occasional double blink.
     static let doubleGap: ClosedRange<TimeInterval> = 0.10...0.16
     /// Probability that a blink is followed immediately by a second blink.
-    static let doubleChance: Double = 0.26
+    static let doubleChance: Double = 0.15
 
     struct Moment: Equatable {
         var frame: Double
@@ -140,15 +147,13 @@ enum BearBlink {
     static func at(_ elapsed: TimeInterval) -> Moment {
         let x = min(max(elapsed, 0), length)
         if x < closing {
-            let t = Float(x / closing)
-            let down = t * t
+            let down = BearIdle.ease(Float(x / closing))
             return Moment(frame: 2 * Double(down), pupils: 1 - (1 - thin) * down, arcs: nil, closedAmount: down)
         }
         if x < closing + shut {
             return Moment(frame: (x - closing) / shut < 0.5 ? 3 : 4, pupils: nil, arcs: flat, closedAmount: 1)
         }
-        let t = Float((x - closing - shut) / opening)
-        let up = 1 - (1 - t) * (1 - t)
+        let up = BearIdle.ease(Float((x - closing - shut) / opening))
         return Moment(frame: 5 + 2 * Double(up), pupils: thin + (1 - thin) * up, arcs: nil, closedAmount: 1 - up)
     }
 }
@@ -158,8 +163,8 @@ enum BearMove {
     static let hiPace = 1.5
 }
 
-/// Explicit blink state machine: random intervals, occasional natural double-blinks, and optional
-/// gaze-shift blinks, without firing while the head is turning rapidly.
+/// Explicit blink state machine: random intervals, occasional natural double-blinks, without firing
+/// while the head is turning rapidly.
 struct BearPlayback {
     enum BlinkCycle: Equatable {
         case single
@@ -189,12 +194,6 @@ struct BearPlayback {
     mutating func greet(at now: TimeInterval) {
         blinkCycle = .single
         if move == .blink { queued = [.hi] } else { play([.hi], at: now) }
-    }
-
-    /// Triggers a natural gaze-shift blink immediately if currently idle and not too soon after the last blink.
-    mutating func triggerGazeBlink(at now: TimeInterval) {
-        guard move == .idle, blinkCycle == .single, now - since > 0.7 else { return }
-        play([.blink], at: now)
     }
 
     mutating func time(at now: TimeInterval, clips: BearClips, steady: Bool = true) -> TimeInterval {
@@ -749,9 +748,6 @@ private final class BearCanvas: UIView {
         var finalMove = BearIdle.Pose()
         if moving, let (index, joints) = idleSkin, index < standing.count {
             var target = idle.pose(at: now, blinking: playback.move == .blink)
-            if idle.consumeGazeBlinkHint(), !eyesBusy, !reacting(at: now), !stance.changing(at: now) {
-                playback.triggerGazeBlink(at: now)
-            }
             #if DEBUG
             if let side = UserDefaults.standard.string(forKey: "pokiBearLook").flatMap(Float.init) {
                 target = BearIdle.farthest(side)
@@ -762,9 +758,8 @@ private final class BearCanvas: UIView {
             if let reaction, reacting(at: now) { target = target + reaction.pose(at: now) }
 
             finalMove = poseFilter.filter(target, at: now)
-            let blinkAttenuation = 1 - (blinkMoment?.closedAmount ?? 0) * 0.55
             if let hello = helloPose, index < hello.count { joints.show(finalMove, from: hello[index], in: &standing[index]) }
-            joints.apply(finalMove, blinkAttenuation: blinkAttenuation, to: &standing[index])
+            joints.apply(finalMove, to: &standing[index])
             eyesBusy = finalMove.shut > 0.05 || finalMove.smile > 0.05
         }
         if let reaction, !reacting(at: now) { self.reaction = nil }
@@ -785,7 +780,7 @@ private final class BearCanvas: UIView {
         // calm breathing and weight shifts (replaces old choppy 10 fps idle cadence).
         let still: Set<BearAct> = [.ready, .done, .failed, .waiting, .paused]
         let needsHighRate = playback.move != .idle || idle.busy(at: now) || reaction != nil
-            || stance.changing(at: now) || poseFilter.active || !still.contains(stance.act)
+            || stance.changing(at: now) || poseFilter.active || !still.contains(stance.act) || idle.darting(at: now)
             || playback.nextBlink - now <= Self.lead
         let wanted = needsHighRate ? 60 : 30
         if wanted != rate {
