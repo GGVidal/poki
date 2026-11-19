@@ -42,32 +42,45 @@ enum Harness {
     Before entering text, check the intended field and its content. Verify the result in the same pane and keep further actions within the request. When a tool requests the owner's approval, wait for their decision. If a password, verification or system prompt needs the owner, ask them to take over with handoff and wait for them. Call finish_task after checking the last result. Set success=false when the requested outcome has not been verified.
     """
 
-    /// The instructions for a task: the above, then the saved notes and the routines that fit it.
+    /// The instructions for a task: the chat's, then the saved notes and the routines that fit it.
     @MainActor static func instructions(for task: String, inSplitView: Bool = false) -> String {
+        [chatInstructions(inSplitView: inSplitView), taskNotes(for: task, inSplitView: inSplitView)].compactMap { $0 }.joined(separator: "\n\n")
+    }
+
+    /// What Poki adds for one task: the apps the request names with their bundle ids, and the saved
+    /// notes and routines that fit it. The chat sends these with the owner's message rather than in
+    /// the instructions, which then stay the same for the whole chat (a changed first message would
+    /// make the provider read the whole conversation again uncached).
+    @MainActor static func taskNotes(for task: String, inSplitView: Bool = false) -> String? {
+        if inSplitView { return nil }
+        let brief = PokiCore.memoryBrief(for: task)
+        let parts = [appIDs(for: task), brief.isEmpty ? nil : brief].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+
+    /// The instructions every task of a chat shares.
+    @MainActor static func chatInstructions(inSplitView: Bool = false) -> String {
         if inSplitView {
             var parts = [splitViewInstructions]
             if HistoryCapture.isEnabled { parts.append(PokiCore.screenHistoryInstructions) }
             if ApprovalClassifier.mode == .reply { parts.append(replyApprovals) }
             return parts.joined(separator: "\n\n")
         }
-        let brief = PokiCore.memoryBrief(for: task)
         var parts = [instructions]
         parts.append("When the owner asks to continue or resume, identify the task from this conversation or an explicitly selected saved task. If no task matches or more than one could match, ask the owner which task before calling any action tool. Long-term notes and saved routines describe preferences and reusable steps; they are not pending tasks and never authorize choosing a different task.")
         // Poki learns the owner's repeated tasks: a saved routine runs them in one call next time.
-        // The routines that fit are in the brief below, so the first call can be the routine itself:
+        // The routines that fit are in the task notes, so the first call can be the routine itself:
         // listing them first cost a whole model turn before anything happened on the phone. Poki is in
         // front when a task begins, so a first look reads only the owner's chat (ESP-465). finish_task
         // ends the chat's task and the app brings Poki back (chatTaskEnded), so a finish: true do is a
         // step more; the save rides in the same reply instead of a turn before it.
-        parts.append("Choose the route from the owner's request. For a website task, start with web_open and use only web tools; do not call look or do to check readiness, open Safari, or finish the task. For an app task, start with do {run: name} when the routine below covers it, else do {launch: bundle id} (the app's name as the iPhone shows it works too for common apps). When an app's bundle id is not listed below, or a launch answers that no app with that bundle id or name is installed, call find_app {name} before anything else and launch the id it gives; never launch an id from memory. Say an app is not installed only after find_app says so, and then give the owner the App Store link it found. When find_app says more than one app could be the one, ask the owner which instead of picking. If find_app cannot read the phone either, go home ({button: \"home\"}), swipe down on the Home Screen to search, type the app's name and tap it. Recommend an app the owner does not have only when the task really needs one that no installed app and the built-in browser (web tools) can do: find it with find_app {purpose}, name it, and give its App Store link; never install apps. Send report_plan with the first action. Use both routes only when the owner explicitly requested a separate app part, and put that part in its own plan step with the app's name. A failed step is not permission to switch routes. Finish with finish_task. When you already know the taps a part of the task takes, send them as one do {path: {goal, steps}} with each target named by the text it shows, in place of one call per tap, and add an intent to a tap whose purpose its label does not say. In a path, put expect: \"text\" on a step whose result you can name, dismiss: [...] for prompts that may be closed on the way, and read: [\"label\"] when the task is to read a value, so the whole task is one call. After a successful app task that was not already a routine, save its steps with routines {action: \"save\", name, description}, named the way the owner would ask for it.")
+        parts.append("Choose the route from the owner's request. For a website task, start with web_open and use only web tools; do not call look or do to check readiness, open Safari, or finish the task. For an app task, start with do {run: name} when a routine in the task notes covers it, else do {launch: bundle id} (the app's name as the iPhone shows it works too for common apps). When an app's bundle id is not listed in the task notes, or a launch answers that no app with that bundle id or name is installed, call find_app {name} before anything else and launch the id it gives; never launch an id from memory. Say an app is not installed only after find_app says so, and then give the owner the App Store link it found. When find_app says more than one app could be the one, ask the owner which instead of picking. If find_app cannot read the phone either, go home ({button: \"home\"}), swipe down on the Home Screen to search, type the app's name and tap it. Recommend an app the owner does not have only when the task really needs one that no installed app and the built-in browser (web tools) can do: find it with find_app {purpose}, name it, and give its App Store link; never install apps. Send report_plan with the first action. Use both routes only when the owner explicitly requested a separate app part, and put that part in its own plan step with the app's name. A failed step is not permission to switch routes. Finish with finish_task. When you already know the taps a part of the task takes, send them as one do {path: {goal, steps}} with each target named by the text it shows, in place of one call per tap, and add an intent to a tap whose purpose its label does not say. In a path, put expect: \"text\" on a step whose result you can name, dismiss: [...] for prompts that may be closed on the way, and read: [\"label\"] when the task is to read a value, so the whole task is one call. After a successful app task that was not already a routine, save its steps with routines {action: \"save\", name, description}, named the way the owner would ask for it.")
         // A model decides approvals from what the owner said. A refused step goes through once the
         // owner says yes to it, so the agent asks in words and tries again.
         if ApprovalClassifier.mode == .reply {
             parts.append(replyApprovals)
         }
         parts.append(recipients)
-        if let apps = appIDs(for: task) { parts.append(apps) }
-        if !brief.isEmpty { parts.append(brief) }
         return parts.joined(separator: "\n\n")
     }
 
