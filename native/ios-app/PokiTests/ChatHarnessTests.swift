@@ -1035,6 +1035,8 @@ final class FakeCompletions: @unchecked Sendable {
     private let responseStatus: String
     private let holdFirstReply: (@Sendable () -> Void)?
     private var held: [NWConnection] = []
+    /// Replies held back by `holdAfter`, sent by `release()`.
+    private var waiting: [(NWConnection, String)] = []
     private let holdAfter: Int?
     private let onRequest: (@Sendable ([String: Any]) -> Void)?
 
@@ -1059,6 +1061,17 @@ final class FakeCompletions: @unchecked Sendable {
     }
 
     deinit { listener.cancel(); held.forEach { $0.cancel() } }
+
+    /// Sends the replies `holdAfter` held back: a model answer that comes in late.
+    func release() {
+        let due = lock.withLock { () -> [(NWConnection, String)] in defer { waiting = [] }; return waiting }
+        queue.async {
+            for (connection, events) in due {
+                let head = "HTTP/1.1 \(self.responseStatus)\r\nContent-Type: text/event-stream\r\nContent-Length: \(events.utf8.count)\r\nConnection: close\r\n\r\n"
+                connection.send(content: Data((head + events).utf8), completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+    }
 
     private func serve(_ connection: NWConnection) {
         connection.start(queue: queue)
@@ -1100,7 +1113,7 @@ final class FakeCompletions: @unchecked Sendable {
         }
         onRequest?(json)
         if let holdAfter, requests.count > holdAfter {
-            lock.withLock { held.append(connection) }
+            lock.withLock { held.append(connection); waiting.append((connection, events)) }
             return
         }
         let head = "HTTP/1.1 \(responseStatus)\r\nContent-Type: text/event-stream\r\nContent-Length: \(events.utf8.count)\r\nConnection: close\r\n\r\n"

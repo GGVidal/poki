@@ -45,7 +45,7 @@ test('App Harness prompts preserve personal-assistant voice, tool, routing, evid
   assert.match(combined, /no longer changes|stops changing/i);
   assert.match(combined, /purchase/);
   assert.match(harnessSwift, /swipe down on the Home Screen to search/);
-  assert.match(harnessSwift, /say the app is not installed only when that search finds nothing/);
+  assert.match(harnessSwift, /Say an app is not installed only after find_app says so/);
   assert.match(harnessSwift, /routines \{action: \\"save\\"/);
 
   assert.ok(words(agentSystem) < 559, `agent-system.md grew to ${words(agentSystem)} words`);
