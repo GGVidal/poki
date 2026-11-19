@@ -32,6 +32,10 @@
 
 Poki es un agente de código abierto para iPhone que opera todo tu iPhone por ti. La app Poki funciona directamente en el propio iPhone, lee la pantalla y toca, escribe y desplaza contenido en apps reales usando tu propia cuenta de modelo. Tú eliges cómo pide permiso; los pagos, las eliminaciones y las acciones en Wallet siempre piden confirmación.
 
+<p align="center">
+  <img src="docs/images/poki-order-demo.gif" width="280" alt="Poki hace un pedido en Uber Eats por sí solo">
+</p>
+
 ## Por qué Poki
 
 - **Evita saltar entre apps para tareas cotidianas.** Pide ayuda a Poki en el chat, mantén pulsado el botón de Acción o usa Siri para buscar en el navegador integrado, consultar el tiempo o crear una nota. En iPhone Duo, Poki trabaja en dos apps a la vez en Vista dividida.

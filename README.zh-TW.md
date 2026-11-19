@@ -32,6 +32,10 @@
 
 Poki 是開源的 iPhone agent，能替你操作整台 iPhone。Poki 應用程式直接執行在你的 iPhone 上，會讀取畫面，並在真實應用程式中點選、輸入和捲動，使用你自己的模型帳號。你可以選擇它如何徵求許可；付款、刪除和錢包中的操作始終需要你的確認。
 
+<p align="center">
+  <img src="docs/images/poki-order-demo.gif" width="280" alt="Poki 自己在 Uber Eats 上點餐">
+</p>
+
 ## 為什麼用 Poki
 
 - **日常瑣事不必在多個應用程式之間來回點選。** 直接在對話裡告訴 Poki，或長按動作按鈕、呼叫 Siri，就能透過內建瀏覽器查資料、查看明天天氣或建立備忘錄。在 iPhone Duo 上，Poki 還能在分割畫面中同時操作兩個應用程式。

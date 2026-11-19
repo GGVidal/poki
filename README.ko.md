@@ -32,6 +32,10 @@
 
 Poki는 사용자를 대신해 iPhone 전체를 조작하는 오픈소스 iPhone 에이전트입니다. Poki 앱은 iPhone에서 직접 실행되며, 사용자의 모델 계정으로 화면을 읽고 실제 앱에서 탭, 입력, 스크롤을 수행합니다. 승인 방식은 직접 선택할 수 있으며 결제, 삭제, Wallet 작업은 항상 확인을 받습니다.
 
+<p align="center">
+  <img src="docs/images/poki-order-demo.gif" width="280" alt="Poki가 Uber Eats에서 스스로 주문합니다">
+</p>
+
 ## 왜 Poki인가요
 
 - **일상적인 작업을 위해 여러 앱을 번갈아 누를 필요가 없습니다.** 채팅으로 부탁하거나 동작 버튼을 길게 누르고 Siri를 호출해 내장 브라우저 검색, 내일 날씨 확인, 메모 작성을 맡길 수 있습니다. iPhone Duo에서는 Split View로 두 앱을 나란히 조작합니다.

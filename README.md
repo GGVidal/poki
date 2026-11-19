@@ -32,6 +32,10 @@
 
 Poki is an open-source iPhone agent that operates your entire iPhone for you. The Poki app runs directly on your iPhone, reads the screen, and taps, types, and scrolls inside real apps using your own model account. You choose how it asks for permission; payments, deletions, and Wallet actions always stop for your confirmation.
 
+<p align="center">
+  <img src="docs/images/poki-order-demo.gif" width="280" alt="Poki orders on Uber Eats by itself">
+</p>
+
 ## Why Poki
 
 - **Skip multi-app tapping for everyday errands.** Ask Poki in chat, hold the Action Button, or trigger Siri to look things up in the built-in browser, check tomorrow's weather, or create a note. On iPhone Duo, Poki works across two apps side by side in Split View.
