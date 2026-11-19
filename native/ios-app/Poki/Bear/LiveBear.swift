@@ -4,9 +4,11 @@ import RealityKit
 import SwiftUI
 import UIKit
 
-// The three-dimensional bear, drawn live by RealityKit with studio toy lighting (warm key light
-// with soft shadows + crisp rim light over softened ambient IBL), second-order spring dynamics,
-// spherical clamped eye gaze, natural double-blinking, and standalone facial expression overlays.
+// The three-dimensional bear, drawn live by RealityKit. The renderer's lighting and materials
+// match the modelling's own check renderer (light only from the model's own picture at exponent 0,
+// no extra lights, no tone mapping, four-times multisampling) so the bear's authored colours stay
+// unchanged, while second-order spring dynamics, synchronized spherical eye gaze, natural
+// double-blinking, and Head-tracked facial overlays bring the motion and expressions to life.
 
 /// The model's files in Bear/Model:
 /// - PokiBear.usdz: the bear, unchanged, with one timeline that holds every base gesture;
@@ -482,8 +484,8 @@ final class BearHandle {
     func sayHi() -> Bool { canvas?.sayHi() ?? false }
 }
 
-/// Transparent Metal layer rendering the bear with warm toy lighting, second-order elastic spring
-/// motion at 30–60 fps, spherical eye clamping, and Head-tracked facial expression overlays.
+/// Transparent Metal layer rendering the bear with its authored lighting, second-order elastic spring
+/// motion at 30–60 fps, synchronized spherical eye clamping, and Head-tracked facial overlays.
 private final class BearCanvas: UIView {
     override class var layerClass: AnyClass { CAMetalLayer.self }
 
@@ -575,7 +577,7 @@ private final class BearCanvas: UIView {
             return e.children.lazy.compactMap(skin).first
         }
         let primarySkin = skin(entity)
-        let tunedSkinMaterial = primarySkin.flatMap(Self.tuneToySkinMaterial)
+        let originalSkinMaterial = primarySkin.flatMap(Self.originalSkinMaterial)
         pads = primarySkin.flatMap(EyePads.init)
         renderer.entities.append(entity)
 
@@ -588,36 +590,13 @@ private final class BearCanvas: UIView {
         renderer.entities.append(camera)
         renderer.activeCamera = camera
 
-        // Studio toy lighting: bright softened IBL + warm key light with soft shadows + crisp back
-        // rim light + subtle cool-lavender fill so shadows keep Poki's signature periwinkle hue and
-        // never go grey.
+        // Exact authored lighting from the baseline bear: only the model's own light image at
+        // exponent 0, no extra lights and no tone mapping, preserving the exact original colour.
         renderer.lighting.resource = loaded.light
-        renderer.lighting.intensityExponent = -0.52
+        renderer.lighting.intensityExponent = 0
         renderer.cameraSettings.isToneMappingEnabled = false
         renderer.cameraSettings.antialiasing = .multisample4X
         renderer.cameraSettings.colorBackground = .color(CGColor(gray: 0, alpha: 0))
-
-        let keyLight = DirectionalLight()
-        keyLight.light.color = UIColor(red: 1.0, green: 0.94, blue: 0.85, alpha: 1.0)
-        keyLight.light.intensity = 1180
-        var keyShadow = DirectionalLightComponent.Shadow()
-        keyShadow.maximumDistance = 6.0
-        keyShadow.depthBias = 0.8
-        keyLight.shadow = keyShadow
-        keyLight.look(at: SIMD3(0, 0.86, 0), from: SIMD3(-1.6, 2.0, 2.2), relativeTo: nil)
-        renderer.entities.append(keyLight)
-
-        let rimLight = DirectionalLight()
-        rimLight.light.color = UIColor(red: 0.94, green: 0.97, blue: 1.0, alpha: 1.0)
-        rimLight.light.intensity = 1850
-        rimLight.look(at: SIMD3(0, 0.92, 0), from: SIMD3(2.0, 1.5, -1.7), relativeTo: nil)
-        renderer.entities.append(rimLight)
-
-        let lavenderFill = DirectionalLight()
-        lavenderFill.light.color = UIColor(red: 0.72, green: 0.80, blue: 1.0, alpha: 1.0)
-        lavenderFill.light.intensity = 680
-        lavenderFill.look(at: SIMD3(0, 0.85, 0), from: SIMD3(1.5, -0.7, 1.6), relativeTo: nil)
-        renderer.entities.append(lavenderFill)
 
         var controllers: [AnimationPlaybackController] = []
         func walk(_ e: Entity) {
@@ -655,7 +634,7 @@ private final class BearCanvas: UIView {
                 template: exprTemplate,
                 skin: skins[idx],
                 bindJoints: bindSet[idx],
-                skinMaterial: tunedSkinMaterial
+                skinMaterial: originalSkinMaterial
             ) {
                 renderer.entities.append(overlay.root)
                 expressionOverlay = overlay
@@ -663,26 +642,15 @@ private final class BearCanvas: UIView {
         }
     }
 
-    /// Replaces the flat 1.0 chalk roughness on `PokiSkin` with a soft matte vinyl toy sheen while
-    /// keeping the authored `r13_color.png` base color untouched.
-    private static func tuneToySkinMaterial(on bear: ModelEntity) -> PhysicallyBasedMaterial? {
-        guard var model = bear.model else { return nil }
-        let skinIndices = Set(
-            model.mesh.contents.models
-                .filter { $0.id.hasPrefix("Head") || $0.id.hasPrefix("Torso") || $0.id.hasPrefix("Arm") }
-                .flatMap { $0.parts.map(\.materialIndex) }
-        )
-        var tuned: PhysicallyBasedMaterial?
-        for idx in skinIndices where idx < model.materials.count {
-            if var mat = model.materials[idx] as? PhysicallyBasedMaterial {
-                mat.roughness = .init(floatLiteral: 0.62)
-                mat.specular = .init(floatLiteral: 0.28)
-                model.materials[idx] = mat
-                tuned = mat
-            }
-        }
-        if tuned != nil { bear.model = model }
-        return tuned
+    /// Reads the bear's authored `PokiSkin` material without modifying it, so the thinking eyelid
+    /// shares the exact same shading and colour as the head.
+    private static func originalSkinMaterial(on bear: ModelEntity) -> PhysicallyBasedMaterial? {
+        guard let model = bear.model else { return nil }
+        let skinIndex = model.mesh.contents.models
+            .first(where: { $0.id.hasPrefix("Head") })?
+            .parts.first?.materialIndex
+        guard let idx = skinIndex, idx < model.materials.count else { return nil }
+        return model.materials[idx] as? PhysicallyBasedMaterial
     }
 
     private var moving: Bool {
