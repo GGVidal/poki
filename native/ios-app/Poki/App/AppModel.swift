@@ -216,7 +216,7 @@ final class AppModel {
     let host = AppCoreHost()
     /// Poki Runner or Poki's own process, fixed for this launch (Debug tab).
     let automationPath = AutomationPath.current
-    let core: LiveCore
+    private let core: LiveCore
     private let launcher: RunnerLauncher
     private let pairer: DevicePairing
     private let pairingKeepAlive = KeepAlive()

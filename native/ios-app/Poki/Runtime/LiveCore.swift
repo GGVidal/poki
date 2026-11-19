@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 /// and answers its host questions (signing key, connector hashes, JPEG encoding, the runner's state).
 final class LiveCore: CoreSession {
     private let host: AppCoreHost
-    let core: PokiCore
+    private let core: PokiCore
     let events: AsyncStream<ShellEvent>
     private let continuation: AsyncStream<ShellEvent>.Continuation
     private var pump: Task<Void, Never>?
@@ -74,10 +74,6 @@ final class LiveCore: CoreSession {
         await core.finishTask(switching: switching, localSession: localSession, ifNoLocalWorkspace: ifNoLocalWorkspace)
     }
     func finishTask(session: String) async -> String? { await core.finishTask(session: session) }
-    func rpc(_ message: JSON, session: String? = nil) async -> JSON {
-        let response = await core.handle(RelayRequest(id: "rpc", method: "POST", headers: session.map { ["mcp-session-id": $0] } ?? [:], body: message.serialized()))
-        return (try? JSON.parse(response.body)) ?? .null
-    }
 
     private static func map(_ event: CoreEvent) -> ShellEvent {
         switch event {

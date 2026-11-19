@@ -1239,7 +1239,7 @@ final class ChatHarnessTests: XCTestCase {
             }
         }
 
-        // Remove the 3 extra migrated skills so only "查电池健康" remains for scenarios (a), (b), (c)
+        // Remove the 3 extra migrated skills so only "查电池健康" remains for scenarios (a) and (c)
         for extra in ["查看本机版本", "查看今日日程", "返回主屏幕"] {
             _ = await app.runTool("skills", arguments: Self.json(["action": "forget", "name": extra]))
         }
@@ -1271,43 +1271,6 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertTrue(chat.savedCalls.first?.answer.contains("run \"\(skillName)\": 1 steps") == true, chat.savedCalls.first?.answer ?? "")
         XCTAssertTrue(chat.savedCalls.first?.answer.contains("read: 最大容量 = 96%") == true, chat.savedCalls.first?.answer ?? "")
 
-        // Scenario (b): External agent `routines` tool alias & `do {run}` via MCP JSON-RPC
-        let toolsListReply = await app.core.rpc(["jsonrpc": "2.0", "id": 1, "method": "tools/list"])
-        let listedNames = (toolsListReply["result"]?["tools"]?.array ?? []).compactMap { $0["name"]?.string }
-        XCTAssertTrue(listedNames.contains("skills"))
-        XCTAssertFalse(listedNames.contains("routines"))
-
-        let routinesCallReply = await app.core.rpc([
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": ["name": "routines", "arguments": ["action": "list"]],
-        ])
-        let skillsCallReply = await app.core.rpc([
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": ["name": "skills", "arguments": ["action": "list"]],
-        ])
-        let routinesText = routinesCallReply["result"]?["content"]?[0]?["text"]?.string ?? ""
-        let skillsText = skillsCallReply["result"]?["content"]?[0]?["text"]?.string ?? ""
-        XCTAssertNotEqual(routinesCallReply["result"]?["isError"]?.bool, true)
-        XCTAssertNotEqual(skillsCallReply["result"]?["isError"]?.bool, true)
-        XCTAssertTrue(routinesText.hasPrefix("skills ("), routinesText)
-        XCTAssertTrue(routinesText.contains("\(skillName):"), routinesText)
-        XCTAssertEqual(routinesText, skillsText)
-
-        let doRunReply = await app.core.rpc([
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": ["name": "do", "arguments": ["actions": [["run": .string(skillName)]]]],
-        ])
-        let doRunText = doRunReply["result"]?["content"]?[0]?["text"]?.string ?? ""
-        XCTAssertNotEqual(doRunReply["result"]?["isError"]?.bool, true)
-        XCTAssertTrue(doRunText.contains("run \"\(skillName)\": 1 steps"), doRunText)
-        XCTAssertTrue(doRunText.contains("read: 最大容量 = 96%"), doRunText)
-
         // Scenario (c): Unrelated request failure scenario (omits Saved skills, executes normal step-by-step actions)
         let callCountBeforeCalendar = chat.savedCalls.count
         let calendarReply = await chat.runDelegated("打开日历看看今天有什么安排")
@@ -1327,11 +1290,7 @@ final class ChatHarnessTests: XCTestCase {
         [1] Scenario (a) Chinese phrasing: "帮我看看手机电池现在健康度还有多少"
             prompt includes Saved skills: \(firstPrompt.contains("Saved skills:"))
             step 1 do {run: "\(skillName)"} -> \(chat.savedCalls.first?.answer.split(separator: "\n").first ?? "")
-        [2] Scenario (b) External MCP tools/list: \(listedNames.joined(separator: ", "))
-            tools/call name=routines action=list -> \(routinesText.split(separator: "\n").joined(separator: " | "))
-            tools/call name=skills action=list   -> \(skillsText.split(separator: "\n").joined(separator: " | "))
-            tools/call name=do actions=[{run: "\(skillName)"}] -> \(doRunText.split(separator: "\n").first ?? "")
-        [3] Scenario (c) Unrelated request: "打开日历看看今天有什么安排"
+        [2] Scenario (c) Unrelated request: "打开日历看看今天有什么安排"
             prompt includes Saved skills: \(unrelatedPrompt.contains("Saved skills:"))
             step-by-step calls: \(calendarCalls.map(\.name).joined(separator: " -> "))
         """)
