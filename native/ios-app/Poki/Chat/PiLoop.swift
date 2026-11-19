@@ -29,11 +29,18 @@ final class PiLoop {
     /// answered for the log.
     private let endpoint: CustomEndpointClient?
     private let stall = StallWatch()
+    private let taskStart = Counter()
+    private let turns = Counter()
+    private let spent = Tally()
 
     var signature: String { "pi:\(provider.rawValue)/\(model.id)" }
     var messages: [AgentMessage] { agent.state.messages }
 
+    /// `session` is the chat's id: the provider's prompt cache is keyed by it, so a step reads the
+    /// prompt, the tools and the conversation so far from the cache instead of paying for them again.
+    /// `thinking` is `.off` for a one-line job that needs no reasoning.
     init(provider: ModelProvider, model: Model, tools: [ToolSpec], inSplitView: Bool = false, carrying messages: [AgentMessage] = [],
+         session: String? = nil, thinking: PiSwiftAgent.ThinkingLevel = .low,
          perform: @escaping @MainActor (ToolCall) async -> PokiCore.ToolAnswer) {
         self.provider = provider
         self.model = model
@@ -43,6 +50,7 @@ final class PiLoop {
         self.endpoint = endpoint
         let stall = self.stall
         let grants = HistoryDeliveryGrants()
+        let turns = self.turns
         let agentTools = tools.map { spec in
             AgentTool(label: spec.name, name: spec.name, description: spec.description, parameters: spec.schema.mapValues { AnyCodable($0) }) { id, params, signal, _ in
                 if gate.stopped { return Self.result(PokiCore.ToolAnswer(text: "Task stopped. Action not executed.", jpeg: nil, isError: true)) }
@@ -63,6 +71,9 @@ final class PiLoop {
                 // loop: the arguments have sorted keys, and the screen has no clock or read time in it.
                 if answer.waitingForOwner {
                     stall.reset()
+                    // A step spent waiting for the owner is not the model running away: it does not
+                    // count towards the ceiling.
+                    turns.back()
                 } else if stall.record(call: "\(spec.name)\n\(arguments)", screen: answer.screen ?? answer.text) {
                     gate.end(.stuck)
                 }
@@ -72,9 +83,12 @@ final class PiLoop {
         allTools = agentTools
         // agent/pi-session.mjs: low thinking, one tool call at a time. Pi copies the
         // tool list at prompt start; prepareRequest updates its *live* context each turn.
+        let taskStart = self.taskStart
         agent = Agent(AgentOptions(
-            initialState: AgentState(model: model, thinkingLevel: .low,
+            initialState: AgentState(model: model, thinkingLevel: thinking,
                                      tools: Self.availableTools(agentTools, allowed: HistoryCapture.agentQueryAllowed), messages: messages),
+            // Old screen reads go out without their element lists and screenshots (HistoryTrim).
+            transformContext: { messages, _ in HistoryTrim.trimmed(messages, taskStart: taskStart.value) },
             streamFn: { model, transcript, options in
                 // API credentials may have suspended after prepareRequest. Recheck at
                 // the last request boundary too; never add a tool the live context lacks.
@@ -96,7 +110,9 @@ final class PiLoop {
                 if let endpoint { options.httpClient = endpoint }
                 return try streamSimple(model: model, context: Context(messages: messages), options: options)
             },
+            sessionId: session,
             getApiKey: { _ in await ModelCredential.apiKey(for: provider) },
+            onPayload: Self.withoutReasoningSummary,
             toolExecution: .sequential,
             prepareToolResultMessage: { result in
                 grants.validated(result, revision: HistoryCapture.agentQueryRevision)
@@ -132,12 +148,21 @@ final class PiLoop {
     /// pi's loop until the model answers without tools, `stop()`, a repeated call or pair on the same
     /// screen, or `maxTurns` model turns (a ceiling for a model that runs away). Owner waits reset the
     /// stall history. `onText` gets each finished text block.
-    func run(_ text: String, images: [Data] = [], instructions: String, maxTurns: Int, onText: @escaping @MainActor (String) -> Void) async -> Outcome {
+    /// `notes` are what Poki adds for this one task (the saved notes and routines that fit it, the
+    /// apps it names). They ride with the owner's message, so the instructions at the head of the
+    /// conversation stay the same from task to task and the provider's cache keeps matching them.
+    func run(_ text: String, images: [Data] = [], instructions: String, notes: String? = nil, maxTurns: Int, onText: @escaping @MainActor (String) -> Void) async -> Outcome {
         gate.reset()
         stall.reset()
         agent.tools = Self.availableTools(allTools, allowed: HistoryCapture.agentQueryAllowed)
         use(instructions)
-        let turns = Counter()
+        // Reads from before this message belong to finished tasks.
+        taskStart.set(agent.messages.count)
+        spent.reset()
+        let spent = self.spent
+        let label = signature
+        turns.set(0)
+        let turns = self.turns
         let failure = Box()
         let agent = self.agent
         let gate = self.gate
@@ -148,6 +173,12 @@ final class PiLoop {
                 if gate.stopped { agent.abort() }
             case .messageEnd(.assistant(let reply)):
                 if reply.stopReason == .error { failure.set(reply.errorMessage ?? "") }
+                // What each step cost, so a build's log shows where a plan's allowance goes.
+                let usage = reply.usage
+                let step = spent.add(input: usage.input, cached: usage.cacheRead, output: usage.output)
+                await MainActor.run {
+                    AppLog.shared.add("chat", "tokens \(label) step \(step): input \(usage.input) new + \(usage.cacheRead) cached, output \(usage.output) (reasoning \(usage.reasoning ?? 0))")
+                }
                 let texts = reply.content.compactMap { block -> String? in
                     guard case .text(let content) = block else { return nil }
                     let text = content.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -159,9 +190,14 @@ final class PiLoop {
         }
         defer { unsubscribe() }
         do {
-            try await agent.prompt(text, images: images.map { ImageContent(data: $0.base64EncodedString(), mimeType: "image/jpeg") })
+            let message = notes.map { text + "\n\n[Task notes added by Poki, not written by the owner]\n" + $0 } ?? text
+            try await agent.prompt(message, images: images.map { ImageContent(data: $0.base64EncodedString(), mimeType: "image/jpeg") })
         } catch {
             failure.set(error.localizedDescription)
+        }
+        let total = spent.total
+        if total.steps > 0 {
+            AppLog.shared.add("chat", "tokens \(label) total over \(total.steps) steps: input \(total.input) new + \(total.cached) cached, output \(total.output)")
         }
         if gate.stopped {
             switch gate.ending {
@@ -193,6 +229,8 @@ final class PiLoop {
     private func use(_ instructions: String) {
         var messages = agent.messages
         if case .system(var system)? = messages.first {
+            // Unchanged instructions leave the message as it is.
+            if case .text(let current) = system.content, current == instructions { return }
             system.content = .text(instructions)
             messages[0] = .system(system)
         } else if let system = createInitialSystemMessage(instructions, nil) {
@@ -203,6 +241,19 @@ final class PiLoop {
 
     nonisolated static func availableTools(_ tools: [AgentTool], allowed: Bool) -> [AgentTool] {
         tools.filter { $0.name != "screen_history" || allowed }
+    }
+
+    /// The Responses API writes a summary of the model's reasoning when asked (pi asks by default).
+    /// The chat never shows it and the reasoning itself goes back encrypted, so it is output paid for
+    /// and thrown away. Other providers' requests have no such field and pass unchanged.
+    private nonisolated static let withoutReasoningSummary: OnPayloadFn = { payload in
+        guard payload.json.contains("\"summary\""),
+              var body = (try? JSONSerialization.jsonObject(with: Data(payload.json.utf8))) as? [String: Any],
+              var reasoning = body["reasoning"] as? [String: Any], reasoning["summary"] != nil else { return nil }
+        reasoning.removeValue(forKey: "summary")
+        body["reasoning"] = reasoning
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+        return PayloadSnapshot(json: String(decoding: data, as: UTF8.self))
     }
 
     private nonisolated static func result(_ answer: PokiCore.ToolAnswer) -> AgentToolResult {
@@ -289,6 +340,23 @@ private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var n = 0
     func increment() -> Int { lock.withLock { n += 1; return n } }
+    func set(_ value: Int) { lock.withLock { n = value } }
+    func back() { lock.withLock { n = max(0, n - 1) } }
+    var value: Int { lock.withLock { n } }
+}
+
+/// The tokens of the task under way, counted on pi's tasks.
+private final class Tally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sum = (steps: 0, input: 0, cached: 0, output: 0)
+    func reset() { lock.withLock { sum = (0, 0, 0, 0) } }
+    func add(input: Int, cached: Int, output: Int) -> Int {
+        lock.withLock {
+            sum = (sum.steps + 1, sum.input + input, sum.cached + cached, sum.output + output)
+            return sum.steps
+        }
+    }
+    var total: (steps: Int, input: Int, cached: Int, output: Int) { lock.withLock { sum } }
 }
 
 private final class Box: @unchecked Sendable {

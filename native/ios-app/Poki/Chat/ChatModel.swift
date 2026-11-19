@@ -183,10 +183,11 @@ final class ChatModel {
     /// The result card of the task under way, which a second finish_task replaces.
     private var cardID: UUID?
 
-    /// A ceiling for a runaway model's quota use. On an unchanged screen, PiLoop stops after
+    /// A ceiling for a runaway model's quota use: past it Poki stops and asks the owner how to go on
+    /// (500 before, which a wandering task could spend most of on the owner's plan). On an unchanged screen, PiLoop stops after
     /// `stallSteps` identical calls or `stallPairs` repetitions of a call pair. Waiting for the owner
-    /// or runner startup resets that history, but does not remove this ceiling.
-    static let maxTurns = 500
+    /// or runner startup resets that history, and a step spent waiting for the owner does not count here.
+    static let maxTurns = 60
 
     init(app: AppModel, kind: SavedSession.Kind = .poki, requester: String? = nil, sessionID: String? = nil, store: SessionStore? = nil) {
         let store = store ?? .shared
@@ -630,8 +631,12 @@ final class ChatModel {
             }
             let loop = modelLoop(provider: prepared.provider, model: piModel, inSplitView: splitSession != nil)
             let continuation = prepared.resumedTask.map { "The owner selected this saved task to resume: \($0). Recheck the current screen and continue from the saved progress; do not substitute a task from long-term memory." }
-            let instructions = [Harness.instructions(for: prepared.resumedTask ?? prepared.message, inSplitView: splitSession != nil), restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
-            let outcome = await loop.run(prepared.message.isEmpty ? Self.picturesOnly : prepared.message, images: prepared.images, instructions: instructions, maxTurns: Self.maxTurns) { [weak self] text in
+            // The instructions are the same for every task of the chat; what belongs to this task alone
+            // goes with the owner's message.
+            let instructions = [Harness.chatInstructions(inSplitView: splitSession != nil), restoredContext].compactMap { $0 }.joined(separator: "\n\n")
+            let notes = [Harness.taskNotes(for: prepared.resumedTask ?? prepared.message, inSplitView: splitSession != nil), continuation].compactMap { $0 }.joined(separator: "\n\n")
+            let outcome = await loop.run(prepared.message.isEmpty ? Self.picturesOnly : prepared.message, images: prepared.images, instructions: instructions,
+                                         notes: notes.isEmpty ? nil : notes, maxTurns: Self.maxTurns) { [weak self] text in
                 guard let self, self.runToken == token else { return }
                 self.markDelivered(prepared.you.id)
                 self.awaitingModel = false
@@ -766,7 +771,7 @@ final class ChatModel {
         // A different workspace starts without old screen evidence.
         let next = PiLoop(provider: provider, model: model,
                           tools: Harness.toolSpecs(inSplitView: inSplitView, includeScreenHistory: true),
-                          inSplitView: inSplitView, carrying: changedWorkspace ? [] : loop?.messages ?? []) { [weak self] call in
+                          inSplitView: inSplitView, carrying: changedWorkspace ? [] : loop?.messages ?? [], session: sessionID) { [weak self] call in
             guard let self else { return PokiCore.ToolAnswer(text: "Task stopped. Action not executed.", jpeg: nil, isError: true) }
             return await self.perform(call)
         }
