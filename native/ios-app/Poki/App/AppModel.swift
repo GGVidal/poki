@@ -361,6 +361,7 @@ final class AppModel {
                                    let result = await core.tool(name, arguments: arguments)
                                    return (result.text, result.isError, result.jpeg)
                                }
+                               if name == VoiceApps.step { return await VoiceApps.step(arguments, tool: tool) }
                                guard name == "open_app" else { return await tool(name, arguments) }
                                return await VoiceApps.open(arguments, tool: tool, openLink: { url in
                                    guard UIApplication.shared.applicationState == .active else { return false }

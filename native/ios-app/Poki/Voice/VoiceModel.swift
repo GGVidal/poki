@@ -254,15 +254,9 @@ final class VoiceModel {
     /// The person spoke over Poki's answer, or stopped it: the talk's screens say so for `interruptedShows`.
     private(set) var interrupted = false
     private var interruptedLapse: Task<Void, Never>?
-    /// The session's turn detection, from session.created: off (null) from the start of each answer until
-    /// its audio has played, then back. Over WebRTC the server drops the rest of an answer at any speech
-    /// it detects, whatever interrupt_response says, so a 嗯 cut Poki off mid-sentence; while detection
-    /// is off nothing said over the answer is heard. The owner chose that over a cut-off answer
-    /// (2026-11-19); answers are one short sentence, and stop works while a task runs.
-    private var turnDetection: Any?
-    private var deaf = false
-    /// The current answer's audio has played to its end or was cleared.
-    private var played = false
+    /// Speech started while Poki's answer played, and the server dropped the rest of it. When that speech
+    /// was only a 嗯 (wait_for_user), Poki asks for the rest of the answer (`resume`).
+    private var cutOff = false
     static let interruptedShows: Duration = .milliseconds(1400)
     #if DEBUG && targetEnvironment(simulator)
     /// A screenshot's state, held whatever the session does next (`-pokiTalkHold`).
@@ -591,6 +585,7 @@ final class VoiceModel {
         keepOpen()
         interruptedLapse?.cancel()
         interrupted = false
+        cutOff = false
         stallWatch?.cancel()
         stallWatch = nil
         if ready, let from = transcript?.from {
@@ -609,8 +604,6 @@ final class VoiceModel {
         screenItem = nil
         holdingMicrophone = false
         ready = false
-        turnDetection = nil
-        deaf = false
         activeResponse = nil
         wantsResponse = false
         awaitingAnswer = false
@@ -800,8 +793,6 @@ final class VoiceModel {
         switch type {
         case "session.created":
             log.add("voice", "session created, session \(number)")
-            turnDetection = ((event["session"] as? [String: Any])?["audio"] as? [String: Any])
-                .flatMap { ($0["input"] as? [String: Any])?["turn_detection"] }
             ready = true
             watchForStall(session: number)
             phase = .listening
@@ -812,7 +803,7 @@ final class VoiceModel {
             keepOpen()
             if phase != .hearing { log.add("voice", "speech started") }
             // Spoken over Poki's answer: the server drops the answer's audio, and the talk says so.
-            if phase == .speaking { markInterrupted() }
+            if phase == .speaking { markInterrupted(); cutOff = true }
             phase = .hearing
         case "input_audio_buffer.speech_stopped":
             log.add("voice", "speech stopped")
@@ -825,8 +816,6 @@ final class VoiceModel {
             if let text = event["transcript"] as? String, !text.isEmpty { lines.append(VoiceLine(role: .you, text: text.trimmingCharacters(in: .whitespacesAndNewlines))) }
         case "response.created":
             activeResponse = (event["response"] as? [String: Any])?["id"] as? String
-            played = false
-            hear(false)
             keepOpen()
             awaitingAnswer = false
             requestedAnswer = nil
@@ -834,9 +823,8 @@ final class VoiceModel {
             let response = event["response"] as? [String: Any]
             if let usage = response?["usage"] as? [String: Any] { clock.add(usage: usage) }
             if response?["id"] as? String == activeResponse { activeResponse = nil }
-            // An answer with speech hears again once its audio has played; one with only a tool call, now.
-            let spoke = (response?["output"] as? [[String: Any]])?.contains { $0["type"] as? String == "message" } ?? false
-            if !spoke || played { hear(true) }
+            // A cut answer that also called a tool (好, then open_app) gets that tool's result instead.
+            if (response?["output"] as? [[String: Any]])?.contains(where: { $0["type"] as? String == "function_call" && $0["name"] as? String != VoiceDirect.waitForUser }) == true { cutOff = false }
             flush()
             endIfDone()
         case "response.output_audio_transcript.done":
@@ -846,6 +834,7 @@ final class VoiceModel {
             }
         case "output_audio_buffer.started":
             phase = .speaking
+            cutOff = false
             if let said = clock.said, let delivered = clock.delivered, clock.spoken == nil {
                 clock.spoken = Date()
                 lastTurnMS = clock.ms(\.spoken)
@@ -854,8 +843,6 @@ final class VoiceModel {
         case "output_audio_buffer.stopped", "output_audio_buffer.cleared":
             // Cleared because the person started speaking over the answer: they are still being heard.
             if phase != .hearing { phase = calls.contains { $0.state == .running } ? .thinking : .listening }
-            played = true
-            if activeResponse == nil { hear(true) }
             endIfDone()
         case "response.output_item.done":
             guard let item = event["item"] as? [String: Any], item["type"] as? String == "function_call",
@@ -879,21 +866,27 @@ final class VoiceModel {
         }
     }
 
-    /// Turns the session's speech detection off while Poki answers and back on after (`turnDetection`).
-    private func hear(_ on: Bool) {
-        guard deaf == on, let turnDetection, let link else { return }
-        deaf = !on
-        let detection: Any = on ? turnDetection : NSNull()
-        link.send(["type": "session.update", "session": ["type": "realtime", "audio": ["input": ["turn_detection": detection]]]])
-    }
-
     /// wait_for_user: the latest audio needed no answer (a 嗯, a cough). The call is closed and no answer
     /// is asked for, so Poki says nothing and listens on.
     private func leaveUnanswered(_ id: String) {
         link?.send(["type": "conversation.item.create", "item": ["type": "function_call_output", "call_id": id, "output": "ok"]])
+        if cutOff, let link {
+            // The 嗯 cut the answer off: the rest of it follows (the server keeps only what had played).
+            cutOff = false
+            link.send(Self.note(Self.resume))
+            log.add("voice", "a backchannel cut the answer off: asking for the rest")
+            wantsResponse = true
+            flush()
+            return
+        }
         if phase == .thinking { phase = .listening }
         log.add("voice", "nothing to answer: listening on")
     }
+
+    /// Asked of the model after a sound with no request in it cut its answer off. Over WebRTC the server
+    /// drops the rest of an answer at any speech, whatever interrupt_response says. A 别说了 that the
+    /// model closed with wait_for_user is closed with it again, and nothing more is said.
+    static let resume = "That sound cut off your last answer. If it was only a backchannel (嗯, 哦, uh-huh), say only the rest of that answer: carry on at the next phrase after the last word heard, and say nothing that was already said. If it asked you to stop or be quiet, call wait_for_user and say nothing."
 
     /// Runs a call once. The same call_id again (a repeated event) is ignored.
     private func run(_ call: VoiceCall) {
@@ -981,6 +974,12 @@ final class VoiceModel {
         calls[index].delivered = true
         lastActivity = time.now()
         clock.delivered = Date()
+        // Something added to the running task: its result is the answer, so Poki says nothing now (on a
+        // physical iPhone it said "好的，我已经把……加到正在进行的任务里" while the task ran).
+        if call.name == VoiceTasks.run, call.output.hasPrefix(VoiceTasks.added) {
+            log.add("voice", "added to the running task: nothing to say until it ends")
+            return
+        }
         wantsResponse = true
         flush()
     }
@@ -1096,13 +1095,13 @@ final class VoiceModel {
         case "tap_text": AppLocalization.text(LocalizedStringResource("Tapping"))
         case "go_home": AppLocalization.text(LocalizedStringResource("Going Home"))
         case "look": AppLocalization.text(LocalizedStringResource("Looking at the screen"))
-        case "do": AppLocalization.text(LocalizedStringResource("Using the phone"))
+        case "do", VoiceApps.step: AppLocalization.text(LocalizedStringResource("Using the phone"))
         default: call.name
         }
     }
 
     /// PokiCore's tools, answered on this phone through the runner.
-    static let phoneTools: Set<String> = ["look", "do", "open_app"]
+    static let phoneTools: Set<String> = ["look", "do", "open_app", VoiceApps.step]
 
     /// Tools the phone answers itself. They change nothing.
     static func localTool(_ name: String) -> String {

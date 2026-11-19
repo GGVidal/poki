@@ -73,6 +73,26 @@ enum VoiceApps {
         return (note + answer.text, answer.failed, answer.screen)
     }
 
+    /// phone_step, the live voice's fast path for one gesture on the screen in front: scroll, back or the
+    /// Home Screen, run as one PokiCore do. Through Poki's agent these took 30 to 50 s on a physical
+    /// iPhone (2026-11-19); a do takes a second or two.
+    nonisolated static let step = "phone_step"
+    nonisolated static let steps: [String: String] = [
+        "scroll_down": #"{"swipe":{"direction":"up","distance":"scroll"}}"#,
+        "scroll_up": #"{"swipe":{"direction":"down","distance":"scroll"}}"#,
+        "back": #"{"back":true}"#,
+        "home": #"{"button":"home"}"#,
+    ]
+
+    static func step(_ arguments: String, tool: (String, String) async -> PhoneAnswer) async -> PhoneAnswer {
+        let args = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
+        let name = args["step"] as? String ?? ""
+        guard let action = steps[name] else {
+            return ("not_sent: phone_step takes one of \(steps.keys.sorted().joined(separator: ", ")).", true, nil)
+        }
+        return await tool("do", #"{"actions":[\#(action)]}"#)
+    }
+
     /// PokiCore's words for a launch of a bundle id this iPhone does not have.
     private static let notInstalled = "no app with that bundle id is installed"
 }

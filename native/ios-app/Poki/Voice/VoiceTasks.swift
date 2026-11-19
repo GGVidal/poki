@@ -9,6 +9,8 @@ struct VoiceTasks {
     static let check = "check_task"
     static let stop = "stop_task"
     static let names: Set<String> = [run, check, stop]
+    /// How a run_task answer that went to the running task begins (VoiceModel asks for no answer after it).
+    static let added = "added:"
 
     /// Answers one of `names` for the voice model: the text it reads, and whether the call failed. A
     /// `run_task` answer comes when the task has ended, so the talk keeps the call running until then.
@@ -29,7 +31,7 @@ struct VoiceTasks {
             let task = args?["task"] as? String ?? ""
             guard chat.running else { return await chat.runSpoken(task) }
             return chat.addSpoken(task)
-                ? ("added: the running task takes this in. Do not hand it over again; the task's result follows when it ends.", false)
+                ? ("\(added) the running task takes this in. Do not hand it over again; the task's result follows when it ends.", false)
                 : ("busy: Poki is working on another task that cannot take additions; nothing was started. Say so, or stop it first.", true)
         case check:
             return (chat.spokenProgress, false)
@@ -45,7 +47,7 @@ struct VoiceTasks {
     /// The Realtime function definitions of `names`.
     static let tools: [[String: Any]] = [
         ["type": "function", "name": run,
-         "description": "Hand one task on the iPhone to Poki's agent, which does every step (opens apps, taps, types, reads) and answers with how it ended. It can take from a few seconds to a few minutes; the user can talk meanwhile. While a task runs, a second run_task adds to that task instead of starting another.",
+         "description": "Hand one task on the iPhone to Poki's agent, which does every step (opens apps, taps, types, reads) and answers with how it ended. It can take from a few seconds to a few minutes; the user can talk meanwhile. While a task runs, a second run_task adds to that task instead of starting another. Before it say only 好, one word, and nothing else; only a task that sends something gets the one sentence that says what it sends to whom.",
          "parameters": ["type": "object", "properties": ["task": ["type": "string", "description": "What to do, in the user's own language and plain words, as you would ask a person. Include every detail the user gave (names, the exact text to type or send). Poki's agent hears nothing else of this conversation."]],
                         "required": ["task"], "additionalProperties": false]],
         ["type": "function", "name": check, "description": "Say how the task Poki's agent is doing is going: how long it has run, its plan and the step under way, and whether it waits for the user to allow something on the phone. Changes nothing.", "parameters": empty],

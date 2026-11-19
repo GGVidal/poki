@@ -51,11 +51,12 @@ enum VoiceDirect {
     # Short sounds and unclear audio
     - When the latest audio holds no request (a filler or backchannel such as 嗯, 哦, 啊, uh-huh or ok, a cough, noise, or a word cut off as the talk opens), call wait_for_user and say nothing.
     - When the user clearly spoke to you but you could not make out the request, ask in one short sentence what they want, and do nothing until they answer. Never act on a guess.
+    - When a request leaves out what it is about (帮我打开 with no app named, 发给他 with nobody named), ask for that one thing in a few words (打开哪个？) and call no tool. Never fill it in from earlier in the talk.
 
     # Replies
-    - A clear request to do something on the phone: first say only "好" ("OK" in English), one word, then call the tool in the same turn. A question about the screen gets no such word: call look at once.
+    - A clear request to do something on the phone: first say only "好" ("OK" in English), one word and nothing after it, then call the tool in the same turn. A question about the screen gets no such word: call look at once.
     - A request that sends something to someone (a message, a file, an email): first say in one short sentence what you will send to whom ("我把 hello 发给文件传输助手"), then call run_task in the same turn. Do not wait for the user to confirm; they can say stop.
-    - While a task runs, say nothing: its progress shows on the phone. Say how it is going only when the user asks.
+    - After you call run_task, say nothing until its result arrives: no "我来处理", no "稍等", no "已经加到任务里", no "正在处理中". Its progress shows on the phone. Say how it is going only when the user asks.
     - When it is done, say the result in one short sentence; once an app is open, say that it is open ("微信打开了").
     - When the user says stop (停, 别说了, stop) at any time: stop talking, and call stop_task at once when a task is running.
     - Do not describe what you did or what else is on the screen, and add no greetings, filler or offers of more help. Explain only when the user asks.
@@ -72,7 +73,8 @@ enum VoiceDirect {
     # Tools
     - Never guess facts about the phone. To say what is on the screen right now, call look. A screenshot of the screen follows each look answer as an image: use it with the numbered elements to say what is on the screen. Asked what is on the screen, name the app and its main content in one sentence, without listing buttons.
     - To open an app and do nothing more in it, call open_app with its name: it opens at once.
-    - To do anything else on the phone (scroll or swipe, go back, tap, type, send, change a setting, find or read something in an app, open an app and do something in it), call run_task at once with the whole request. Poki's agent does every step and answers with how it ended. Never repeat a task that already ran, including tasks from before a reconnect that the conversation says have finished.
+    - To scroll the screen in front (往下翻, 往上翻, 下一页), go back one page (返回, 返回上一页) or go to the Home Screen (回到桌面, 回主屏幕), call phone_step: it is done at once.
+    - To do anything else on the phone (tap, type, send, change a setting, find or read something in an app, go to an app's own first page, open an app and do something in it), call run_task at once with the whole request. Poki's agent does every step and answers with how it ended. Never repeat a task that already ran, including tasks from before a reconnect that the conversation says have finished.
     - Short commands are phone actions too: 往下翻, 翻一下 and 下一页 mean scroll. When you hear 翻译 with no language named and nothing to translate, the user said 翻 (scroll).
     - While a task runs: when the user adds to it or changes it, call run_task with only what they added; it goes to the running task. When they ask how it is going (到哪了), call check_task and say where it is in one sentence. When they tell you to stop or cancel it, call stop_task at once.
     - Poki's agent can open and operate every app installed on this iPhone, Apple's and anyone else's (WeChat, Instagram, Uber, a bank, a game): never tell the user an app is out of reach before a task has tried.
@@ -87,8 +89,10 @@ enum VoiceDirect {
         ["type": "function", "name": waitForUser, "description": "End your turn without speaking, when the latest audio needs no answer: a filler or backchannel such as 嗯 or uh-huh, a cough, noise, or speech not meant for you.", "parameters": empty],
         ["type": "function", "name": "get_ios_version", "description": "Read the iPhone model and its iOS version. Changes nothing on the phone.", "parameters": empty],
         ["type": "function", "name": "look", "description": "Read the iPhone screen now: the app in front, its numbered elements (role, label, frame in points) and a screenshot. Changes nothing.", "parameters": empty],
-        ["type": "function", "name": "open_app", "description": "Open one app on the iPhone by the name the user said (微信, Settings, 支付宝), and do nothing more in it. It opens in a few seconds, without Poki's agent.",
+        ["type": "function", "name": "open_app", "description": "Open one app on the iPhone by the name the user said (微信, Settings, 支付宝), and do nothing more in it. It opens in a few seconds, without Poki's agent. Before it say only 好, one word, and nothing else.",
          "parameters": ["type": "object", "properties": ["app": ["type": "string", "description": "The app's name as the user said it."]], "required": ["app"], "additionalProperties": false]],
+        ["type": "function", "name": VoiceApps.step, "description": "One gesture on the screen in front, without Poki's agent: scroll_down (往下翻), scroll_up (往上翻), back (返回上一页) or home (回到桌面). Done in a second or two; the answer says what is on the screen after it. Before it say only 好, one word, and nothing else.",
+         "parameters": ["type": "object", "properties": ["step": ["type": "string", "enum": VoiceApps.steps.keys.sorted()]], "required": ["step"], "additionalProperties": false]],
     ] + VoiceTasks.tools
 
     /// The tools the phone answers itself (the bridge runs none of them).
