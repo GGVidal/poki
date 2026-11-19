@@ -298,7 +298,7 @@ extension Computer {
         let spec = action[kind.rawValue] ?? .null
         switch kind {
         case .run:
-            return ("run", try await runRoutine(spec, until: until))
+            return ("run", try await runSkill(spec, until: until))
         case .tap:
             let p = try point(spec)
             try await tap(p, within: frame(of: spec))

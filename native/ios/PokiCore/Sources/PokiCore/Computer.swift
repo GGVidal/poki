@@ -124,11 +124,11 @@ final class Computer: @unchecked Sendable {
     /// app's tree under the new app's screen (gym: Photos launched from Safari).
     var pictureOnlyShare: Double?
 
-    /// The agent's memory, and this task's recorded steps (what routines {save} keeps).
-    var memory: RoutineStore?
+    /// The agent's memory library, and this task's recorded steps (what skills {save} keeps).
+    var memory: SkillStore?
     var trace: [RecordedStep] = []
-    /// A routine ran whole in this task (the finish line does not offer to save it again).
-    var routineRanWhole = false
+    /// A skill ran whole in this task (the finish line does not offer to save it again).
+    var skillRanWhole = false
 
     var lastElements: [Element] { listed.map(\.element) }
     var layout: Layout { Layout(all: lastAll, screen: size ?? ScreenSize(width: 10_000, height: 10_000)) }
@@ -145,7 +145,7 @@ final class Computer: @unchecked Sendable {
         self.humanize = Humanize(enabled: config.humanize ?? Humanize.envEnabled)
         self.approvals = approvals
         self.handoff = HandoffTracker(emit: emit)
-        self.memory = config.memory ?? RoutineStore.shared
+        self.memory = config.memory ?? SkillStore.shared
     }
 
     // MARK: Reading and answering
@@ -565,7 +565,7 @@ final class Computer: @unchecked Sendable {
             result.text += "\nSplit View: \(selectedPane.side) is \(selectedPane.app); the other pane is \(selectedPane.other). Use look with pane left or right before acting on the other app."
         }
         if begins, let app = lastForeground { origin = (app, session, now()) } else if origin?.session == session { origin?.lastCall = now() }
-        if begins, let line = routinesLine() { result.text += "\n" + line }
+        if begins, let line = skillsLine() { result.text += "\n" + line }
         guard await locked else { return result }
         var lines = result.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         lines.insert("screen: locked (the owner has to unlock the phone before anything can be done)", at: min(1, lines.count))
@@ -1089,8 +1089,8 @@ final class Computer: @unchecked Sendable {
             let line = await returnToOrigin() ?? "finish: the app this task began in is not known, so the phone stays here"
             var lines = result.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             lines.insert(line, at: min(1, lines.count))
-            if trace.count >= 2, !routineRanWhole {
-                lines.append("learn: this task took \(trace.count) recorded steps; if it worked and may be asked for again, routines {action: \"save\", name, description} keeps them so do {run: name} repeats them in one call next time")
+            if trace.count >= 2, !skillRanWhole {
+                lines.append("learn: this task took \(trace.count) recorded steps; if it worked and may be asked for again, skills {action: \"save\", name, description} keeps them so do {run: name} repeats them in one call next time")
             }
             result.text = lines.joined(separator: "\n")
         }
