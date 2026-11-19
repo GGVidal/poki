@@ -24,6 +24,9 @@ final class LiveCore: CoreSession {
         // Read at each step, from the saved choice the Approvals page shows: Never Ask lets optional
         // steps go; payments, deletions and guarded apps still wait.
         config.approvalMode = { ApprovalClassifier.mode }
+        // Read at each run, from Settings › Models › Fast Decisions: nil until a model is picked, and
+        // a routine then stops where the screen differs, as it always did.
+        config.decider = { QuickFixes.decider }
         // Apps by name, from the apps Poki knows and the phone's own app list; the two speed-ups read
         // their Testing Options switch.
         config.resolveApp = { KnownApps.launchID($0) }

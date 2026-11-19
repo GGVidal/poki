@@ -373,6 +373,30 @@ on the phone; the next first `look` of a task in that app names the saved routin
   passed skips the pause before the final read. A step that would send input while Poki is in front
   stops the path, as a `do` sending it there is refused; a step not read for itself asks the runner
   which app is in front first. A swipe in a path takes no `in: n`.
+- **Intent.** Any action may carry `intent: "why"`; it is kept with the recorded step and is what a
+  fix is decided from.
+- **Fixes on the way, and fast decisions.** Where a step would stop, a run first applies what the routine
+  remembers from an earlier fix (a control that closed what was in the way, another form of the
+  target), with no model. Past that, when the owner has picked a decision model (there is no other
+  switch, and `CoreConfig.decider` is nil until then), the model is asked. It is picked in one of
+  two places on Settings › Models: under a model account (the account › Decisions: any account the
+  chat runs on, asked through `PromptDecider`, and for an OpenAI API key also Luna on OpenAI's
+  Decisions API, `POST /v1/decisions`), or under Local Models (Apple Intelligence, through
+  `PromptDecider`, which asks in one prompt, reads the JSON in the answer strictly, and sends
+  nothing out). An account's request goes from the phone straight to its provider. PokiCore also
+  speaks the System One format of TypeSafe's Jev and Cloudflare's Clef (`DeciderSettings`), which
+  the app does not offer for now. The request holds the goal, the step
+  wanted, and the screen's elements as text, with no picture and nothing from a secure field. The
+  options are built from the screen (the target under another name, close what is in the way, scroll,
+  wait, stop), so the answer is always one of them. It is acted on only at `DeciderPolicy`'s
+  confidence 0.6 and margin 0.15, at most twice a step and five times a run; a tap it leads to that
+  would need approval stops the run instead. A step whose target is missing asks once the screen
+  has held still for 0.7 s, in place of waiting its whole time; a screen still changing keeps the
+  step's whole time. A fix that led to a finished run is saved in the routine, and the answer
+  names each fix, how long the decision took and how sure it was. Two more uses, only with a
+  decider: a path target given as `{find: "what it is"}` is chosen from the screen (refused before
+  anything is sent when there is no decider), and a step's `check: "what should be true"` is one
+  yes or no after the step, where a clear no stops the run and an unsure answer is reported.
 - **Apps by name, and the session's app** (`CoreConfig.appNames`, on by default; a switch in the
   app's Testing Options). `{launch: "Clock"}` takes the name the iPhone shows as well as a bundle id,
   resolved by `CoreConfig.resolveApp` (the app backs it with the apps it knows, by the edition the

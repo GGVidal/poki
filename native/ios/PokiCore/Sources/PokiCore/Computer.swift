@@ -135,6 +135,8 @@ final class Computer: @unchecked Sendable {
     var sessionApp: (bundle: String, name: String, session: String?)?
     /// The last run or path ended on a check that found what it looked for on screen.
     var runEndedOnARead = false
+    /// Steps fixed on the way since PokiCore started (status says so).
+    var fixesMade = 0
 
     var lastElements: [Element] { listed.map(\.element) }
     var layout: Layout { Layout(all: lastAll, screen: size ?? ScreenSize(width: 10_000, height: 10_000)) }
