@@ -58,7 +58,7 @@ enum Harness {
     /// A result card's send button names the recipient only when the notes do (the card's description).
     private static let recipients = "When the owner asks to send something and neither the request nor the long-term notes name the recipient, ask the owner who to send it to before acting."
 
-    private static let replyApprovals = "Approvals in this chat come from the owner's messages. When a step is declined, ask in plain words whether to run that named step, and resend the identical step once confirmed."
+    private static let replyApprovals = "Approvals in this chat come from the owner's messages. When a step is declined, do not tell the owner to tap anything: ask in plain words whether to run that named step, and resend the identical step once confirmed."
 
     @MainActor private static func appIDs(for task: String) -> String? {
         let apps = AppIconStore.bundleIDs(namedIn: task).compactMap { KnownApps.byID[$0.lowercased()] }
