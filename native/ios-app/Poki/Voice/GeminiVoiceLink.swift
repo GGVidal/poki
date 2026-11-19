@@ -111,10 +111,13 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
             "systemInstruction": ["parts": [["text": instructions]]],
             "inputAudioTranscription": [String: Any](),
             "outputAudioTranscription": [String: Any](),
-            // Without it a talk ends after 15 minutes, or 2 once a screenshot has gone in.
-            "contextWindowCompression": ["slidingWindow": [String: Any]()],
-            "sessionResumption": resuming ? ["handle": resumeHandle ?? ""] : [String: Any](),
         ]
+        // Without it a talk ends after 15 minutes, or 2 once a screenshot has gone in.
+        let slidingWindow: [String: Any] = ["slidingWindow": [String: Any]()]
+        setup["contextWindowCompression"] = slidingWindow
+        var resumption: [String: Any] = [:]
+        if resuming, let resumeHandle { resumption["handle"] = resumeHandle }
+        setup["sessionResumption"] = resumption
         if !declarations.isEmpty {
             setup["tools"] = [["functionDeclarations": declarations]]
         }
