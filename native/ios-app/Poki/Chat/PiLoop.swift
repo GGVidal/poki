@@ -36,7 +36,7 @@ final class PiLoop {
     /// prompt, the tools and the conversation so far from the cache instead of paying for them again.
     /// `thinking` is `.off` for a one-line job that needs no reasoning.
     init(provider: ModelProvider, model: Model, tools: [ToolSpec], inSplitView: Bool = false, carrying messages: [AgentMessage] = [],
-         session: String? = nil, thinking: ThinkingLevel = .low,
+         session: String? = nil, thinking: PiSwiftAgent.ThinkingLevel = .low,
          perform: @escaping @MainActor (ToolCall) async -> PokiCore.ToolAnswer) {
         self.provider = provider
         self.model = model
