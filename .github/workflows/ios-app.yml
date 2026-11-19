@@ -236,6 +236,8 @@ jobs:
           mkdir -p build out
           VERSION="${RELEASE_VERSION:-$(cat native/ios-app/VERSION)}"
           BUILD="${RELEASE_BUILD:-${{ github.run_number }}}"
+          # A run without a release build number is a developer build (PokiDeveloperBuild in Info.plist).
+          DEVELOPER=$([ -n "${RELEASE_BUILD:-}" ] && echo NO || echo YES)
           for edition in local external; do
             project=Poki
             ipa=Poki-unsigned.ipa
@@ -244,7 +246,7 @@ jobs:
               -project "native/ios-app/$project.xcodeproj" -scheme Poki -configuration Release \
               -destination generic/platform=iOS -derivedDataPath "build/app-$edition" \
               CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO ARCHS=arm64 \
-              MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+              MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" POKI_DEVELOPER_BUILD="$DEVELOPER" \
               2>&1 | tee "build/app-$edition.log" | grep -E "error:|BUILD (SUCCEEDED|FAILED)|\*\* "
             native/ios-app/scripts/package-app.sh \
               "build/app-$edition/Build/Products/Release-iphoneos/Poki.app" \

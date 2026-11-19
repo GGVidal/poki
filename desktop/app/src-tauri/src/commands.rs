@@ -246,6 +246,15 @@ pub async fn install(app: AppHandle, state: State<'_, Shared>, udid: Option<Stri
 pub fn records() -> R<Vec<keeper::Record>> { Ok(keeper::all()?) }
 
 #[tauri::command]
+pub fn renewal_prefs() -> R<keeper::RenewalPrefs> { Ok(keeper::renewal_prefs()) }
+
+#[tauri::command]
+pub fn set_renewal_prefs(prefs: keeper::RenewalPrefs) -> R<keeper::RenewalPrefs> {
+    keeper::set_renewal_prefs(&prefs)?;
+    Ok(keeper::renewal_prefs())
+}
+
+#[tauri::command]
 pub async fn renew(app: AppHandle, state: State<'_, Shared>, udid: String) -> R<keeper::Record> {
     let r = reporter(&app, "renew");
     with_signer(&state, async |s| setup::renew(s, &udid, &r).await).await

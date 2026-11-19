@@ -371,3 +371,8 @@ struct BuildRef: Decodable, Equatable {
     var sha: String
     var pr: Int?
 }
+
+/// How renewals treat the build on the iPhone (the core's keeper::RenewalPrefs).
+struct RenewalPrefs: Codable, Equatable {
+    var updateOnRenew: Bool
+}

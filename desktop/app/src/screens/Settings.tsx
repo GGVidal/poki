@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, failureText, type Account, type AppInfo, type ChannelInfo, type UpdateInfo } from "../api";
+import { api, failureText, type Account, type AppInfo, type ChannelInfo, type RenewalPrefs, type UpdateInfo } from "../api";
 import { setLang, t, useLang } from "../i18n";
-import { Capsule, Card, Copy, displayVersion, ErrorBox, Field } from "../ui";
+import { Capsule, Card, Copy, displayVersion, ErrorBox, Field, Toggle } from "../ui";
 
 export default function Settings({ info }: { info: AppInfo | null }) {
   const lang = useLang();
@@ -12,8 +12,9 @@ export default function Settings({ info }: { info: AppInfo | null }) {
   const [error, setError] = useState<string | null>(null);
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [prompt, setPrompt] = useState<string | null>(null);
+  const [renewal, setRenewal] = useState<RenewalPrefs | null>(null);
   const load = () => api.account().then((a) => { setAcct(a); if (a.anisette.kind === "remote") setServer(a.anisette.url); }).catch(() => {});
-  useEffect(() => { load(); api.channels().then(setChannels).catch((e) => setError(failureText(e))); api.agentPrompt().then(setPrompt).catch(() => {}); }, []);
+  useEffect(() => { load(); api.channels().then(setChannels).catch((e) => setError(failureText(e))); api.agentPrompt().then(setPrompt).catch(() => {}); api.renewalPrefs().then(setRenewal).catch(() => {}); }, []);
   const chosen = channels.find((c) => c.selected);
   const system = acct?.anisette.kind === "system";
   return (
@@ -39,6 +40,8 @@ export default function Settings({ info }: { info: AppInfo | null }) {
           <span className="muted small">{chosen?.latest ? `${t("Newest Poki")}: ${chosen.latest.version} (${chosen.latest.build})` : t("None published")}</span>
         </div>
         {chosen?.latest?.source_notice && <p className="muted small">{chosen.latest.source_notice}</p>}
+        {renewal && <Toggle on={renewal.update_on_renew} onChange={(v) => api.setRenewalPrefs({ update_on_renew: v }).then(setRenewal).catch((e) => setError(failureText(e)))} label={t("Update Poki When Renewing")} />}
+        <p className="muted small">{t("When this is off, renewing signs the build that is on the iPhone again instead of the newest release. Test builds are always kept.")}</p>
       </Card>
       <Card>
         <h2>{t("Use an agent")}</h2>

@@ -88,6 +88,27 @@ final class SelfSigner {
     let expiry: Date? = SelfSigner.installedProfileExpiry() ?? SelfSigner.screenshotExpiry
     let installedVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     let installedBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+    /// This Poki was not built for a release (a test build from Actions or Xcode): its Info.plist says
+    /// PokiDeveloperBuild YES. Release builds say NO, and builds from before the key have none.
+    static let isDeveloperBuild = (Bundle.main.object(forInfoDictionaryKey: "PokiDeveloperBuild") as? String)?.uppercased() == "YES"
+
+    static let automaticUpdatesKey = "signing.automaticUpdates"
+    /// Poki downloads and signs a newer build from the release channel by itself (it still installs
+    /// only when the person taps Install). Off, Poki only renews the build that is on, and an update
+    /// comes only from Download and Install Update. Off by default on a developer build, so a newer
+    /// release does not stand ready to replace it.
+    var automaticUpdates: Bool = UserDefaults.standard.object(forKey: SelfSigner.automaticUpdatesKey) as? Bool ?? !SelfSigner.isDeveloperBuild {
+        didSet {
+            guard automaticUpdates != oldValue else { return }
+            UserDefaults.standard.set(automaticUpdates, forKey: Self.automaticUpdatesKey)
+            log.add("signing", "automatic updates \(automaticUpdates ? "on" : "off")")
+            if automaticUpdates {
+                maintain()
+            } else {
+                dropPreparedUpdate()
+            }
+        }
+    }
 
     /// The phone's own services (10.7.0.1 and the pairing file), when the loopback answers.
     var phone: () -> [String: Any]? = { nil }
@@ -376,6 +397,9 @@ final class SelfSigner {
         // A build that is already on, or older than what is on (Poki Setup installed a newer one
         // meanwhile), has nothing left to give.
         if let u = found["update"], !isNewer(version: u.version, build: u.build) { found["update"] = nil }
+        // With automatic updates off, an update left from an earlier launch does not stand ready in
+        // place of the renewal. Download and Install Update gets it again when the person asks.
+        if !automaticUpdates { found["update"] = nil }
         if let r = found["refresh"], let expiry, r.expires <= expiry.addingTimeInterval(3600) { found["refresh"] = nil }
         ready = found
     }
@@ -449,7 +473,7 @@ final class SelfSigner {
     /// the installed profile is close to expiring. Never installs.
     private func prepareDue() async {
         guard Self.shouldAllowAutoPrepare(canPrepare: canPrepare, needsCode: needsCode, rateLimited: rateLimited, working: working, lastFailure: lastPrepareFailure) else { return }
-        if updateNotReady {
+        if automaticUpdates, updateNotReady {
             await prepare(kind: "update", automatic: true)
             return
         }
@@ -465,7 +489,7 @@ final class SelfSigner {
     func downloadAndInstallUpdate() async {
         if updateNotReady { await prepare(kind: "update") }
         guard !updateNotReady, ready["update"] != nil, lastError == nil else { return }
-        await install()
+        await install(kind: "update")
     }
 
     func isNewer(_ rel: Release) -> Bool { isNewer(version: rel.version, build: rel.build) }
@@ -511,10 +535,20 @@ final class SelfSigner {
         }
     }
 
-    /// Installs the prepared build. iOS ends Poki when it lands; a notification brings it back.
-    func install() async {
+    /// A signed update that was prepared by itself is put away when the person turns automatic
+    /// updates off, so Install offers the renewal of the build that is on.
+    private func dropPreparedUpdate() {
+        guard working == nil, ready["update"] != nil else { return }
+        ready["update"] = nil
+        try? FileManager.default.removeItem(at: Self.home.appendingPathComponent("ready/update", isDirectory: true))
+        log.add("signing", "put away the prepared update")
+    }
+
+    /// Installs the prepared build (`kind`, or the next one). iOS ends Poki when it lands; a
+    /// notification brings it back.
+    func install(kind: String? = nil) async {
         guard installFinish == .idle else { return }
-        guard let p = next else { log.add("signing", "install tapped, but no build is ready"); return }
+        guard let p = kind.flatMap({ ready[$0] }) ?? next else { log.add("signing", "install tapped, but no build is ready"); return }
         log.add("signing", "install tapped: \(p.kind) \(p.version) (\(p.build))")
         guard isIdle() else {
             let why = busyReason() ?? ""

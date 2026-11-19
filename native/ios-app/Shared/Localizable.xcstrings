@@ -1,6 +1,54 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Automatic Updates" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动更新"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自動更新"
+          }
+        }
+      }
+    },
+    "When this is off, Poki only renews the build that is installed, so a test build stays in place. You can still download an update on Signing & Updates." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭后，Poki 只会为已安装的版本续期，测试版本会保持不变。你仍可以在“安装签名与更新”中下载更新。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "關閉後，Poki 只會為已安裝的版本續期，測試版本會保持不變。你仍可以在「安裝簽名與更新」中下載更新。"
+          }
+        }
+      }
+    },
+    "Poki automatically prepares a renewal %lld days before signing expires. Automatic updates are off. Nothing is installed until you tap Install." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 会在安装签名到期前 %lld 天自动准备续期。自动更新已关闭。轻点“安装”后才会开始安装。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 會在安裝簽名到期前 %lld 天自動準備續期。自動更新已關閉。點一下「安裝」後才會開始安裝。"
+          }
+        }
+      }
+    },
     "You said" : {
       "extractionState" : "manual",
       "localizations" : {

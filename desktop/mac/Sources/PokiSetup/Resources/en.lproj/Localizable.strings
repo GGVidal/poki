@@ -307,3 +307,6 @@
 "this Apple Account" = "this Apple Account";
 "this device" = "this device";
 "try %lld" = "try %lld";
+"Update Poki When Renewing" = "Update Poki When Renewing";
+"Poki Updates" = "Poki Updates";
+"When this is off, renewing signs the build that is on the iPhone again instead of the newest release. Test builds are always kept." = "When this is off, renewing signs the build that is on the iPhone again instead of the newest release. Test builds are always kept.";

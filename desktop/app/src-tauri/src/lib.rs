@@ -72,6 +72,8 @@ pub fn run() {
             commands::set_anisette,
             commands::install,
             commands::records,
+            commands::renewal_prefs,
+            commands::set_renewal_prefs,
             commands::renew,
             commands::forget_phone,
             commands::latest_release,

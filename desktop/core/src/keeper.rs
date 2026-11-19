@@ -76,6 +76,79 @@ pub fn note_check(udid: &str, error: Option<String>) -> Result<()> {
 
 pub fn due() -> Result<Vec<Record>> { Ok(all()?.into_iter().filter(|r| r.is_due()).collect()) }
 
+/// How renewals treat the build on the phone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenewalPrefs {
+    /// A renewal of a release build signs the newest release instead (an update). Off, it signs the
+    /// build that is on again. Test builds are always signed again, whatever this says.
+    #[serde(default = "yes")]
+    pub update_on_renew: bool,
+}
+
+fn yes() -> bool { true }
+
+impl Default for RenewalPrefs {
+    fn default() -> Self { RenewalPrefs { update_on_renew: true } }
+}
+
+fn prefs_path() -> Result<std::path::PathBuf> { Ok(paths::state_dir()?.join("renewals.json")) }
+
+pub fn renewal_prefs() -> RenewalPrefs {
+    prefs_path().ok().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn set_renewal_prefs(prefs: &RenewalPrefs) -> Result<()> {
+    std::fs::write(prefs_path()?, serde_json::to_vec_pretty(prefs)?)?;
+    Ok(())
+}
+
+/// The unsigned build this computer last put on a phone, kept so a renewal can sign the same build
+/// again (a test build or an IPA chosen by hand is not on any release to fetch again).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KeptBuild {
+    pub version: String,
+    pub build: String,
+    pub ipa: std::path::PathBuf,
+    pub signing_zip: Option<std::path::PathBuf>,
+}
+
+fn kept_dir(udid: &str) -> Result<std::path::PathBuf> {
+    let safe: String = udid.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    Ok(paths::state_dir()?.join("kept").join(safe))
+}
+
+/// Keeps a copy of the unsigned IPA (and its signing zip) that was just installed on `udid`.
+pub fn keep_build(udid: &str, version: &str, build: &str, ipa: &std::path::Path, signing_zip: Option<&std::path::Path>) -> Result<KeptBuild> {
+    let dir = kept_dir(udid)?;
+    std::fs::create_dir_all(&dir)?;
+    let kept_ipa = dir.join("Poki.ipa");
+    let kept_zip = dir.join("Poki-signing.zip");
+    if ipa != kept_ipa {
+        let part = dir.join("Poki.ipa.part");
+        std::fs::copy(ipa, &part)?;
+        std::fs::rename(&part, &kept_ipa)?;
+    }
+    match signing_zip {
+        Some(z) if z != kept_zip => {
+            std::fs::copy(z, &kept_zip)?;
+        }
+        Some(_) => {}
+        None => {
+            let _ = std::fs::remove_file(&kept_zip);
+        }
+    }
+    let kept = KeptBuild { version: version.into(), build: build.into(), ipa: kept_ipa, signing_zip: signing_zip.map(|_| kept_zip) };
+    std::fs::write(dir.join("kept.json"), serde_json::to_vec_pretty(&kept)?)?;
+    Ok(kept)
+}
+
+/// The build kept for `udid`, when its files are still there.
+pub fn kept_build(udid: &str) -> Option<KeptBuild> {
+    let dir = kept_dir(udid).ok()?;
+    let kept: KeptBuild = serde_json::from_slice(&std::fs::read(dir.join("kept.json")).ok()?).ok()?;
+    (kept.ipa.is_file() && kept.signing_zip.as_ref().is_none_or(|z| z.is_file())).then_some(kept)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +185,28 @@ mod tests {
         assert_eq!(d[0].udid, "B");
         remove("A").unwrap();
         assert_eq!(all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn keeps_the_installed_build_and_the_renewal_choice() {
+        let (_lock, dir) = crate::paths::test_home();
+        assert!(renewal_prefs().update_on_renew);
+        set_renewal_prefs(&RenewalPrefs { update_on_renew: false }).unwrap();
+        assert!(!renewal_prefs().update_on_renew);
+
+        assert!(kept_build("U1").is_none());
+        let ipa = dir.path().join("Poki-unsigned.ipa");
+        std::fs::write(&ipa, b"ipa").unwrap();
+        let zip = dir.path().join("Poki-signing.zip");
+        std::fs::write(&zip, b"zip").unwrap();
+        let kept = keep_build("U1", "0.4.5", "50", &ipa, Some(&zip)).unwrap();
+        assert_eq!(kept_build("U1"), Some(kept.clone()));
+        assert_eq!(std::fs::read(&kept.ipa).unwrap(), b"ipa");
+        // Signing the kept copy again keeps it, and a build without a signing zip drops the old zip.
+        let again = keep_build("U1", "0.4.5", "50", &kept.ipa, None).unwrap();
+        assert_eq!(again.signing_zip, None);
+        assert_eq!(std::fs::read(&again.ipa).unwrap(), b"ipa");
+        std::fs::remove_file(&again.ipa).unwrap();
+        assert!(kept_build("U1").is_none());
     }
 }
