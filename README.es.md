@@ -35,7 +35,7 @@ Poki es un agente de código abierto para iPhone que opera todo tu iPhone por ti
 ## Por qué Poki
 
 - **Evita saltar entre apps para tareas cotidianas.** Pide ayuda a Poki en el chat, mantén pulsado el botón de Acción o usa Siri para buscar en el navegador integrado, consultar el tiempo o crear una nota. En iPhone Duo, Poki trabaja en dos apps a la vez en Vista dividida.
-- **Ejecuta tareas repetidas con un toque o con la voz.** En lugar de repetir los mismos pasos cada día, abre una habilidad o hábito guardado desde la pantalla de inicio o inicia una charla por voz mientras la Dynamic Island muestra cada paso.
+- **Ejecuta tareas repetidas con un toque o con la voz.** En lugar de repetir los mismos pasos cada día, abre una habilidad guardada desde la pantalla de inicio o inicia una charla por voz mientras la Dynamic Island muestra cada paso.
 - **Automatiza tu teléfono real sin dejar un ordenador encendido.** Tras instalarlo una vez desde Mac o Windows, Poki funciona de forma independiente en el iPhone y se detiene en la pantalla bloqueada o en la Dynamic Island cuando hace falta tu aprobación.
 
 ## Cómo usarlo
