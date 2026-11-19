@@ -1,10 +1,9 @@
 import XCTest
 @testable import Poki
 
-/// The bear's blink on the model's timeline: the eyes are swapped from one frame to the next (open,
-/// a line, a smile), and between two frames neither shows, so the eye pads were blank and white for a
-/// moment in every blink. And it was over in a quarter of a second, the closed eye's arc there at once,
-/// and now and then it blinked twice.
+/// The bear's blink on the model's timeline: brisk asymmetric close/open, whole-frame swaps between
+/// pupils and closed arcs (never flashing blank eye pads), randomized intervals, and occasional
+/// natural double-blinks.
 final class BearClipsTests: XCTestCase {
     private let clips = try! BearClips(json: Data("""
     {"fps": 30, "clips": {"idle": [95, 105], "wave": [20, 94], "blink": [5, 12]}, "design_hello_frame": 42}
@@ -20,35 +19,43 @@ final class BearClipsTests: XCTestCase {
         XCTAssertEqual(clips.time(.blink, after: 1) * 30, 12, accuracy: 1e-9)
     }
 
-    /// One pace: 0.14 s down, 0.06 s shut, 0.2 s up. Shut, the eye is a low arc out of the line the pupil
-    /// has become, not the smile.
-    func testTheBlinkIsFourTenthsOfASecondAndShutsToALine() throws {
-        XCTAssertEqual(clips.length(.blink), 0.4, accuracy: 1e-9)
-        let beforeSwap = BearBlink.at(BearBlink.closing - 0.001), shut = BearBlink.at(BearBlink.closing + 0.03)
+    /// Asymmetric organic blink: closes briskly, opens more gently, shuts to a flat line, and returns open.
+    func testTheBlinkIsAsymmetricAndShutsToALine() throws {
+        XCTAssertLessThan(BearBlink.closing, BearBlink.opening)
+        XCTAssertEqual(clips.length(.blink), BearBlink.length, accuracy: 1e-9)
+        let beforeSwap = BearBlink.at(BearBlink.closing - 0.001), shut = BearBlink.at(BearBlink.closing + 0.015)
         XCTAssertLessThan(try XCTUnwrap(beforeSwap.pupils), 0.15)
         XCTAssertLessThanOrEqual(try XCTUnwrap(shut.arcs), 0.3)
-        XCTAssertEqual(BearBlink.at(BearBlink.length), BearBlink.Moment(frame: 7, pupils: 1, arcs: nil))
+        let end = BearBlink.at(BearBlink.length)
+        XCTAssertEqual(end.frame, 7, accuracy: 1e-9)
+        XCTAssertEqual(end.pupils, 1)
+        XCTAssertNil(end.arcs)
     }
 
-    /// Ten minutes standing, with the head turning for a second every five: it blinks once at a time,
-    /// 4 to 7 seconds apart, and never while the head turns. It used to blink twice in a row now and then.
-    func testItBlinksOnceAtATimeAndNotWhileTurning() {
+    /// Ten minutes standing, with the head turning for a second every five: blinks occur at randomized
+    /// gaps with occasional double-blinks, and regular single blinks wait while the head turns.
+    func testItBlinksAtRandomIntervalsWithOccasionalDoubleBlinks() {
         var playback = BearPlayback()
         playback.play([.idle], at: 0)
         var starts: [TimeInterval] = [], last: BearMove = .idle
         for frame in 0..<(600 * 30) {
             let now = Double(frame) / 30
             let turning = now.truncatingRemainder(dividingBy: 5) < 1
+            let wasFollowUp = playback.blinkCycle == .pendingFollowUp
             _ = playback.time(at: now, clips: clips, steady: !turning)
             if playback.move == .blink, last != .blink {
-                XCTAssertFalse(turning, "a blink at \(now) s while the head turns")
+                if !wasFollowUp {
+                    XCTAssertFalse(turning, "a regular blink at \(now) s while the head turns")
+                }
                 starts.append(now)
             }
             last = playback.move
         }
-        XCTAssertGreaterThan(starts.count, 60)
-        for (a, b) in zip(starts, starts.dropFirst()) {
-            XCTAssertGreaterThanOrEqual(b - a - BearBlink.length, 3.9, "blinks at \(a) s and \(b) s")
-        }
+        XCTAssertGreaterThan(starts.count, 90)
+        let gaps = zip(starts, starts.dropFirst()).map { $1 - $0 - BearBlink.length }
+        let doubleBlinks = gaps.filter { $0 < 0.30 }
+        let normalBlinks = gaps.filter { $0 >= 1.9 }
+        XCTAssertGreaterThanOrEqual(doubleBlinks.count, 5, "expected occasional natural double blinks")
+        XCTAssertGreaterThan(normalBlinks.count, 60, "expected randomized single-blink gaps")
     }
 }
