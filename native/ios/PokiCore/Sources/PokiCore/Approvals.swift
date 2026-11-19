@@ -117,15 +117,15 @@ public struct Approval: Sendable, Equatable {
     var scope: ApprovalScope
     var workspaceSession: String?
 
-    func covers(_ other: ApprovalScope, workspaceSession session: String?, now: Date) -> Bool {
-        workspaceSession == session && scope.covers(other, elapsed: now.timeIntervalSince(requested))
+    func covers(_ other: ApprovalScope, workspaceSession session: String?) -> Bool {
+        workspaceSession == session && scope.covers(other)
     }
 }
 
 /// What an approval covers: the actions with the pane and app they were for, and the controls they
-/// name as the owner was shown them. A control's label may differ later only by a countdown that ran
-/// on (`Countdown.sameControl`); a count, an amount, an account or a time of day that changed is
-/// another control.
+/// name as the read at `readAt` showed them. A control's label may differ in a later read only by a
+/// countdown that ran on with the time between the two reads (`Countdown.sameControl`); a count, an
+/// amount, an account or a time of day that changed is another control.
 struct ApprovalScope: Sendable, Equatable {
     struct Target: Sendable, Equatable {
         var ref: Int
@@ -135,9 +135,11 @@ struct ApprovalScope: Sendable, Equatable {
     }
     var actions: String
     var targets: [Target] = []
+    /// When the targets were read (`now()`).
+    var readAt: Double = 0
 
-    func covers(_ other: ApprovalScope, elapsed: Double) -> Bool {
-        actions == other.actions && Self.sameTargets(targets, other.targets, elapsed: elapsed)
+    func covers(_ other: ApprovalScope) -> Bool {
+        actions == other.actions && Self.sameTargets(targets, other.targets, elapsed: other.readAt - readAt)
     }
 
     static func sameTargets(_ before: [Target], _ after: [Target], elapsed: Double) -> Bool {
@@ -149,12 +151,13 @@ struct ApprovalScope: Sendable, Equatable {
 }
 
 /// Time readings in a label (0:59, 1:02:03, 59 s, 59 秒) and whether a change in them is a countdown
-/// running on.
+/// running on. Only the form of a reading makes it one; words around it (left, remaining, in) do not.
 enum Countdown {
-    private static let mark = "\u{23F1}"
+    /// A private-use character, so it cannot be part of a label.
+    private static let mark = "\u{E000}"
     private static let reading = try! NSRegularExpression(pattern: "(?<![0-9.,:])(?:[0-9]{1,2}(?::[0-9]{2}){1,2}|[0-9]+ ?(?:s|sec|secs|seconds|秒)(?![A-Za-z]))(?![0-9:])")
-    /// Words that say a reading counts down: "in 0:59", "0:59 left", "remaining", 剩余, 还剩, "59秒后".
-    private static let says = try! NSRegularExpression(pattern: "(?i)剩余|还剩|\\b(?:remaining|left)\\b|\\bin ?\u{23F1}|\u{23F1} ?后")
+    /// How far a countdown may be off the time that passed: the reads' own time and a second's rounding.
+    static let slack = 2.0
 
     /// The label with each reading replaced by a mark, and the readings in seconds.
     static func readings(_ label: String) -> (masked: String, seconds: [Int]) {
@@ -171,16 +174,15 @@ enum Countdown {
         return (masked + ns.substring(from: last), seconds)
     }
 
-    /// The same control read again: the same text, or text that differs only in the readings of a
-    /// countdown. A label that says it counts down may show any time. Otherwise each reading may only
-    /// have gone down, by no more than the time that passed (and a read's slack), so a time of day
-    /// that moved (10:30 to 14:30) is another control.
+    /// The same control read again `elapsed` seconds later: the same text, or text whose readings
+    /// that changed each went down by the time that passed, within `slack`. A reading that went up,
+    /// went down faster or slower than the clock, or a time of day that moved (10:30 to 14:30) makes
+    /// it another control.
     static func sameControl(before: String, after: String, elapsed: Double) -> Bool {
         guard before != after else { return true }
         let b = readings(before), a = readings(after)
-        guard b.masked == a.masked, !b.seconds.isEmpty else { return false }
-        if says.firstMatch(in: b.masked, range: NSRange(location: 0, length: (b.masked as NSString).length)) != nil { return true }
-        return zip(b.seconds, a.seconds).allSatisfy { old, new in new <= old && Double(old - new) <= elapsed + 2 }
+        guard b.masked == a.masked else { return false }
+        return zip(b.seconds, a.seconds).allSatisfy { old, new in old == new || abs(Double(old - new) - elapsed) <= slack }
     }
 }
 
@@ -314,7 +316,7 @@ final class Approvals: @unchecked Sendable {
 
         case .withdrawIfMismatch(let scope, let workspaceSession, let keepingGrant):
             func matches(_ approval: Approval) -> Bool {
-                scope.map { approval.covers($0, workspaceSession: workspaceSession, now: now) } ?? false
+                scope.map { approval.covers($0, workspaceSession: workspaceSession) } ?? false
             }
             switch state {
             case .pending(let approval, _) where !matches(approval):
@@ -349,7 +351,7 @@ final class Approvals: @unchecked Sendable {
 
         case .consumeGrant(let scope, let workspaceSession):
             if case .granted(let approval) = state,
-               approval.covers(scope, workspaceSession: workspaceSession, now: now) {
+               approval.covers(scope, workspaceSession: workspaceSession) {
                 state = .idle
                 effects.consumed = approval
             }

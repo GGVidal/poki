@@ -1095,10 +1095,28 @@ final class ApprovalTests: XCTestCase {
         XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the grant was lost when the countdown ticked")
     }
 
-    /// An approval covers the count, the amount and the account it showed: any other number asks again.
+    /// The owner approves a tap on `approved`; the same place then reads `shown`, and the agent taps
+    /// the number the read gives it. Returns the answer and the taps sent.
+    private func grantThenTap(approved: String, shown: String) async throws -> (text: String, taps: Int) {
+        let wda = FakeWDA()
+        wda.source([("Button", approved), ("Button", "Cancel")], app: "Shop")
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let approval = try XCTUnwrap(core.pendingApproval, approved)
+        core.resolveApproval(id: approval.id, approved: true)
+
+        wda.source([("Button", shown), ("Button", "Cancel")], app: "Shop")
+        let read = await core.call("look", [:])
+        // The number the read gives the new label (a new number when it is another control).
+        let line = try XCTUnwrap(read.text.split(separator: "\n").first { $0.contains("Button \"\(shown)\"") }, read.text)
+        let ref = try XCTUnwrap(Int(line.drop { !$0.isNumber }.prefix { $0.isNumber }), String(line))
+        let run = await core.call("do", ["actions": [["tap": .number(Double(ref))]]])
+        return (run.text, wda.bodies("POST /wda/tap").count)
+    }
+
     /// An approval covers the count, the amount, the account and the time of day it showed. Only a
-    /// countdown may run on: one that says so (in, left, remaining, 剩余, 还剩, …后) or an m:ss that
-    /// went down.
+    /// countdown may run on, by the time that passed (here a second, read at once).
     func testAGrantCoversAChangedLabelOnlyWhenACountdownRanOn() async throws {
         let cases: [(approved: String, shown: String, covered: Bool)] = [
             ("Delete 3 Photos", "Delete 300 Photos", false),
@@ -1108,34 +1126,95 @@ final class ApprovalTests: XCTestCase {
             ("Pay $20 for the 10:30 table", "Pay $20 for the 14:30 table", false),
             ("支付 20 元 预订 10:30", "支付 20 元 预订 14:30", false),
             ("Pay $5, offer ends in 0:59", "Pay $5, offer ends in 0:58", true),
-            ("Pay $5 (1:00 left)", "Pay $5 (0:58 left)", true),
+            ("Pay $5 (1:00 left)", "Pay $5 (0:59 left)", true),
             ("支付 5 元，剩余 0:59", "支付 5 元，剩余 0:58", true),
             ("支付 5 元，59秒后失效", "支付 5 元，58秒后失效", true),
             ("Confirm payment 04:59", "Confirm payment 04:58", true),
         ]
         for c in cases {
-            let wda = FakeWDA()
-            wda.source([("Button", c.approved), ("Button", "Cancel")], app: "Shop")
-            let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
-            _ = await core.call("look", [:])
-            _ = await core.call("do", ["actions": [["tap": 1]]])
-            let approval = try XCTUnwrap(core.pendingApproval, c.approved)
-            core.resolveApproval(id: approval.id, approved: true)
-
-            wda.source([("Button", c.shown), ("Button", "Cancel")], app: "Shop")
-            let read = await core.call("look", [:])
-            // The number the read gives the new label (a new number when it is another control).
-            let line = try XCTUnwrap(read.text.split(separator: "\n").first { $0.contains("Button \"\(c.shown)\"") }, read.text)
-            let ref = try XCTUnwrap(Int(line.drop { !$0.isNumber }.prefix { $0.isNumber }), String(line))
-            let run = await core.call("do", ["actions": [["tap": .number(Double(ref))]]])
+            let (text, taps) = try await grantThenTap(approved: c.approved, shown: c.shown)
             if c.covered {
-                XCTAssertFalse(run.isError, "\(c.approved) -> \(c.shown): \(run.text)")
-                XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "the grant for \(c.approved) was lost when it read \(c.shown)")
+                XCTAssertEqual(taps, 1, "the grant for \(c.approved) was lost when it read \(c.shown): \(text)")
             } else {
-                XCTAssertTrue(run.text.contains("approval_required"), "\(c.approved) -> \(c.shown): \(run.text)")
-                XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, "the grant for \(c.approved) pressed \(c.shown)")
+                XCTAssertTrue(text.contains("approval_required"), "\(c.approved) -> \(c.shown): \(text)")
+                XCTAssertEqual(taps, 0, "the grant for \(c.approved) pressed \(c.shown)")
             }
         }
+    }
+
+    /// Words such as "left" or 剩余 next to another number, or "check in" and 后 next to a time of
+    /// day, do not make a time of day a countdown.
+    func testATimeOfDayNextToCountdownWordsStillAsksAgain() async throws {
+        let cases = [
+            ("支付 20 元 预订 10:30 场，剩余 3 张", "支付 20 元 预订 14:30 场，剩余 3 张"),
+            ("支付 20 元 预订 10:30 场，还剩 3 张", "支付 20 元 预订 14:30 场，还剩 3 张"),
+            ("Pay $20 for the 10:30 show, 5 seats left", "Pay $20 for the 14:30 show, 5 seats left"),
+            ("Pay $20 for the 10:30 show (3 remaining)", "Pay $20 for the 14:30 show (3 remaining)"),
+            ("Pay $20, check in 10:30", "Pay $20, check in 14:30"),
+            ("支付 20 元，10:30后入场", "支付 20 元，14:30后入场"),
+            ("支付 20 元，剩余 0:59，10:30 场", "支付 20 元，剩余 0:58，14:30 场"),
+        ]
+        for (approved, shown) in cases {
+            let (text, taps) = try await grantThenTap(approved: approved, shown: shown)
+            XCTAssertTrue(text.contains("approval_required"), "\(approved) -> \(shown): \(text)")
+            XCTAssertEqual(taps, 0, "the grant for \(approved) pressed \(shown)")
+        }
+    }
+
+    /// A button whose text ends in a countdown that runs on the real clock from 4:59.
+    private func runningCountdown(_ wda: FakeWDA, _ text: String) {
+        let start = Date()
+        wda.set("GET /source") { _ in
+            let left = max(0, 299 - Int(Date().timeIntervalSince(start)))
+            let rows = [("Button", String(format: "%@ %02d:%02d", text, left / 60, left % 60)), ("Button", "Cancel")]
+            let children: [JSON] = rows.enumerated().map { index, row in
+                ["type": .string("XCUIElementType\(row.0)"), "label": .string(row.1), "rect": ["x": 16, "y": .number(Double(100 + index * 44)), "width": 358, "height": 44]]
+            }
+            return (200, ["value": ["type": "XCUIElementTypeApplication", "label": "Shop", "rect": ["x": 0, "y": 0, "width": 390, "height": 844], "children": .array(children)]])
+        }
+    }
+
+    /// The agent thinks 5 s between its read and its do. The countdown ran 5 s by then: the card
+    /// stays when the do is sent again, and the approval runs it. Real time, because the code
+    /// before this fix measured it on the system clock.
+    func testAnUnmarkedCountdownKeepsItsCardAndGrantWhileTheAgentThinks() async throws {
+        let wda = FakeWDA()
+        runningCountdown(wda, "Confirm payment")
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 0 }
+        _ = await core.call("look", [:])
+        try await Task.sleep(nanoseconds: 5_000_000_000)
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        let card = try XCTUnwrap(core.pendingApproval)
+
+        _ = await core.call("look", [:])
+        _ = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertEqual(core.pendingApproval?.id, card.id, "the waiting card was replaced although only the countdown ran on")
+
+        core.resolveApproval(id: card.id, approved: true)
+        _ = await core.call("look", [:])
+        let run = await core.call("do", ["actions": [["tap": 1]]])
+        XCTAssertFalse(run.isError, run.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, "a countdown that ran at real speed lost its grant")
+    }
+
+    /// The do waits 20 s for the owner while the booked time moves back ten minutes: as m:ss that is
+    /// 10 s in 20 s, not a countdown, so the grant for 10:30 does not pay for 10:20.
+    func testATimeOfDayThatMovesBackDuringTheApprovalWaitAsksAgain() async throws {
+        let wda = FakeWDA()
+        wda.source([("Button", "Pay $20 for the 10:30 table"), ("Button", "Cancel")], app: "Shop")
+        let (core, _, _) = makeCore(wda) { $0.approvalWait = 20; $0.toolDeadline = 40 }
+        _ = await core.call("look", [:])
+        wda.source([("Button", "Pay $20 for the 10:20 table"), ("Button", "Cancel")], app: "Shop")  // changes while the owner is asked
+        let first = await core.call("do", ["actions": [["tap": 1]]])
+        let approval = try XCTUnwrap(core.pendingApproval, first.text)
+        core.resolveApproval(id: approval.id, approved: true)
+
+        let read = await core.call("look", [:])
+        let line = try XCTUnwrap(read.text.split(separator: "\n").first { $0.contains("10:20 table") }, read.text)
+        let ref = try XCTUnwrap(Int(line.drop { !$0.isNumber }.prefix { $0.isNumber }), String(line))
+        let run = await core.call("do", ["actions": [["tap": .number(Double(ref))]]])
+        XCTAssertTrue(run.text.contains("approval_required"), run.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 0, "the grant for \(approval.summary) paid for the 10:20 table")
     }
 
     func testAVoiceResendKeepsItsWaitingCard() async throws {
