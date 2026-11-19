@@ -538,7 +538,9 @@ struct BearIdleJoints {
                 joints[fore.left].rotation *= simd_quatf(angle: (down + Self.work.tap * pose.tap) * pose.work, axis: [1, 0, 0])
             }
         }
-        if pose.smile > 0 { smile(pose.smile, in: &joints) } else if pose.shut > 0 { smile(pose.shut, top: 0.2, in: &joints) }
+        // A spring that has played a smile leaves a sliver of it behind, which must not count as a smile and
+        // keep the eyes open when the state shuts them.
+        if pose.smile > 0.001 { smile(pose.smile, in: &joints) } else if pose.shut > 0.001 { smile(pose.shut, top: 0.2, in: &joints) }
     }
 
     /// The eyes going to the smile's arcs and back as a blink does: the pupils flatten to a line, are
