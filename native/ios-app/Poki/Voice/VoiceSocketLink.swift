@@ -11,6 +11,8 @@ struct VoiceSocketControls {
     var playPCM16LE: @MainActor (Data) -> Void
     var clearPlayback: @MainActor () -> Void
     var emitEvent: @MainActor ([String: Any]) -> Void
+    /// Moves the talk to a new connection, for an adapter whose server ends connections before talks.
+    var reconnect: @MainActor () -> Void = {}
 }
 
 @MainActor
@@ -25,9 +27,18 @@ protocol VoiceSocketAdapter: AnyObject {
     func translateServerMessage(_ message: [String: Any], controls: VoiceSocketControls)
     /// `closeCode` is 0 and `closeReason` empty when the server sent no close frame.
     func mapConnectionError(_ error: Error, httpStatus: Int, closeCode: Int, closeReason: String) -> Error
+    /// Whether a new connection can pick this talk up where the old one left it.
+    var canResume: Bool { get }
+    /// Called before the handshake of a connection that picks the talk up.
+    func prepareToResume()
+    /// Called once that connection carries the talk.
+    func resumed(controls: VoiceSocketControls)
 }
 
 extension VoiceSocketAdapter {
+    var canResume: Bool { false }
+    func prepareToResume() {}
+    func resumed(controls _: VoiceSocketControls) {}
     var inputSampleRate: Double { 16_000 }
     var outputSampleRate: Double { 24_000 }
 }
@@ -104,6 +115,11 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
     private var microphoneOn = false
     private var observers: [NSObjectProtocol] = []
     private var restart: Task<Void, Never>?
+    private var secret = ""
+    private var resume: Task<Void, Never>?
+    /// Why the connection closed while a new one was being opened for the talk.
+    private var lostReason: String?
+    private var lastResume = Date.distantPast
 
     @MainActor
     init(adapter: VoiceSocketAdapter,
@@ -126,6 +142,7 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
     @MainActor
     func connect(secret: String, microphone: Bool, direct _: Bool) async throws {
         guard !closed else { throw CancellationError() }
+        self.secret = secret
         let request = try adapter.makeRequest(secret: secret)
         let socket = network.webSocketTask(with: request)
         self.socket = socket
@@ -150,16 +167,87 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
         guard !closed, self.socket === socket else { throw CancellationError() }
         try startAudio(microphone: microphone)
         onEvent(["type": "session.created"])
+        read(socket)
+    }
+
+    @MainActor
+    private func read(_ socket: URLSessionWebSocketTask) {
         reader = Task { @MainActor [weak self] in
             do {
                 while !Task.isCancelled {
                     guard let self else { return }
                     let message = try await self.receive(socket)
+                    guard self.socket === socket else { return }
                     self.handleServerMessage(message)
                 }
             } catch {
-                guard let self else { return }
-                self.reportFailure(socket, reason: "voice WebSocket closed: \(self.mapFailure(error, socket).localizedDescription)")
+                guard let self, !self.closed, self.socket === socket else { return }
+                let reason = "voice WebSocket closed: \(self.mapFailure(error, socket).localizedDescription)"
+                // A new connection is already being opened: it carries the talk on, or reports this.
+                if self.resume != nil {
+                    self.lostReason = reason
+                    return
+                }
+                // The server ended the connection, not the talk: pick the talk up on a new one, unless
+                // the last one picked up only a moment ago and this would go round in circles.
+                if self.adapter.canResume, Date().timeIntervalSince(self.lastResume) > 5 {
+                    self.lostReason = reason
+                    self.reconnect()
+                } else {
+                    self.reportFailure(socket, reason: reason)
+                }
+            }
+        }
+    }
+
+    /// Opens a new connection that picks the talk up, then moves to it. The old one keeps receiving
+    /// until then, when it still can; what Poki sends meanwhile waits for the new one.
+    @MainActor
+    private func reconnect() {
+        guard !closed, resume == nil, adapter.canResume, let old = socket else { return }
+        resume = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.resume = nil }
+            do {
+                self.adapter.prepareToResume()
+                let next = self.network.webSocketTask(with: try self.adapter.makeRequest(secret: self.secret))
+                next.resume()
+                let timeout = Task {
+                    try await Task.sleep(for: .seconds(15))
+                    next.cancel(with: .goingAway, reason: nil)
+                }
+                defer { timeout.cancel() }
+                do {
+                    try await self.adapter.handshake(
+                        send: { frame in try await next.send(.string(frame)) },
+                        receive: { try await self.receive(next) }
+                    )
+                } catch {
+                    next.cancel(with: .goingAway, reason: nil)
+                    throw error
+                }
+                guard !self.closed, self.socket === old else {
+                    next.cancel(with: .goingAway, reason: nil)
+                    return
+                }
+                self.reader?.cancel()
+                self.socket = next
+                self.lostReason = nil
+                self.lastResume = Date()
+                old.cancel(with: .normalClosure, reason: nil)
+                self.adapter.resumed(controls: self.controls)
+                self.read(next)
+                self.resume = nil
+                self.drain()
+            } catch {
+                guard !self.closed, self.socket === old else { return }
+                self.resume = nil
+                // The old connection may still be carrying the talk; then it reports its own end.
+                if let lost = self.lostReason {
+                    self.reportFailure(old, reason: lost)
+                } else {
+                    self.drain()
+                }
             }
         }
     }
@@ -207,25 +295,38 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
     private func enqueueWireObject(_ object: [String: Any]) -> Bool {
         guard let socket, !closed,
               let data = try? JSONSerialization.data(withJSONObject: object) else { return false }
+        // While the talk moves to a new connection, what Poki sends waits for it; the oldest
+        // microphone audio makes room when the wait is long.
+        if resume != nil {
+            if pending.count >= Self.maxPendingOutbound { pending.removeFirst() }
+            pending.append(String(decoding: data, as: UTF8.self))
+            return true
+        }
         guard pending.count < Self.maxPendingOutbound else {
             reportFailure(socket, reason: "voice network is too slow")
             return false
         }
         pending.append(String(decoding: data, as: UTF8.self))
-        if writer == nil {
-            writer = Task { @MainActor [weak self] in
-                guard let self else { return }
-                defer { self.writer = nil }
-                do {
-                    while self.socket === socket, !self.pending.isEmpty, !Task.isCancelled {
-                        try await socket.send(.string(self.pending.removeFirst()))
-                    }
-                } catch {
-                    self.reportFailure(socket, reason: "could not send to voice WebSocket")
+        drain()
+        return true
+    }
+
+    /// Sends what is waiting, in order, on the connection that carries the talk now.
+    @MainActor
+    private func drain() {
+        guard writer == nil, resume == nil, !closed, let socket, !pending.isEmpty else { return }
+        writer = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.writer = nil }
+            do {
+                while self.socket === socket, self.resume == nil, !self.pending.isEmpty, !Task.isCancelled {
+                    try await socket.send(.string(self.pending.removeFirst()))
                 }
+            } catch {
+                // A send that fails while the reader is already moving the talk is the reader's to report.
+                if self.resume == nil { self.reportFailure(socket, reason: "could not send to voice WebSocket") }
             }
         }
-        return true
     }
 
     @MainActor
@@ -233,7 +334,8 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
         VoiceSocketControls(
             playPCM16LE: { [weak self] data in self?.play(data) },
             clearPlayback: { [weak self] in self?.clearPlayback() },
-            emitEvent: { [weak self] event in self?.onEvent(event) }
+            emitEvent: { [weak self] event in self?.onEvent(event) },
+            reconnect: { [weak self] in self?.reconnect() }
         )
     }
 
@@ -503,6 +605,8 @@ final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, 
         playback.invalidate()
         restart?.cancel()
         restart = nil
+        resume?.cancel()
+        resume = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         if tapInstalled {

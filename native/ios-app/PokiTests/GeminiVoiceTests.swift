@@ -331,7 +331,7 @@ final class GeminiVoiceTests: XCTestCase {
             clearTap: { _, _, _ in .clear },
             phoneTool: { name, args in
                 ranCalls.append((name, args))
-                return ("Settings is open on screen", false)
+                return ("Settings is open on screen", false, nil)
             },
             connection: { onEvent, onClosed in
                 let adapter = VoiceDirect.geminiAdapter()
@@ -350,7 +350,9 @@ final class GeminiVoiceTests: XCTestCase {
         XCTAssertNotNil(setup["inputAudioTranscription"])
         XCTAssertNotNil(setup["outputAudioTranscription"])
         let declarations = try XCTUnwrap(((setup["tools"] as? [[String: Any]])?.first)?["functionDeclarations"] as? [[String: Any]])
-        XCTAssertEqual(declarations.map { $0["name"] as? String }, ["get_ios_version", "look", "do"])
+        XCTAssertEqual(declarations.map { $0["name"] as? String }, ["get_ios_version", "look", "open_app", "do"])
+        XCTAssertNotNil(setup["contextWindowCompression"], "a talk with screenshots outlasts two minutes")
+        XCTAssertNotNil(setup["sessionResumption"])
         XCTAssertTrue(declarations.allSatisfy { $0["parametersJsonSchema"] != nil })
 
         activeLink.receiveServer(["serverContent": ["inputTranscription": ["text": "打开"]]])
@@ -404,7 +406,7 @@ final class GeminiVoiceTests: XCTestCase {
         var activeLink: AdapterHarnessConnection!
         let voice = VoiceModel(
             clearTap: { _, _, _ in .clear },
-            phoneTool: { _, _ in ("", false) },
+            phoneTool: { _, _ in ("", false, nil) },
             connection: { onEvent, onClosed in
                 let adapter = VoiceDirect.geminiAdapter()
                 let conn = AdapterHarnessConnection(adapter: adapter, onEvent: onEvent, onClosed: onClosed)
@@ -447,6 +449,101 @@ final class GeminiVoiceTests: XCTestCase {
         voice.stop()
     }
 
+    private func geminiTalk(time: FakeTime, phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("", false, nil) }) async throws -> (VoiceModel, AdapterHarnessConnection) {
+        try ModelKeys.save("test-gemini-placeholder", for: .gemini)
+        VoiceDirect.setEnabled(true, for: .gemini)
+        var activeLink: AdapterHarnessConnection!
+        let voice = VoiceModel(
+            clearTap: { _, _, _ in .clear },
+            phoneTool: phoneTool,
+            connection: { onEvent, onClosed in
+                let conn = AdapterHarnessConnection(adapter: VoiceDirect.geminiAdapter(), onEvent: onEvent, onClosed: onClosed)
+                activeLink = conn
+                return conn
+            },
+            time: time.clock
+        )
+        await voice.start(microphone: false)
+        return (voice, activeLink)
+    }
+
+    func testTheScreenshotBehindAToolAnswerGoesToGeminiAsAVideoFrame() async throws {
+        let time = FakeTime()
+        // A small JPEG header is enough: the adapter passes the bytes on as they are.
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0] + [UInt8](repeating: 0x11, count: 64))
+        let (voice, link) = try await geminiTalk(time: time, phoneTool: { _, _ in ("Settings is open on screen", false, jpeg) })
+        link.receiveServer(["toolCall": ["functionCalls": [["id": "call-look-1", "name": "look", "args": [String: Any]()]]]])
+        await time.settle()
+
+        let responseAt = try XCTUnwrap(link.wireFrames.firstIndex { $0["toolResponse"] != nil })
+        let frameAt = try XCTUnwrap(link.wireFrames.firstIndex { ($0["realtimeInput"] as? [String: Any])?["video"] != nil })
+        XCTAssertGreaterThan(frameAt, responseAt)
+        let video = try XCTUnwrap((link.wireFrames[frameAt]["realtimeInput"] as? [String: Any])?["video"] as? [String: Any])
+        XCTAssertEqual(video["mimeType"] as? String, "image/jpeg")
+        XCTAssertFalse((video["data"] as? String ?? "").isEmpty)
+        XCTAssertFalse((video["data"] as? String ?? "").hasPrefix("data:"))
+        voice.stop()
+    }
+
+    func testGeminiVoiceActivityStartsAndEndsTheHearingBeforeAnyWordIsTranscribed() async throws {
+        let time = FakeTime()
+        let (voice, link) = try await geminiTalk(time: time)
+        link.receiveServer(["voiceActivity": ["type": "ACTIVITY_START"]])
+        XCTAssertEqual(voice.phase, .hearing)
+        link.receiveServer(["voiceActivity": ["type": "ACTIVITY_END"]])
+        XCTAssertEqual(voice.phase, .thinking)
+        // The words arrive after the end of speech and still land as one line, with no second hearing.
+        link.receiveServer(["serverContent": ["inputTranscription": ["text": "几点了"]]])
+        XCTAssertEqual(voice.phase, .thinking)
+        let pcm = Data([0x10, 0x00, 0x20, 0x00]).base64EncodedString()
+        link.receiveServer(["serverContent": ["modelTurn": ["parts": [["inlineData": ["mimeType": "audio/pcm;rate=24000", "data": pcm]]]]]])
+        XCTAssertEqual(voice.lines.filter { $0.role == .you }.map(\.text), ["几点了"])
+        XCTAssertEqual(voice.talkState, .speaking)
+        voice.stop()
+    }
+
+    func testAnExtendedThinkingTurnStillInProgressDoesNotEndTheAnswer() async throws {
+        let time = FakeTime()
+        let (voice, link) = try await geminiTalk(time: time)
+        link.receiveServer(["serverContent": ["inputTranscription": ["text": "帮我查一下"]]])
+        let pcm = Data([0x10, 0x00, 0x20, 0x00]).base64EncodedString()
+        link.receiveServer(["serverContent": ["modelTurn": ["parts": [["inlineData": ["mimeType": "audio/pcm;rate=24000", "data": pcm]]]]]])
+        var events: [String] = []
+        let adapter = try XCTUnwrap(link.adapter as? GeminiVoiceAdapter)
+        let controls = VoiceSocketControls(playPCM16LE: { _ in }, clearPlayback: {}, emitEvent: { events.append($0["type"] as? String ?? "") })
+        adapter.translateServerMessage(["serverContent": ["turnComplete": true, "interactionStatus": "IN_PROGRESS"]], controls: controls)
+        XCTAssertFalse(events.contains("response.done"))
+        adapter.translateServerMessage(["serverContent": ["turnComplete": true, "interactionStatus": "IDLE"]], controls: controls)
+        XCTAssertTrue(events.contains("response.done"))
+        voice.stop()
+    }
+
+    func testAGeminiTalkPicksUpFromItsLastHandleOnANewConnection() async throws {
+        let adapter = VoiceDirect.geminiAdapter()
+        XCTAssertFalse(adapter.canResume)
+        var asked = 0
+        var events: [String] = []
+        let controls = VoiceSocketControls(playPCM16LE: { _ in }, clearPlayback: {}, emitEvent: { events.append($0["type"] as? String ?? "") }, reconnect: { asked += 1 })
+        // Without a handle, a goAway is only the end of the connection.
+        adapter.translateServerMessage(["goAway": ["timeLeft": "5s"]], controls: controls)
+        XCTAssertEqual(asked, 0)
+        adapter.translateServerMessage(["sessionResumptionUpdate": ["resumable": false, "newHandle": ""]], controls: controls)
+        XCTAssertFalse(adapter.canResume)
+        adapter.translateServerMessage(["sessionResumptionUpdate": ["resumable": true, "newHandle": "handle-1"]], controls: controls)
+        XCTAssertTrue(adapter.canResume)
+        adapter.translateServerMessage(["goAway": ["timeLeft": "5s"]], controls: controls)
+        XCTAssertEqual(asked, 1)
+
+        let first = try XCTUnwrap(adapter.setupPayload()["setup"] as? [String: Any])
+        XCTAssertNil((first["sessionResumption"] as? [String: Any])?["handle"])
+        adapter.prepareToResume()
+        let next = try XCTUnwrap(adapter.setupPayload()["setup"] as? [String: Any])
+        XCTAssertEqual((next["sessionResumption"] as? [String: Any])?["handle"] as? String, "handle-1")
+        adapter.resumed(controls: controls)
+        let later = try XCTUnwrap(adapter.setupPayload()["setup"] as? [String: Any])
+        XCTAssertNil((later["sessionResumption"] as? [String: Any])?["handle"])
+    }
+
     func testGeminiAccountEnablesLiveVoiceAndTalkHereWithoutBreakingOpenAI() async throws {
         XCTAssertTrue(ModelAccounts.canTalkLive(.openai))
         XCTAssertTrue(ModelAccounts.canTalkLive(.gemini))
@@ -469,7 +566,7 @@ final class GeminiVoiceTests: XCTestCase {
         let time = FakeTime()
         let voice = VoiceModel(
             clearTap: { _, _, _ in .clear },
-            phoneTool: { _, _ in ("", false) },
+            phoneTool: { _, _ in ("", false, nil) },
             connection: { onEvent, onClosed in
                 let adapter = VoiceDirect.geminiAdapter()
                 return AdapterHarnessConnection(adapter: adapter, onEvent: onEvent, onClosed: onClosed)
@@ -510,7 +607,7 @@ final class GeminiVoiceTests: XCTestCase {
 
         let voice = VoiceModel(
             clearTap: { _, _, _ in .clear },
-            phoneTool: { _, _ in ("", false) },
+            phoneTool: { _, _ in ("", false, nil) },
             connection: { onEvent, onClosed in VoiceDirect.makeConnection(for: .gemini, onEvent: onEvent, onClosed: onClosed) },
             time: FakeTime().clock
         )

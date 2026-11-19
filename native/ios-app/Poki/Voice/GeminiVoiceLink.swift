@@ -49,12 +49,24 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
         var nextCallSequence = 0
         var pendingContextPrompt = false
         var pendingPCMInput = false
+        /// Gemini said the person stopped talking; their words may still be arriving.
+        var speechEnded = false
+        /// Gemini reports voice activity itself, so transcription no longer has to stand in for it.
+        var reportsVoiceActivity = false
+        /// Between Gemini's ACTIVITY_START and ACTIVITY_END, whatever Poki was doing.
+        var voiceActive = false
     }
 
     let model: String
     let instructions: String
     let tools: [[String: Any]]
     private var state = TurnState()
+    /// The newest handle Gemini gave for picking this talk up on a new connection (about every ten
+    /// minutes Gemini ends the connection, not the talk).
+    private var resumeHandle: String?
+    private var resuming = false
+
+    var canResume: Bool { resumeHandle != nil }
 
     init(model: String = GeminiVoiceAdapter.defaultModel,
          instructions: String,
@@ -99,6 +111,9 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
             "systemInstruction": ["parts": [["text": instructions]]],
             "inputAudioTranscription": [String: Any](),
             "outputAudioTranscription": [String: Any](),
+            // Without it a talk ends after 15 minutes, or 2 once a screenshot has gone in.
+            "contextWindowCompression": ["slidingWindow": [String: Any]()],
+            "sessionResumption": resuming ? ["handle": resumeHandle ?? ""] : [String: Any](),
         ]
         if !declarations.isEmpty {
             setup["tools"] = [["functionDeclarations": declarations]]
@@ -115,6 +130,7 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
             if message["setupComplete"] != nil {
                 return
             }
+            noteResumption(message)
             if let error = message["error"] as? [String: Any] {
                 let code = error["code"] as? Int ?? 0
                 let reason = GeminiVoiceFailure.redact(error["message"] as? String ?? "setup rejected")
@@ -123,6 +139,29 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
                 }
                 throw GeminiVoiceFailure.rejected(code, reason)
             }
+        }
+    }
+
+    /// The next handshake picks the talk up from the last handle instead of starting a new one.
+    func prepareToResume() { resuming = resumeHandle != nil }
+
+    /// The talk goes on over a new connection. An answer cut off by the change is over; the person's
+    /// turn, if they were mid sentence, is heard again from the new connection's audio.
+    func resumed(controls: VoiceSocketControls) {
+        resuming = false
+        flushOutputTranscript(controls: controls)
+        state.dropModelAudio = false
+        state.interruptedTurn = false
+        if let activeID = state.activeResponseID {
+            state.activeResponseID = nil
+            controls.emitEvent(["type": "response.done", "response": ["id": activeID]])
+        }
+    }
+
+    private func noteResumption(_ message: [String: Any]) {
+        guard let update = message["sessionResumptionUpdate"] as? [String: Any] else { return }
+        if update["resumable"] as? Bool == true, let handle = update["newHandle"] as? String, !handle.isEmpty {
+            resumeHandle = handle
         }
     }
 
@@ -180,10 +219,20 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
                     ],
                 ]]
             }
-            // TODO: unverified against a real key. Notes go out as clientContent with turnComplete false and
-            // only complete on the next response.create; a note with no response.create after it (the
-            // carry-over note at the start of a second talk, Stop talking) may leave Gemini waiting.
+            // Notes go out as clientContent with turnComplete false: Gemini 3.8 Live takes clientContent
+            // during the whole talk, adds it to the conversation and starts no answer until turnComplete,
+            // which the next response.create sends. A note with no response.create after it (the carry-over
+            // note at the start of a second talk, Stop talking) is context for the person's next turn.
             if itemType == "message", let content = item["content"] as? [[String: Any]] {
+                // The screenshot behind a tool answer. Gemini takes pictures as video frames, one a
+                // second at most, and VoiceModel sends one per tool answer.
+                let frames: [[String: Any]] = content.compactMap { part in
+                    guard part["type"] as? String == "input_image",
+                          let url = part["image_url"] as? String,
+                          let image = Self.inlineImage(url) else { return nil }
+                    return ["realtimeInput": ["video": image]]
+                }
+                if !frames.isEmpty { return frames }
                 let audioFrames: [[String: Any]] = content.compactMap { part in
                     guard part["type"] as? String == "input_audio",
                           let encoded = part["audio"] as? String else { return nil }
@@ -232,7 +281,27 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
         }
     }
 
+    /// "data:image/jpeg;base64,…" as Gemini's inline data.
+    static func inlineImage(_ dataURL: String) -> [String: Any]? {
+        guard dataURL.hasPrefix("data:"), let comma = dataURL.firstIndex(of: ",") else { return nil }
+        let header = dataURL[dataURL.index(dataURL.startIndex, offsetBy: 5)..<comma]
+        guard header.hasSuffix(";base64") else { return nil }
+        let mime = String(header.dropLast(7))
+        let data = String(dataURL[dataURL.index(after: comma)...])
+        guard mime.hasPrefix("image/"), !data.isEmpty else { return nil }
+        return ["data": data, "mimeType": mime]
+    }
+
     func translateServerMessage(_ message: [String: Any], controls: VoiceSocketControls) {
+        noteResumption(message)
+        // Gemini is about to end this connection (it does about every ten minutes): move the talk to a
+        // new one while this one still works.
+        if message["goAway"] != nil, canResume { controls.reconnect() }
+
+        if let activity = message["voiceActivity"] as? [String: Any], let type = activity["type"] as? String {
+            handleVoiceActivity(type, controls: controls)
+        }
+
         if let cancel = message["toolCallCancellation"] as? [String: Any],
            let ids = cancel["ids"] as? [String] {
             state.cancelledCallIDs.formUnion(ids)
@@ -268,6 +337,30 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
         return GeminiVoiceFailure.connection
     }
 
+    /// Gemini's own word on when the person starts and stops talking. A start over Poki's answer is left
+    /// to `interrupted`, which says Gemini really stopped for it.
+    private func handleVoiceActivity(_ type: String, controls: VoiceSocketControls) {
+        state.reportsVoiceActivity = true
+        switch type {
+        case "ACTIVITY_START":
+            state.voiceActive = true
+            state.speechEnded = false
+            guard !state.userSpeaking, state.activeResponseID == nil else { return }
+            state.userSpeaking = true
+            state.dropModelAudio = false
+            controls.emitEvent(["type": "input_audio_buffer.speech_started"])
+        case "ACTIVITY_END":
+            state.voiceActive = false
+            guard state.userSpeaking, state.activeResponseID == nil else { return }
+            state.userSpeaking = false
+            state.speechEnded = true
+            controls.emitEvent(["type": "input_audio_buffer.speech_stopped"])
+            controls.emitEvent(["type": "conversation.item.added", "item": ["role": "user"]])
+        default:
+            break
+        }
+    }
+
     private func handleServerContent(_ content: [String: Any], usage: [String: Any]?, controls: VoiceSocketControls) {
         if content["interrupted"] as? Bool == true {
             state.interruptedTurn = true
@@ -284,11 +377,11 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
             }
         }
 
-        // TODO: Gemini sends no speech-start event with automatic VAD, so the first transcription chunk
-        // stands in for it; its latency against a real key is unmeasured.
+        // Until Gemini has reported voice activity in this talk, the first transcription chunk stands in
+        // for the start of speech.
         if let inputTrans = content["inputTranscription"] as? [String: Any],
            let chunk = inputTrans["text"] as? String, !chunk.isEmpty {
-            if !state.userSpeaking, state.activeResponseID == nil {
+            if !state.reportsVoiceActivity, !state.userSpeaking, state.activeResponseID == nil {
                 state.userSpeaking = true
                 state.dropModelAudio = false
                 controls.emitEvent(["type": "input_audio_buffer.speech_started"])
@@ -342,9 +435,12 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
             }
         }
 
-        // TODO: gemini-3.8-live-extended-thinking can send turnComplete with interactionStatus IN_PROGRESS
-        // while it still reasons; that is read here as the end of the answer.
-        if turnComplete {
+        // Extended Thinking can send turnComplete with interactionStatus IN_PROGRESS while it still
+        // reasons or waits for a tool: the answer is not over until the status is anything else.
+        let stillWorking = content["interactionStatus"] as? String == "IN_PROGRESS"
+        if turnComplete, stillWorking {
+            state.interruptedTurn = false
+        } else if turnComplete {
             state.interruptedTurn = false
             state.dropModelAudio = false
             state.outputTranscript = ""
@@ -357,6 +453,11 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
                     response["usage"] = mappedUsage
                 }
                 controls.emitEvent(["type": "response.done", "response": response])
+            }
+            // The person began talking as the answer ended, so Gemini had nothing to interrupt.
+            if state.voiceActive, !state.userSpeaking {
+                state.userSpeaking = true
+                controls.emitEvent(["type": "input_audio_buffer.speech_started"])
             }
         }
     }
@@ -415,12 +516,13 @@ final class GeminiVoiceAdapter: VoiceSocketAdapter {
     /// Whether the person was speaking until now.
     @discardableResult
     private func finishUserSpeechIfNeeded(controls: VoiceSocketControls) -> Bool {
-        let wasSpeaking = state.userSpeaking
-        if wasSpeaking {
+        let wasSpeaking = state.userSpeaking || state.speechEnded
+        if state.userSpeaking {
             state.userSpeaking = false
             controls.emitEvent(["type": "input_audio_buffer.speech_stopped"])
             controls.emitEvent(["type": "conversation.item.added", "item": ["role": "user"]])
         }
+        state.speechEnded = false
         let trimmed = state.userTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         state.userTranscript = ""
         if !trimmed.isEmpty {
