@@ -1506,6 +1506,17 @@ final class InProcessPasscodeTests: XCTestCase {
         await fulfillment(of: [opened], timeout: 0.5)
     }
 
+    /// Poki Anytime starts from the Action Button with Poki in the background: the owner's press is the
+    /// owner asking for automation again after cancelling iOS's passcode screen, as turning Poki on is.
+    func testAnOwnerStartedTalkAfterACancelledPasscodeAsksForAutomationAgain() async {
+        await declinePasscodeAfterBoot()
+        model.stopSession()
+
+        model.prepareForTask(byOwner: true)
+
+        XCTAssertFalse(InProcessWDA.automationDeclined, "The owner starting a talk asks for automation again, as turning Poki on does")
+    }
+
     /// iOS keeps its passcode screen up for about a minute. An agent's next step in that time is
     /// told to wait: it never brings up a second session (and a second screen).
     func testAnotherRequestWhileThePasscodeScreenIsUpOpensNoSecondSession() async throws {

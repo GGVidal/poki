@@ -662,11 +662,13 @@ final class AppModel {
 
     /// Mounting developer services does not enable Automation Mode. A probe-driven model already
     /// has the session the probe opened, so it starts no other.
-    func prepareForTask() {
+    /// byOwner: the owner's own gesture started this (Poki Anytime's Action Button). The composer, a
+    /// mic tap and a task's start do not say so: they leave a cancelled passcode screen cancelled.
+    func prepareForTask(byOwner: Bool = false) {
         guard automationPath == .inProcess, setup.loopback != .none, !probeDriven else { return }
         if !sessionOn {
             pendingPrepareForTask = true
-            startSession()
+            startSession(byOwner: byOwner)
         }
         guard sessionOn, runnerPaused else { return }
         pendingPrepareForTask = false
