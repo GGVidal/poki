@@ -1,0 +1,623 @@
+// Adapted from pull request #61 (commit deab77e3, native/ios-app/Poki/Voice/GrokVoiceLink.swift,
+// by xiaweiyi713), under this repository's AGPL-3.0-only license.
+// Changed: extracted the provider-agnostic WebSocket and AVAudioEngine PCM transport behind
+// VoiceSocketAdapter, moved microphone capture to 16 kHz Int16 mono PCM with voice processing enabled
+// before graph wiring, and removed playback-time microphone blocking so hardware echo cancellation
+// keeps barge-in active while Poki speaks.
+import AVFoundation
+import Foundation
+
+struct VoiceSocketControls {
+    var playPCM16LE: @MainActor (Data) -> Void
+    var clearPlayback: @MainActor () -> Void
+    var emitEvent: @MainActor ([String: Any]) -> Void
+    /// Moves the talk to a new connection, for an adapter whose server ends connections before talks.
+    var reconnect: @MainActor () -> Void = {}
+}
+
+@MainActor
+protocol VoiceSocketAdapter: AnyObject {
+    var inputSampleRate: Double { get }
+    var outputSampleRate: Double { get }
+    func makeRequest(secret: String) throws -> URLRequest
+    func handshake(send: (String) async throws -> Void,
+                   receive: () async throws -> [String: Any]) async throws
+    func encodeMicrophonePCM(_ pcm16LE: Data) -> [String: Any]?
+    func translateClientEvent(_ event: [String: Any], controls: VoiceSocketControls) -> [[String: Any]]
+    func translateServerMessage(_ message: [String: Any], controls: VoiceSocketControls)
+    /// `closeCode` is 0 and `closeReason` empty when the server sent no close frame.
+    func mapConnectionError(_ error: Error, httpStatus: Int, closeCode: Int, closeReason: String) -> Error
+    /// Whether a new connection can pick this talk up where the old one left it.
+    var canResume: Bool { get }
+    /// Called before the handshake of a connection that picks the talk up.
+    func prepareToResume()
+    /// Called once that connection carries the talk.
+    func resumed(controls: VoiceSocketControls)
+}
+
+extension VoiceSocketAdapter {
+    var canResume: Bool { false }
+    func prepareToResume() {}
+    func resumed(controls _: VoiceSocketControls) {}
+    var inputSampleRate: Double { 16_000 }
+    var outputSampleRate: Double { 24_000 }
+}
+
+struct VoiceSocketPlaybackQueue {
+    enum Transition: Equatable {
+        case started
+        case stopped
+        case cleared
+    }
+
+    private(set) var generation = 0
+    private(set) var pendingBuffers = 0
+
+    mutating func enqueue() -> (generation: Int, transition: Transition?) {
+        let wasIdle = pendingBuffers == 0
+        pendingBuffers += 1
+        return (generation, wasIdle ? .started : nil)
+    }
+
+    mutating func complete(generation finished: Int) -> Transition? {
+        guard finished == generation, pendingBuffers > 0 else { return nil }
+        pendingBuffers -= 1
+        return pendingBuffers == 0 ? .stopped : nil
+    }
+
+    mutating func clear() -> Transition {
+        generation += 1
+        pendingBuffers = 0
+        return .cleared
+    }
+
+    mutating func invalidate() {
+        generation += 1
+        pendingBuffers = 0
+    }
+}
+
+enum VoiceSocketFailure: LocalizedError {
+    case microphone
+
+    var errorDescription: String? {
+        switch self {
+        case .microphone:
+            AppLocalization.text(LocalizedStringResource("Poki could not prepare the microphone for live voice."))
+        }
+    }
+}
+
+final class VoiceSocketLink: NSObject, VoiceConnection, URLSessionTaskDelegate, @unchecked Sendable {
+    private static let maxPendingOutbound = 120
+
+    private let adapter: VoiceSocketAdapter
+    private let onEvent: @MainActor ([String: Any]) -> Void
+    private let onClosed: @MainActor (String) -> Void
+    private let engine = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    private let playbackFormat: AVAudioFormat
+    private lazy var network = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+
+    private var socket: URLSessionWebSocketTask?
+    private var reader: Task<Void, Never>?
+    private var writer: Task<Void, Never>?
+    private var pending: [String] = []
+    private var playback = VoiceSocketPlaybackQueue()
+    private var closed = false
+    private var audioStarted = false
+    private var playerAttached = false
+    private var tapInstalled = false
+    private var remoteVolume: Float = 1.0
+    private var capturedBytes = 0
+    private var capturedChunks = 0
+    private var playedBytes = 0
+    private var microphoneOn = false
+    private var observers: [NSObjectProtocol] = []
+    private var restart: Task<Void, Never>?
+    private var secret = ""
+    private var resume: Task<Void, Never>?
+    /// Why the connection closed while a new one was being opened for the talk.
+    private var lostReason: String?
+    private var lastResume = Date.distantPast
+
+    @MainActor
+    init(adapter: VoiceSocketAdapter,
+         onEvent: @escaping @MainActor ([String: Any]) -> Void,
+         onClosed: @escaping @MainActor (String) -> Void) {
+        self.adapter = adapter
+        self.onEvent = onEvent
+        self.onClosed = onClosed
+        self.playbackFormat = AVAudioFormat(standardFormatWithSampleRate: adapter.outputSampleRate, channels: 1)!
+        super.init()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        // Credentials ride on the handshake request; never follow a redirect to another host.
+        completionHandler(nil)
+    }
+
+    @MainActor
+    func connect(secret: String, microphone: Bool, direct _: Bool) async throws {
+        guard !closed else { throw CancellationError() }
+        self.secret = secret
+        let request = try adapter.makeRequest(secret: secret)
+        let socket = network.webSocketTask(with: request)
+        self.socket = socket
+        socket.resume()
+        let timeout = Task {
+            try await Task.sleep(for: .seconds(15))
+            socket.cancel(with: .goingAway, reason: nil)
+        }
+        defer { timeout.cancel() }
+        do {
+            try await adapter.handshake(
+                send: { frame in try await socket.send(.string(frame)) },
+                receive: { try await self.receive(socket) }
+            )
+        } catch {
+            if closed || Task.isCancelled { throw CancellationError() }
+            let failure = mapFailure(error, socket)
+            socket.cancel(with: .goingAway, reason: nil)
+            self.socket = nil
+            throw failure
+        }
+        guard !closed, self.socket === socket else { throw CancellationError() }
+        try startAudio(microphone: microphone)
+        onEvent(["type": "session.created"])
+        read(socket)
+    }
+
+    @MainActor
+    private func read(_ socket: URLSessionWebSocketTask) {
+        reader = Task { @MainActor [weak self] in
+            do {
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    let message = try await self.receive(socket)
+                    guard self.socket === socket else { return }
+                    self.handleServerMessage(message)
+                }
+            } catch {
+                guard let self, !self.closed, self.socket === socket else { return }
+                let reason = "voice WebSocket closed: \(self.mapFailure(error, socket).localizedDescription)"
+                // A new connection is already being opened: it carries the talk on, or reports this.
+                if self.resume != nil {
+                    self.lostReason = reason
+                    return
+                }
+                // The server ended the connection, not the talk: pick the talk up on a new one, unless
+                // the last one picked up only a moment ago and this would go round in circles.
+                if self.adapter.canResume, Date().timeIntervalSince(self.lastResume) > 5 {
+                    self.lostReason = reason
+                    self.reconnect()
+                } else {
+                    self.reportFailure(socket, reason: reason)
+                }
+            }
+        }
+    }
+
+    /// Opens a new connection that picks the talk up, then moves to it. The old one keeps receiving
+    /// until then, when it still can; what Poki sends meanwhile waits for the new one.
+    @MainActor
+    private func reconnect() {
+        guard !closed, resume == nil, adapter.canResume, let old = socket else { return }
+        resume = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.resume = nil }
+            do {
+                self.adapter.prepareToResume()
+                let next = self.network.webSocketTask(with: try self.adapter.makeRequest(secret: self.secret))
+                next.resume()
+                let timeout = Task {
+                    try await Task.sleep(for: .seconds(15))
+                    next.cancel(with: .goingAway, reason: nil)
+                }
+                defer { timeout.cancel() }
+                do {
+                    try await self.adapter.handshake(
+                        send: { frame in try await next.send(.string(frame)) },
+                        receive: { try await self.receive(next) }
+                    )
+                } catch {
+                    next.cancel(with: .goingAway, reason: nil)
+                    throw error
+                }
+                guard !self.closed, self.socket === old else {
+                    next.cancel(with: .goingAway, reason: nil)
+                    return
+                }
+                self.reader?.cancel()
+                self.socket = next
+                self.lostReason = nil
+                self.lastResume = Date()
+                old.cancel(with: .normalClosure, reason: nil)
+                self.adapter.resumed(controls: self.controls)
+                self.read(next)
+                self.resume = nil
+                self.drain()
+            } catch {
+                guard !self.closed, self.socket === old else { return }
+                self.resume = nil
+                // The old connection may still be carrying the talk; then it reports its own end.
+                if let lost = self.lostReason {
+                    self.reportFailure(old, reason: lost)
+                } else {
+                    self.drain()
+                }
+            }
+        }
+    }
+
+    /// The server's reason (a rejected key, a used-up quota) rides on the close frame or the HTTP status.
+    @MainActor
+    private func mapFailure(_ error: Error, _ socket: URLSessionWebSocketTask) -> Error {
+        let status = (socket.response as? HTTPURLResponse)?.statusCode ?? 0
+        let reason = socket.closeReason.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        return adapter.mapConnectionError(error, httpStatus: status, closeCode: socket.closeCode.rawValue, closeReason: reason)
+    }
+
+    @MainActor
+    private func receive(_ socket: URLSessionWebSocketTask) async throws -> [String: Any] {
+        let message = try await socket.receive()
+        let data: Data
+        switch message {
+        case .string(let text): data = Data(text.utf8)
+        case .data(let bytes): data = bytes
+        @unknown default: return [:]
+        }
+        return (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    @discardableResult
+    func send(_ event: [String: Any]) -> Bool {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated { sendOnMain(event) }
+        }
+        Task { @MainActor [weak self] in _ = self?.sendOnMain(event) }
+        return true
+    }
+
+    @MainActor
+    private func sendOnMain(_ event: [String: Any]) -> Bool {
+        guard socket != nil, !closed else { return false }
+        let frames = adapter.translateClientEvent(event, controls: controls)
+        for frame in frames {
+            if !enqueueWireObject(frame) { return false }
+        }
+        return true
+    }
+
+    @MainActor
+    private func enqueueWireObject(_ object: [String: Any]) -> Bool {
+        guard let socket, !closed,
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return false }
+        // While the talk moves to a new connection, what Poki sends waits for it; the oldest
+        // microphone audio makes room when the wait is long.
+        if resume != nil {
+            if pending.count >= Self.maxPendingOutbound { pending.removeFirst() }
+            pending.append(String(decoding: data, as: UTF8.self))
+            return true
+        }
+        guard pending.count < Self.maxPendingOutbound else {
+            reportFailure(socket, reason: "voice network is too slow")
+            return false
+        }
+        pending.append(String(decoding: data, as: UTF8.self))
+        drain()
+        return true
+    }
+
+    /// Sends what is waiting, in order, on the connection that carries the talk now.
+    @MainActor
+    private func drain() {
+        guard writer == nil, resume == nil, !closed, let socket, !pending.isEmpty else { return }
+        writer = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.writer = nil }
+            do {
+                while self.socket === socket, self.resume == nil, !self.pending.isEmpty, !Task.isCancelled {
+                    try await socket.send(.string(self.pending.removeFirst()))
+                }
+            } catch {
+                // A send that fails while the reader is already moving the talk is the reader's to report.
+                if self.resume == nil { self.reportFailure(socket, reason: "could not send to voice WebSocket") }
+            }
+        }
+    }
+
+    @MainActor
+    private var controls: VoiceSocketControls {
+        VoiceSocketControls(
+            playPCM16LE: { [weak self] data in self?.play(data) },
+            clearPlayback: { [weak self] in self?.clearPlayback() },
+            emitEvent: { [weak self] event in self?.onEvent(event) },
+            reconnect: { [weak self] in self?.reconnect() }
+        )
+    }
+
+    @MainActor
+    private func handleServerMessage(_ message: [String: Any]) {
+        guard !closed else { return }
+        adapter.translateServerMessage(message, controls: controls)
+    }
+
+    @MainActor
+    private func reportFailure(_ socket: URLSessionWebSocketTask, reason: String) {
+        guard !closed, self.socket === socket else { return }
+        closeOnMain()
+        onClosed(reason)
+    }
+
+    @MainActor
+    private func startAudio(microphone: Bool) throws {
+        let audio = AVAudioSession.sharedInstance()
+        if microphone {
+            try? audio.setActive(false)
+            try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            try audio.setActive(true)
+            let input = engine.inputNode
+            // Enable hardware acoustic echo cancellation before wiring nodes, because voice processing
+            // reconfigures the audio engine's I/O unit graph.
+            #if targetEnvironment(simulator)
+            try? input.setVoiceProcessingEnabled(true)
+            #else
+            try input.setVoiceProcessingEnabled(true)
+            #endif
+        } else {
+            try audio.setCategory(.playback, mode: .default)
+            try audio.setActive(true)
+        }
+        audioStarted = true
+        microphoneOn = microphone
+
+        if !playerAttached {
+            engine.attach(player)
+            engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
+            playerAttached = true
+        }
+        player.volume = remoteVolume
+        try runEngine()
+        watchAudio()
+    }
+
+    /// Taps the microphone in the format the hardware has now and starts the engine. Called again after
+    /// a route change, since headphones or a car change the microphone's sample rate.
+    @MainActor
+    private func runEngine() throws {
+        if microphoneOn {
+            let input = engine.inputNode
+            if tapInstalled {
+                input.removeTap(onBus: 0)
+                tapInstalled = false
+            }
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0,
+                  let pcm = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: adapter.inputSampleRate, channels: 1, interleaved: false),
+                  let converter = AVAudioConverter(from: format, to: pcm) else {
+                #if targetEnvironment(simulator)
+                engine.prepare()
+                try engine.start()
+                player.play()
+                return
+                #else
+                throw VoiceSocketFailure.microphone
+                #endif
+            }
+            Self.installTap(input, format: format, pcm: pcm, converter: converter) { [weak self] data in
+                guard let self, !self.closed else { return }
+                self.capturedBytes += data.count
+                self.capturedChunks += 1
+                if let frame = self.adapter.encodeMicrophonePCM(data) {
+                    _ = self.enqueueWireObject(frame)
+                }
+            }
+            tapInstalled = true
+        }
+
+        engine.prepare()
+        try engine.start()
+        player.play()
+    }
+
+    /// A route change (headphones, a car) stops the engine, and a phone call or Siri interrupts the
+    /// audio session. Either way the talk would stay silent until it ended, so the engine starts again.
+    @MainActor
+    private func watchAudio() {
+        guard observers.isEmpty else { return }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.restartAudio(reactivate: false) }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended
+            MainActor.assumeIsolated {
+                if ended { self?.restartAudio(reactivate: true) } else { self?.audioInterrupted() }
+            }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.restartAudio(reactivate: true) }
+        })
+    }
+
+    /// Whatever Poki was saying when the audio stopped is gone; say so, or the talk waits for it to end.
+    @MainActor
+    private func dropPlayback() {
+        let speaking = playback.pendingBuffers > 0
+        playback.invalidate()
+        player.stop()
+        if speaking { onEvent(["type": "output_audio_buffer.stopped"]) }
+    }
+
+    @MainActor
+    private func audioInterrupted() {
+        guard !closed, audioStarted else { return }
+        restart?.cancel()
+        dropPlayback()
+    }
+
+    /// Several notifications arrive for one change, so the restart waits a moment and runs once.
+    @MainActor
+    private func restartAudio(reactivate: Bool) {
+        guard !closed, audioStarted else { return }
+        restart?.cancel()
+        restart = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, !Task.isCancelled, !self.closed, self.audioStarted else { return }
+            if !reactivate, self.engine.isRunning { return }
+            self.dropPlayback()
+            self.engine.stop()
+            do {
+                if reactivate {
+                    let audio = AVAudioSession.sharedInstance()
+                    if self.microphoneOn {
+                        try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                    } else {
+                        try audio.setCategory(.playback, mode: .default)
+                    }
+                    try audio.setActive(true)
+                }
+                try self.runEngine()
+            } catch {
+                guard let socket = self.socket else { return }
+                self.reportFailure(socket, reason: "voice audio did not start again: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private static func installTap(_ input: AVAudioInputNode, format: AVAudioFormat,
+                                   pcm: AVAudioFormat, converter: AVAudioConverter,
+                                   deliver: @escaping @MainActor (Data) -> Void) {
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+            let count = AVAudioFrameCount(ceil(Double(buffer.frameLength) * pcm.sampleRate / format.sampleRate)) + 32
+            guard let converted = AVAudioPCMBuffer(pcmFormat: pcm, frameCapacity: count) else { return }
+            var supplied = false
+            var error: NSError?
+            let status = converter.convert(to: converted, error: &error) { _, state in
+                if supplied {
+                    state.pointee = .noDataNow
+                    return nil
+                }
+                supplied = true
+                state.pointee = .haveData
+                return buffer
+            }
+            guard status != .error, let samples = converted.int16ChannelData?[0], converted.frameLength > 0 else { return }
+            let data = Data(bytes: samples, count: Int(converted.frameLength) * 2)
+            Task { @MainActor in deliver(data) }
+        }
+    }
+
+    @MainActor
+    private func play(_ data: Data) {
+        let count = data.count / 2
+        guard count > 0, data.count.isMultiple(of: 2),
+              let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(count)),
+              let samples = buffer.floatChannelData?[0] else { return }
+        buffer.frameLength = AVAudioFrameCount(count)
+        data.withUnsafeBytes { bytes in
+            for i in 0..<count {
+                let value = UInt16(bytes[i * 2]) | (UInt16(bytes[i * 2 + 1]) << 8)
+                samples[i] = Float(Int16(bitPattern: value)) / 32_768
+            }
+        }
+        playedBytes += data.count
+        let enqueued = playback.enqueue()
+        let generation = enqueued.generation
+        if audioStarted, engine.isRunning {
+            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                Task { @MainActor in self?.audioPlayed(generation: generation) }
+            }
+        } else {
+            Task { @MainActor [weak self] in self?.audioPlayed(generation: generation) }
+        }
+        if enqueued.transition == .started {
+            onEvent(["type": "output_audio_buffer.started"])
+        }
+    }
+
+    @MainActor
+    private func audioPlayed(generation: Int) {
+        if playback.complete(generation: generation) == .stopped {
+            onEvent(["type": "output_audio_buffer.stopped"])
+        }
+    }
+
+    @MainActor
+    private func clearPlayback() {
+        _ = playback.clear()
+        if audioStarted {
+            player.stop()
+            if engine.isRunning { player.play() }
+        }
+        onEvent(["type": "output_audio_buffer.cleared"])
+    }
+
+    func setRemoteVolume(_ value: Double) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                remoteVolume = Float(value)
+                player.volume = Float(value)
+            }
+        } else {
+            Task { @MainActor [weak self] in
+                self?.remoteVolume = Float(value)
+                self?.player.volume = Float(value)
+            }
+        }
+    }
+
+    func diagnose(_ write: @escaping @MainActor (String) -> Void) {
+        let now = VoiceLink.audioSession()
+        Task { @MainActor in write(now) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.closed else { return }
+                write("microphone after 3 s: sent \(self.capturedBytes) bytes in \(self.capturedChunks) chunks; received \(self.playedBytes) audio bytes")
+            }
+        }
+    }
+
+    func close() {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { closeOnMain() }
+        } else {
+            Task { @MainActor [weak self] in self?.closeOnMain() }
+        }
+    }
+
+    @MainActor
+    private func closeOnMain() {
+        guard !closed else { return }
+        closed = true
+        let closing = socket
+        socket = nil
+        reader?.cancel()
+        writer?.cancel()
+        reader = nil
+        writer = nil
+        pending.removeAll()
+        closing?.cancel(with: .normalClosure, reason: nil)
+        network.finishTasksAndInvalidate()
+        playback.invalidate()
+        restart?.cancel()
+        restart = nil
+        resume?.cancel()
+        resume = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        if audioStarted {
+            player.stop()
+            engine.stop()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            audioStarted = false
+        }
+    }
+}
