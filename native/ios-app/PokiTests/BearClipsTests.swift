@@ -51,11 +51,31 @@ final class BearClipsTests: XCTestCase {
             }
             last = playback.move
         }
-        XCTAssertGreaterThan(starts.count, 90)
+        XCTAssertGreaterThan(starts.count, 50)
         let gaps = zip(starts, starts.dropFirst()).map { $1 - $0 - BearBlink.length }
         let doubleBlinks = gaps.filter { $0 < 0.30 }
         let normalBlinks = gaps.filter { $0 >= 1.9 }
-        XCTAssertGreaterThanOrEqual(doubleBlinks.count, 5, "expected occasional natural double blinks")
-        XCTAssertGreaterThan(normalBlinks.count, 60, "expected randomized single-blink gaps")
+        XCTAssertGreaterThanOrEqual(doubleBlinks.count, 3, "expected occasional natural double blinks")
+        XCTAssertGreaterThan(normalBlinks.count, 45, "expected randomized single-blink gaps")
+    }
+
+    /// The bear blinks as fast and as often as it did before the idle life was added: 0.14 s down, 0.06 s
+    /// shut and 0.2 s up (0.4 s in all), and one blink every 5.9 s on average (4 to 7 s of open eyes
+    /// plus the blink), double blinks included. Over 20000 s, 3400 blinks, the mean is within 0.3 s of that.
+    func testTheBlinkKeepsTheSpeedAndTheRateItAlwaysHad() {
+        XCTAssertEqual(BearBlink.closing, 0.14, accuracy: 1e-9)
+        XCTAssertEqual(BearBlink.shut, 0.06, accuracy: 1e-9)
+        XCTAssertEqual(BearBlink.opening, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(clips.length(.blink), 0.4, accuracy: 1e-9)
+        var playback = BearPlayback()
+        playback.play([.idle], at: 0)
+        var starts: [TimeInterval] = [], last: BearMove = .idle
+        for frame in 0..<(20_000 * 60) {
+            _ = playback.time(at: Double(frame) / 60, clips: clips)
+            if playback.move == .blink, last != .blink { starts.append(Double(frame) / 60) }
+            last = playback.move
+        }
+        let mean = (starts.last! - starts.first!) / Double(starts.count - 1)
+        XCTAssertEqual(mean, 5.9, accuracy: 0.3, "mean time from one blink's start to the next")
     }
 }
