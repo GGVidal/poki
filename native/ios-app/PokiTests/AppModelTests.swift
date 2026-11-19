@@ -924,6 +924,18 @@ final class InProcessPasscodeTests: XCTestCase {
         XCTAssertFalse(chat.entries.contains { $0.kind == .poki("Four.") }, "the new conversation does not show the late reply")
     }
 
+    /// Poki is off and the owner talks to it: the live voice's first phone step turns Poki on, as a chat's does.
+    /// (The step ends on the runner here, because a simulator has no WebDriverAgent.)
+    func testALiveVoicePhoneStepTurnsPokiOnWhenItIsOff() async {
+        model.stopSession()
+        XCTAssertFalse(model.sessionOn)
+
+        let answer = await model.voicePhoneStep("look", "{}")
+
+        XCTAssertTrue(model.sessionOn, "the voice's phone step turned Poki on: \(answer.text)")
+        XCTAssertFalse(answer.text.hasPrefix("not_sent: Poki could not turn on"), answer.text)
+    }
+
     private func chatWithoutAutomation(on server: FakeCompletions, request: String) async throws -> ChatModel {
         let keys = ["chat.provider", "chat.customURL", "chat.customModel"]
         let saved = keys.map { UserDefaults.standard.object(forKey: $0) }
