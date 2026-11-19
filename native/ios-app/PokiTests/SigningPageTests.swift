@@ -114,6 +114,17 @@ final class SigningPageTests: XCTestCase {
         XCTAssertEqual(core.received, ["https://ani.second.example"])
     }
 
+    /// ESP-987: with an Apple Account signed in, its row on Signing & Updates stays two short lines whatever
+    /// the address, where a long address beside the name left the name a strip one letter wide.
+    func testTheAppleAccountRowStaysTwoLinesForALongAddress() {
+        let addresses = ["zhou.sefu@icloud.com", "long.address.for.layout.checks.2026@example-university.edu"]
+        for address in addresses {
+            let row = UIHostingController(rootView: AppleAccountRow(appleID: address, signedIn: true))
+            let size = row.sizeThatFits(in: CGSize(width: 321, height: 2_000))
+            XCTAssertLessThan(size.height, 60, "the row for \(address) is a name and one line, not a column of letters")
+        }
+    }
+
     /// The first non-nil answer, asked again as the page settles, for at most five seconds.
     private func settle<T>(_ what: String, _ answer: () -> T?) async throws -> T {
         let deadline = CACurrentMediaTime() + 5
