@@ -12,7 +12,9 @@ struct BearSpringParams: Equatable {
     static let body = BearSpringParams(frequency: 1.75, damping: 0.60, response: -0.80)
     static let head = BearSpringParams(frequency: 2.45, damping: 0.54, response: -1.20)
     static let arms = BearSpringParams(frequency: 2.75, damping: 0.52, response: -1.45)
-    static let gaze = BearSpringParams(frequency: 6.80, damping: 0.86, response: 0.30)
+    /// Critically damped and without anticipation: the eyes glide to wherever they look and settle
+    /// there, never snapping, overshooting or twitching, whatever the target does.
+    static let gaze = BearSpringParams(frequency: 2.6, damping: 1.0, response: 0)
     static let face = BearSpringParams(frequency: 4.50, damping: 0.76, response: 0.0)
 }
 

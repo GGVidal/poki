@@ -33,7 +33,7 @@ struct BearIdle {
         var shut: Float = 0
         /// How far the mouth is open (from a quarter on), and the sparkles out, from 0 to 1.
         var mouth: Float = 0, sparkles: Float = 0
-        /// ESP-871 thinking facial overlay weight: 0 = default smile, 1 = squinted left lid + wavy mouth.
+        /// Thinking facial overlay weight: 0 = default smile, 1 = squinted left lid + wavy mouth.
         var thinkExpression: Float = 0
 
         static func + (a: Pose, b: Pose) -> Pose {
@@ -94,14 +94,15 @@ struct BearIdle {
             return (1 - BearIdle.ease(Float((x - bodyRise - hold) / max(fall, 0.14)))) * cut
         }
 
-        /// Gaze weight starts immediately and returns slightly before the head settles back.
+        /// Gaze weight starts immediately and returns slightly before the head settles back. It never
+        /// moves faster than the eyes can follow smoothly: at least 0.25 s to go and 0.3 s to come back.
         func gazeWeight(at t: TimeInterval) -> Float {
             let x = t - start
             if x <= 0 || t >= end { return 0 }
-            let cut = stop.map { 1 - BearIdle.ease(Float((t - $0) / 0.20)) } ?? 1
-            let eyeRise = min(0.14, max(rise * 0.45, 0.08))
+            let cut = stop.map { 1 - BearIdle.ease(Float((t - $0) / 0.25)) } ?? 1
+            let eyeRise = max(rise * 0.85, 0.25)
             let eyeHold = max(rise + hold - eyeRise - 0.08, 0.15)
-            let eyeFall = min(0.16, max(fall * 0.5, 0.09))
+            let eyeFall = max(fall * 0.8, 0.30)
             if x < eyeRise { return BearIdle.ease(Float(x / eyeRise)) * cut }
             if x < eyeRise + eyeHold { return cut }
             return (1 - BearIdle.ease(Float((x - eyeRise - eyeHold) / eyeFall))) * cut
@@ -117,19 +118,28 @@ struct BearIdle {
         }
     }
 
-    /// Brief independent eye glance away from the viewer and back without turning the whole head.
+    /// Brief independent eye glance away from the viewer and back without turning the whole head. The
+    /// eyes ease out and back over a third of a second or more, never faster, so they never twitch.
     private struct EyeDart {
+        static let rise: TimeInterval = 0.30, fall: TimeInterval = 0.40
         var target: SIMD2<Float>
         var start: TimeInterval
         var hold: TimeInterval
-        var end: TimeInterval { start + 0.12 + hold + 0.14 }
+        /// When something else took over: where the eyes were then, from which they ease back.
+        var released: (at: TimeInterval, from: SIMD2<Float>)?
+        var end: TimeInterval { released.map { $0.at + Self.fall } ?? start + Self.rise + hold + Self.fall }
 
         func offset(at t: TimeInterval) -> SIMD2<Float> {
+            if let (at, from) = released {
+                let x = t - at
+                if x <= 0 { return from }
+                return x >= Self.fall ? .zero : from * (1 - BearIdle.ease(Float(x / Self.fall)))
+            }
             let x = t - start
             if x <= 0 || t >= end { return .zero }
-            if x < 0.12 { return target * BearIdle.ease(Float(x / 0.12)) }
-            if x < 0.12 + hold { return target }
-            return target * (1 - BearIdle.ease(Float((x - 0.12 - hold) / 0.14)))
+            if x < Self.rise { return target * BearIdle.ease(Float(x / Self.rise)) }
+            if x < Self.rise + hold { return target }
+            return target * (1 - BearIdle.ease(Float((x - Self.rise - hold) / Self.fall)))
         }
     }
 
@@ -177,8 +187,6 @@ struct BearIdle {
     /// The gestures still to come in this turn, each once; then a new turn in a new order.
     private var turn: [Gesture] = []
     private var lastGesture: Gesture?
-    /// One-shot hint set when a large look starts, so `BearPlayback` can pair a natural blink with it.
-    private var gazeBlinkHint = false
 
     init(now: TimeInterval) {
         nextGlance = now + .random(in: 1.4...3.0)
@@ -211,17 +219,22 @@ struct BearIdle {
         return 0
     }
 
-    /// Consumes a one-shot request to pair a natural blink with a gaze shift.
-    mutating func consumeGazeBlinkHint() -> Bool {
-        defer { gazeBlinkHint = false }
-        return gazeBlinkHint
+    /// Turning its head somewhere, so worth drawing at the full rate. A blink due then waits for it
+    /// to stop; the eyes darting do not hold one back.
+    func busy(at t: TimeInterval) -> Bool { glance?.turning(at: t) ?? false }
+
+    /// The eyes moving to or from a dart, worth drawing at the full rate too.
+    func darting(at t: TimeInterval) -> Bool {
+        guard let dart = eyeDart, t > dart.start, t < dart.end else { return false }
+        return t < dart.start + EyeDart.rise || t >= dart.end - EyeDart.fall
     }
 
-    /// Moving through a gesture or eye dart, worth running at high frame rate.
-    func busy(at t: TimeInterval) -> Bool {
-        if glance?.turning(at: t) ?? false { return true }
-        if let dart = eyeDart, t > dart.start, t < dart.end { return true }
-        return false
+    /// Whatever the eyes were doing eases back to the middle instead of stopping where they were.
+    private mutating func releaseDart(at t: TimeInterval) {
+        guard var dart = eyeDart else { return }
+        if t >= dart.end { eyeDart = nil; return }
+        if dart.released == nil { dart.released = (t, dart.offset(at: t)) }
+        eyeDart = dart
     }
 
     /// Something else plays until `t`: nothing of its own starts before then, and not at once after.
@@ -232,7 +245,7 @@ struct BearIdle {
 
     /// A hi is coming: whatever it is doing, it comes back now, quickly.
     mutating func attend(at t: TimeInterval) {
-        eyeDart = nil
+        releaseDart(at: t)
         guard var g = glance, t < g.end else { return }
         if g.stop == nil { g.stop = t }
         glance = g
@@ -266,14 +279,14 @@ struct BearIdle {
 
         if calm, glance.map({ t >= $0.end }) ?? true {
             nextGlance = max(nextGlance, t + .random(in: 1.0...2.0))
-            eyeDart = nil
+            releaseDart(at: t)
         }
 
         // Independent micro-saccade eye darts when not already in a full head gesture.
         let gestureActive = glance.map { t < $0.end } ?? false
         if !blinking, !calm, !gestureActive, t >= nextEyeDart, eyeDart.map({ t >= $0.end }) ?? true {
             let side: Float = Bool.random() ? 1 : -1
-            let gx = side * Float.random(in: 0.014...0.028)
+            let gx = side * Float.random(in: 0.010...0.015)
             let gy = Float.random(in: -0.008...0.014)
             let dart = EyeDart(target: SIMD2(gx, gy), start: t, hold: .random(in: 0.55...1.45))
             eyeDart = dart
@@ -284,10 +297,9 @@ struct BearIdle {
         }
 
         if !blinking, !calm, t >= nextGlance, !gestureActive {
-            eyeDart = nil
+            releaseDart(at: t)
             let g = makeGlance(at: t)
             glance = g
-            if g.gesture == .look, Int.random(in: 0..<5) < 2 { gazeBlinkHint = true }
             nextGlance = g.end + .random(in: 1.4...4.2)
             nextEyeDart = max(nextEyeDart, g.end + .random(in: 0.8...1.8))
         }
@@ -359,7 +371,7 @@ struct BearIdle {
             pose.bodyYaw = side * 0.055
             pose.bodyShiftX = side * 0.010
             pose.headPitch = .random(in: -0.05...0.04)
-            pose.gaze = SIMD2(side * 0.026, .random(in: -0.004...0.008))
+            pose.gaze = SIMD2(side * 0.014, .random(in: -0.004...0.008))
         case 5..<8: // curious head tilt
             pose.headRoll = side * .random(in: 0.10...0.15)
             pose.lower = SIMD2(Self.tilt.left * max(-pose.headRoll, 0), Self.tilt.right * max(pose.headRoll, 0))
@@ -379,7 +391,7 @@ struct BearIdle {
         var p = Pose()
         p.headYaw = side * (0.28 + 0.03)
         p.bodyYaw = side * (0.055 + 0.024)
-        p.gaze = SIMD2(side * 0.026, 0)
+        p.gaze = SIMD2(side * 0.014, 0)
         return p
     }
 }
@@ -466,7 +478,7 @@ struct BearIdleJoints {
     }
 
     /// `pose` laid on the model's standing pose. In the model's joints y is up, z forward and x across.
-    func apply(_ pose: BearIdle.Pose, blinkAttenuation: Float = 1, to joints: inout [Transform]) {
+    func apply(_ pose: BearIdle.Pose, to joints: inout [Transform]) {
         guard joints.count > max(body, head) else { return }
         joints[body].translation.x += pose.bodyShiftX
         joints[body].translation.y += pose.bodyLift
@@ -484,8 +496,7 @@ struct BearIdleJoints {
             desiredGaze: pose.gaze,
             headYaw: pose.headYaw,
             headPitch: pose.headPitch,
-            thinkingLid: pose.thinkExpression,
-            blinkAttenuation: blinkAttenuation
+            thinkingLid: pose.thinkExpression
         )
         if let idx = pupilR, idx < joints.count {
             joints[idx].translation += eyeTransforms.right.translation
