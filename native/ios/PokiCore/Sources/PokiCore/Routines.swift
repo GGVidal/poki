@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(NaturalLanguage)
+import NaturalLanguage
+#endif
 
 // Skills and notes: the agent's memory library, kept on the phone and shared by every agent that
 // drives it (Poki's own chat and any MCP client over the relay).
@@ -583,16 +586,29 @@ public final class SkillStore: @unchecked Sendable {
     /// tool lists the rest.
     static let maxBriefLength = 4000
 
-    /// What a model should know at the start of a task: the skills that fit its app or words best
+    /// Non-stale skills ranked by current app and task terms. Unrelated skills (score 0) are omitted.
+    public func matchingSkills(for task: String, apps: [String] = [], limit: Int = 12) -> [Skill] {
+        matchingSkills(in: withFile { $0.skills }, for: task, apps: apps, limit: limit)
+    }
+
+    private func matchingSkills(in skills: [Skill], for task: String, apps: [String], limit: Int) -> [Skill] {
+        let targetApps = Set(apps.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        let taskTokens = Self.tokens(task)
+        return skills.filter { !$0.stale }.compactMap { skill -> (Skill, Int)? in
+            let skillTokens = Self.tokens(skill.name + " " + skill.description)
+            let termScore = skillTokens.intersection(taskTokens).count * 3
+            let appScore = (skill.app.map { targetApps.contains($0.lowercased()) } ?? false) ? 4 : 0
+            let score = termScore + appScore
+            return score > 0 ? (skill, score) : nil
+        }.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.updated > $1.0.updated }.prefix(limit).map(\.0)
+    }
+
+    /// What a model should know at the start of a task: the skills that fit its app or wording best
     /// (stale ones left out) in up to half of `maxBriefLength`, and the newest notes in the rest.
-    public func brief(for task: String, app: String? = nil, limit: Int = 12) -> String {
+    public func brief(for task: String, app: String? = nil, apps: [String] = [], limit: Int = 12) -> String {
         let (skills, notes) = withFile { ($0.skills, $0.notes) }
-        let words = Self.words(task)
-        let fit = skills.filter { !$0.stale }.sorted { a, b in
-            let sa = Self.words(a.name + " " + a.description).intersection(words).count * 3 + (a.app == app && app != nil ? 4 : 0)
-            let sb = Self.words(b.name + " " + b.description).intersection(words).count * 3 + (b.app == app && app != nil ? 4 : 0)
-            return sa != sb ? sa > sb : a.updated > b.updated
-        }.prefix(limit)
+        let allApps = apps + (app.map { [$0] } ?? [])
+        let fit = matchingSkills(in: skills, for: task, apps: allApps, limit: limit)
         var room = Self.maxBriefLength
         func section(_ header: String, _ items: [String], within limit: Int) -> [String] {
             var left = min(room, limit) - header.count - 1
@@ -618,8 +634,81 @@ public final class SkillStore: @unchecked Sendable {
         return (noteLines + skillLines).joined(separator: "\n")
     }
 
-    private static func words(_ text: String) -> Set<String> {
-        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count > 2 })
+    private static let englishStopwords: Set<String> = [
+        "an", "and", "are", "as", "at", "be", "by", "can", "do", "for", "from", "get", "go",
+        "he", "how", "if", "in", "into", "is", "it", "its", "let", "me", "my", "no", "of",
+        "on", "open", "or", "our", "out", "please", "read", "run", "see", "show", "so",
+        "the", "their", "them", "then", "this", "that", "to", "up", "use", "view", "we",
+        "what", "when", "where", "which", "who", "with", "you", "your",
+    ]
+
+    private static let chineseStopwords: Set<String> = [
+        "一下", "一个", "一些", "帮我", "给我", "替我", "看看", "看下", "查看", "查下", "查询",
+        "打开", "开启", "进入", "使用", "点击", "怎么", "可以", "能否", "能不能", "现在", "今天",
+        "手机", "里面", "请问", "想要", "我要", "去看看", "帮我看", "看一看",
+    ]
+
+    static func tokens(_ text: String) -> Set<String> {
+        let lower = text.lowercased()
+        var out: Set<String> = []
+
+        var latin = ""
+        var cjk: [Character] = []
+
+        func flushLatin() {
+            guard !latin.isEmpty else { return }
+            if latin.count >= 2, !englishStopwords.contains(latin) {
+                out.insert(latin)
+            }
+            latin.removeAll(keepingCapacity: true)
+        }
+
+        func flushCJK() {
+            guard !cjk.isEmpty else { return }
+            if cjk.count >= 2 {
+                for i in 0..<(cjk.count - 1) {
+                    let bigram = String(cjk[i...i + 1])
+                    if !chineseStopwords.contains(bigram) {
+                        out.insert(bigram)
+                    }
+                }
+            }
+            cjk.removeAll(keepingCapacity: true)
+        }
+
+        for ch in lower {
+            let isIdeograph = ch.unicodeScalars.contains { $0.properties.isIdeographic }
+            if isIdeograph {
+                flushLatin()
+                cjk.append(ch)
+            } else if ch.isLetter || ch.isNumber {
+                flushCJK()
+                latin.append(ch)
+            } else {
+                flushLatin()
+                flushCJK()
+            }
+        }
+        flushLatin()
+        flushCJK()
+
+        #if canImport(NaturalLanguage)
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = lower
+        tokenizer.enumerateTokens(in: lower.startIndex..<lower.endIndex) { range, _ in
+            let word = String(lower[range])
+            guard word.count >= 2 else { return true }
+            let hasIdeograph = word.unicodeScalars.contains { $0.properties.isIdeographic }
+            if hasIdeograph {
+                if !chineseStopwords.contains(word) { out.insert(word) }
+            } else if !englishStopwords.contains(word) {
+                out.insert(word)
+            }
+            return true
+        }
+        #endif
+
+        return out
     }
 }
 
@@ -943,8 +1032,8 @@ extension String {
 extension PokiCore {
     /// What a model should know at the start of a task about this phone's owner and saved skills:
     /// the notes, and the skills that fit `task` and `apps` best. "" when nothing is saved.
-    public static func memoryBrief(for task: String, app: String? = nil) -> String {
-        SkillStore.shared.brief(for: task, app: app)
+    public static func memoryBrief(for task: String, app: String? = nil, apps: [String] = []) -> String {
+        SkillStore.shared.brief(for: task, app: app, apps: apps)
     }
 
     static let skillsTool: JSON = [
