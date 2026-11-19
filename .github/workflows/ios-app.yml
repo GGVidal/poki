@@ -358,7 +358,8 @@ jobs:
           set -o pipefail
           xcodebuild test -project native/ios-app/Poki.xcodeproj -scheme Poki -configuration Debug \
             -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build/sim \
-            -only-testing:PokiTests CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log | grep -E "Test Case|error:|failed|passed|TEST (SUCCEEDED|FAILED)|\*\* " 
+            -only-testing:PokiTests CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log | grep -E "Test Case|error:|failed|passed|TEST (SUCCEEDED|FAILED)|\*\* " \
+            || { echo "--- end of build/tests.log"; tail -80 build/tests.log; exit 1; }
           grep -q "TEST SUCCEEDED" build/tests.log
 
       - uses: actions/upload-artifact@v4
