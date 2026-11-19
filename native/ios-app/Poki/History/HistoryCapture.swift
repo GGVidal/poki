@@ -213,6 +213,7 @@ final class HistoryCapture: ObservableObject {
         watchLock()
         // A run with no end waits for the connection or an agent's task like any run under way.
         if let refused = refusal(model), !always || refused == .locked || refused == .notPaired { set(refused); return }
+        HistoryLock.shared.readStarting()
         run += 1
         let me = run
         once = minutes == nil && !always
