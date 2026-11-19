@@ -16,6 +16,12 @@ import NaturalLanguage
 // Notes are short facts the agent or the owner saves ("Mom is the contact Mama"). Both live in one
 // JSON file in the app's own storage; a copy in Documents/AgentBackup is what Poki Setup backs up.
 // Typed text is a parameter of the skill; text typed into a password field is never stored.
+//
+// The owner can lock a note or a skill on the Memory page: no agent changes, replaces or forgets a
+// locked one, and the caps never drop it. Every addition, change and forget is logged (the page's
+// Recent Updates), and a change can be undone; a forgotten item is kept in its log entry so undo puts
+// it back exactly. Fields added after the first release are optional, so a file written before them
+// opens with everything in it.
 
 /// What a step acts on, as it was found when the step was recorded.
 public struct SkillTarget: Codable, Equatable, Sendable {
@@ -25,6 +31,21 @@ public struct SkillTarget: Codable, Equatable, Sendable {
     /// The element's centre when recorded: picks one of several matches that are otherwise alike.
     public var x: Double
     public var y: Double
+
+    /// A path's target: any element that reads `label`, whatever its type.
+    static let anyType = "*"
+
+    /// A target named by its text alone (a path's step): no recorded place.
+    init(type: String, label: String) {
+        self.type = type
+        self.label = label
+        identifier = nil
+        x = -1
+        y = -1
+    }
+
+    /// Whether the target was recorded at a place on the screen.
+    var hasPlace: Bool { x >= 0 && y >= 0 }
 
     init(_ e: Element) {
         type = e.type
@@ -43,9 +64,14 @@ public struct SkillTarget: Codable, Equatable, Sendable {
         self.y = y
     }
 
-    public var describe: String { "\(type) \"\(label ?? identifier ?? "")\"" }
+    public var describe: String { type == Self.anyType ? "\"\(label ?? identifier ?? "")\"" : "\(type) \"\(label ?? identifier ?? "")\"" }
 
     func matches(_ e: Element) -> Bool {
+        if type == Self.anyType {
+            // By its text, as written or in another case; a container is never the thing to tap.
+            guard !e.fromPicture, !Computer.containers.contains(e.type), let label, !label.isEmpty else { return false }
+            return e.label?.caseInsensitiveCompare(label) == .orderedSame || e.identifier?.caseInsensitiveCompare(label) == .orderedSame
+        }
         guard !e.fromPicture, e.type == type else { return false }
         if let identifier, e.identifier == identifier { return label == nil || e.label == label }
         return (e.label.flatMap { $0.isEmpty ? nil : $0 }) == label && (identifier == nil || e.identifier == nil || e.identifier == identifier)
@@ -63,12 +89,20 @@ public struct SkillStep: Codable, Equatable, Sendable {
     public var app: String?
     /// A type into a password field: the text was not kept, so a run stops here for the agent.
     public var secret: Bool?
+    /// Texts that must be on screen once the step is done ({tap: "Wi-Fi", expect: "Networks"}): read
+    /// from the tree with no model; the run stops there when one does not appear.
+    public var expect: [String]? = nil
+    /// A step for something that is only sometimes there ({tap: "Not Now", optional: true}): when its
+    /// target is not on a screen that holds still, the step is left out and the run goes on.
+    public var optional: Bool? = nil
 
-    public init(action: JSON, target: SkillTarget? = nil, app: String? = nil, secret: Bool? = nil) {
+    public init(action: JSON, target: SkillTarget? = nil, app: String? = nil, secret: Bool? = nil, expect: [String]? = nil, optional: Bool? = nil) {
         self.action = action
         self.target = target
         self.app = app
         self.secret = secret
+        self.expect = expect
+        self.optional = optional
     }
 }
 
@@ -106,9 +140,14 @@ public struct Skill: Codable, Equatable, Sendable {
     public var failuresInARow: Int
     public var lastStop: SkillStop?
     public var lastMs: Int?
+    /// Texts of controls that may be closed when they are in the way of a step (a path's
+    /// dismiss: ["Not Now", "Later"]): written ahead by the agent, applied with no model.
+    public var dismiss: [String]? = nil
     public var savedBy: String
     public var created: Date
     public var updated: Date
+    /// Locked by the owner: no agent saves over it, edits, renames or forgets it.
+    public var locked: Bool? = nil
 
     public init(
         name: String,
@@ -123,9 +162,11 @@ public struct Skill: Codable, Equatable, Sendable {
         failuresInARow: Int,
         lastStop: SkillStop?,
         lastMs: Int?,
+        dismiss: [String]? = nil,
         savedBy: String,
         created: Date,
-        updated: Date
+        updated: Date,
+        locked: Bool? = nil
     ) {
         self.name = name
         self.description = description
@@ -139,13 +180,15 @@ public struct Skill: Codable, Equatable, Sendable {
         self.failuresInARow = failuresInARow
         self.lastStop = lastStop
         self.lastMs = lastMs
+        self.dismiss = dismiss
         self.savedBy = savedBy
         self.created = created
         self.updated = updated
+        self.locked = locked
     }
 
     public var stale: Bool { failuresInARow >= 2 }
-
+    public var isLocked: Bool { locked == true }
     public var summary: String {
         "\(name): \(description.isEmpty ? "" : description + "; ")\(app.map { "in \($0), " } ?? "")\(steps.count) steps, \(runs) runs, \(ok) ok\(stale ? ", STALE (stopped \(failuresInARow) times in a row\(lastStop.map { " at step \($0.step): \($0.why)" } ?? ""))" : "")\(params.isEmpty ? "" : ", with: " + params.keys.sorted().map { "\($0) (recorded \"\(params[$0]!.prefix(30))\")" }.joined(separator: ", "))"
     }
@@ -186,35 +229,52 @@ public struct Skill: Codable, Equatable, Sendable {
 
 public typealias Routine = Skill
 
-/// The conversation turn where a memory was stated or inferred, so the Memory page can open it.
-public struct MemoryConversation: Codable, Equatable, Sendable {
-    public var sessionID: String
-    public var entryID: String?
-    public var app: String?
-    public var at: Date
-
-    public init(sessionID: String, entryID: String? = nil, app: String? = nil, at: Date) {
-        self.sessionID = sessionID
-        self.entryID = entryID
-        self.app = app
-        self.at = at
-    }
-}
-
 public struct MemoryNote: Codable, Equatable, Sendable {
     public var id: String
     public var text: String
     public var by: String
     public var at: Date
-    public var conversation: MemoryConversation?
+    /// Locked by the owner: no agent changes or forgets it.
+    public var locked: Bool? = nil
+    /// The app it is about (the Memory page's Used In); nil: no one app.
+    public var app: String? = nil
+    /// The conversation Poki's chat heard it in.
+    public var heard: NoteOrigin? = nil
+    /// When the owner last changed it.
+    public var edited: Date? = nil
 
-    public init(id: String, text: String, by: String, at: Date, conversation: MemoryConversation? = nil) {
-        self.id = id
-        self.text = text
-        self.by = by
-        self.at = at
-        self.conversation = conversation
-    }
+    public var isLocked: Bool { locked == true }
+}
+
+/// Where a note was heard: a saved conversation, and the app in front then.
+public struct NoteOrigin: Codable, Equatable, Sendable {
+    public var session: String
+    public var app: String?
+    public init(session: String, app: String?) { self.session = session; self.app = app }
+}
+
+/// One addition, change or forget, for Recent Updates and undo.
+public struct MemoryChangeRecord: Codable, Equatable, Sendable {
+    /// "added", "edited" or "forgot" (a string, so a later kind never makes the file unreadable).
+    public var action: String
+    public var id: String
+    public var at: Date
+    /// "owner", or the agent's name ("Poki", an MCP client's).
+    public var by: String
+    /// The note after the change, or as it was when forgotten.
+    public var note: MemoryNote?
+    /// A routine's name after the change (and `app`); `routine` is the whole routine as it was before
+    /// a forget or a change, to put back.
+    public var routineName: String?
+    public var routineApp: String?
+    public var routine: Skill?
+    /// An edit's text, or a rename's name, before.
+    public var previous: String?
+    /// The note as it was before an edit (its app, source and lock too), to put back.
+    public var before: MemoryNote?
+    public var undone: Bool?
+
+    public static let added = "added", edited = "edited", forgot = "forgot"
 }
 
 /// One skill run, for the maintainers' log bundle.
@@ -276,6 +336,9 @@ struct MemoryFile: Codable {
     var runs: [SkillRunLog] = []
     /// What the app adds to a backup (its saved sessions), opaque here.
     var extras: [String: JSON]?
+    /// The latest changes, newest first. Kept on the phone only: an export leaves them out, since a
+    /// forgotten note's text lives on in its entry until it falls off the end.
+    var changes: [MemoryChangeRecord]? = nil
 
     init(
         schema: String = SkillStore.schema,
@@ -283,7 +346,8 @@ struct MemoryFile: Codable {
         skills: [Skill] = [],
         notes: [MemoryNote] = [],
         runs: [SkillRunLog] = [],
-        extras: [String: JSON]? = nil
+        extras: [String: JSON]? = nil,
+        changes: [MemoryChangeRecord]? = nil
     ) {
         self.schema = schema
         self.exported = exported
@@ -291,10 +355,11 @@ struct MemoryFile: Codable {
         self.notes = notes
         self.runs = runs
         self.extras = extras
+        self.changes = changes
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, exported, skills, routines, notes, runs, extras
+        case schema, exported, skills, routines, notes, runs, extras, changes
     }
 
     init(from decoder: Decoder) throws {
@@ -308,6 +373,7 @@ struct MemoryFile: Codable {
         notes = try c.decodeIfPresent([MemoryNote].self, forKey: .notes) ?? []
         runs = try c.decodeIfPresent([SkillRunLog].self, forKey: .runs) ?? []
         extras = try c.decodeIfPresent([String: JSON].self, forKey: .extras)
+        changes = try c.decodeIfPresent([MemoryChangeRecord].self, forKey: .changes)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -318,6 +384,7 @@ struct MemoryFile: Codable {
         try c.encode(notes, forKey: .notes)
         try c.encode(runs, forKey: .runs)
         try c.encodeIfPresent(extras, forKey: .extras)
+        try c.encodeIfPresent(changes, forKey: .changes)
     }
 }
 
@@ -326,7 +393,11 @@ public final class SkillStore: @unchecked Sendable {
     public static let schema = "poki.agent-backup/2"
     static let supportedSchemas: Set<String> = ["poki.agent-backup/1", "poki.agent-backup/2"]
     public static let backupName = "poki-agent-backup.json"
-    static let maxNotes = 50, maxSkills = 200, maxRuns = 50, maxNoteLength = 300
+    static let maxNotes = 50, maxSkills = 200, maxRuns = 50, maxNoteLength = 300, maxChanges = 100
+    /// Who the Memory page writes as.
+    public static let owner = "owner"
+    /// The names that are not an agent's: the owner, a file the owner imported or restored, and Dream.
+    static func isReserved(_ name: String) -> Bool { [owner, "import", "restore", "dream"].contains(name.lowercased()) }
 
     private let lock = NSLock()
     private var file = MemoryFile()
@@ -339,8 +410,14 @@ public final class SkillStore: @unchecked Sendable {
     public init(url: URL?, backupDirectory: URL? = nil) {
         self.url = url
         self.backupDirectory = backupDirectory
-        if let url, let data = try? Data(contentsOf: url), let saved = try? Self.decoder.decode(MemoryFile.self, from: data) {
-            file = saved
+        if let url, let data = try? Data(contentsOf: url) {
+            if let saved = try? Self.decoder.decode(MemoryFile.self, from: data) {
+                file = saved
+            } else {
+                // A file this version cannot read is set aside, not written over with an empty memory.
+                let aside = url.deletingPathExtension().appendingPathExtension("unreadable-\(Int(Date().timeIntervalSince1970)).json")
+                try? FileManager.default.copyItem(at: url, to: aside)
+            }
         }
         if let backupDirectory { lastBackupHash = try? String(contentsOf: backupDirectory.appendingPathComponent(".last-written"), encoding: .utf8) }
     }
@@ -422,6 +499,11 @@ public final class SkillStore: @unchecked Sendable {
     public var skills: [Skill] { withFile { $0.skills } }
     public var routines: [Skill] { skills }
     public var notes: [MemoryNote] { withFile { $0.notes } }
+    /// The latest changes, newest first.
+    public var changes: [MemoryChangeRecord] { withFile { $0.changes ?? [] } }
+    public func note(_ idOrText: String) -> MemoryNote? {
+        withFile { f in f.notes.first { $0.id == idOrText || $0.text.caseInsensitiveCompare(idOrText) == .orderedSame } }
+    }
     public var runLog: [SkillRunLog] { withFile { $0.runs } }
 
     public func skill(named name: String) -> Skill? {
@@ -432,76 +514,194 @@ public final class SkillStore: @unchecked Sendable {
 
     // MARK: Changing
 
-    public func save(_ skill: Skill) {
+    /// Saves a skill, over one with the same name unless that one is locked and this is not the
+    /// owner's. False when it was not saved.
+    @discardableResult
+    public func save(_ skill: Skill) -> Bool {
         withFile(true) { f in
             var s = skill.migrated()
             if let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(s.name) == .orderedSame }) {
                 let old = f.skills[i]
+                guard !old.isLocked || skill.savedBy == Self.owner else { return false }
                 s.created = old.created
+                s.locked = old.locked
                 if s.app == nil { s.app = old.app }
                 // A skill saved again after it stopped is the path that worked: its record starts over.
                 if old.steps == s.steps { s.runs = old.runs; s.ok = old.ok; s.failuresInARow = old.failuresInARow; s.lastStop = old.lastStop }
                 f.skills[i] = s
+                Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.edited, id: Self.newID(), at: Date(), by: skill.savedBy,
+                                                routineName: s.name, routineApp: s.app, routine: old))
             } else {
                 f.skills.append(s)
-                if f.skills.count > Self.maxSkills { f.skills.removeFirst(f.skills.count - Self.maxSkills) }
+                Self.trim(&f.skills, to: Self.maxSkills, keeping: \.isLocked)
+                Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.added, id: Self.newID(), at: Date(), by: skill.savedBy,
+                                                routineName: s.name, routineApp: s.app))
             }
-        }
-    }
-
-    @discardableResult
-    public func forget(_ name: String) -> Bool {
-        withFile(true) { f in
-            let before = f.skills.count
-            f.skills.removeAll { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-            return f.skills.count != before
-        }
-    }
-
-    @discardableResult
-    public func rename(_ name: String, to new: String) -> Bool {
-        withFile(true) { f in
-            guard let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return false }
-            f.skills[i].name = new
-            f.skills[i].updated = Date()
             return true
         }
     }
 
-    public func update(_ name: String, _ change: (inout Skill) -> Void) {
+    /// Forgets a routine; an agent cannot forget a locked one. The log keeps it for undo.
+    @discardableResult
+    public func forget(_ name: String, by: String = SkillStore.owner) -> Bool {
         withFile(true) { f in
-            guard let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return }
-            change(&f.skills[i])
+            guard let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }),
+                  !f.skills[i].isLocked || by == Self.owner else { return false }
+            let old = f.skills.remove(at: i)
+            Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.forgot, id: Self.newID(), at: Date(), by: by,
+                                            routineName: old.name, routineApp: old.app, routine: old))
+            return true
         }
     }
 
+    /// Renames a routine; an agent cannot rename a locked one, and the owner's rename locks it.
     @discardableResult
-    public func remember(_ text: String, by: String, conversation: MemoryConversation? = nil) -> MemoryNote? {
+    public func rename(_ name: String, to new: String, by: String = SkillStore.owner) -> Bool {
+        withFile(true) { f in
+            guard let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }),
+                  !f.skills[i].isLocked || by == Self.owner,
+                  // Not onto another routine's name, which would hide that one.
+                  !f.skills.indices.contains(where: { $0 != i && f.skills[$0].name.caseInsensitiveCompare(new) == .orderedSame }) else { return false }
+            let old = f.skills[i]
+            f.skills[i].name = new
+            f.skills[i].updated = Date()
+            if by == Self.owner { f.skills[i].locked = true }
+            Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.edited, id: Self.newID(), at: Date(), by: by,
+                                            routineName: new, routineApp: old.app, routine: old, previous: old.name))
+            return true
+        }
+    }
+
+    /// Changes a routine in place. With `by`, it is an edit: logged, and refused for an agent when
+    /// the routine is locked. Without, it is the run's own bookkeeping (counts, the last stop).
+    @discardableResult
+    public func update(_ name: String, by: String? = nil, _ change: (inout Skill) -> Void) -> Bool {
+        withFile(true) { f in
+            guard let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return false }
+            guard let by else { change(&f.skills[i]); return true }
+            guard !f.skills[i].isLocked || by == Self.owner else { return false }
+            let old = f.skills[i]
+            change(&f.skills[i])
+            Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.edited, id: Self.newID(), at: Date(), by: by,
+                                            routineName: f.skills[i].name, routineApp: f.skills[i].app, routine: old))
+            return true
+        }
+    }
+
+    /// Locks or unlocks a note (by id) or a routine (by name). Only the Memory page calls it.
+    public func setLocked(_ idOrName: String, _ locked: Bool) {
+        withFile(true) { f in
+            if let i = f.notes.firstIndex(where: { $0.id == idOrName }) { f.notes[i].locked = locked ? true : nil }
+            else if let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(idOrName) == .orderedSame }) { f.skills[i].locked = locked ? true : nil }
+        }
+    }
+
+    /// Keeps a note. The same text again answers the note already kept. `heard` is the conversation
+    /// it came up in; the owner's own notes come locked.
+    @discardableResult
+    public func remember(_ text: String, by: String, app: String? = nil, heard: NoteOrigin? = nil, locked: Bool = false) -> MemoryNote? {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return nil }
         return withFile(true) { f in
             if let same = f.notes.first(where: { $0.text.caseInsensitiveCompare(clean) == .orderedSame }) { return same }
-            let note = MemoryNote(id: String(UUID().uuidString.prefix(8)).lowercased(), text: String(clean.prefix(Self.maxNoteLength)), by: by, at: Date(), conversation: conversation)
+            let note = MemoryNote(id: String(UUID().uuidString.prefix(8)).lowercased(), text: String(clean.prefix(Self.maxNoteLength)), by: by, at: Date(),
+                                  locked: locked ? true : nil, app: app, heard: heard)
             f.notes.append(note)
-            if f.notes.count > Self.maxNotes { f.notes.removeFirst(f.notes.count - Self.maxNotes) }
+            Self.trim(&f.notes, to: Self.maxNotes, keeping: \.isLocked)
+            Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.added, id: Self.newID(), at: Date(), by: by, note: note))
             return note
         }
     }
 
+    /// Forgets a note; an agent cannot forget a locked one. The log keeps it for undo.
     @discardableResult
-    public func forgetNote(_ idOrText: String) -> Bool {
+    public func forgetNote(_ idOrText: String, by: String = SkillStore.owner) -> Bool {
         withFile(true) { f in
-            let before = f.notes.count
-            f.notes.removeAll { $0.id == idOrText || $0.text.caseInsensitiveCompare(idOrText) == .orderedSame }
-            return f.notes.count != before
+            guard let i = f.notes.firstIndex(where: { $0.id == idOrText || $0.text.caseInsensitiveCompare(idOrText) == .orderedSame }),
+                  !f.notes[i].isLocked || by == Self.owner else { return false }
+            let old = f.notes.remove(at: i)
+            Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.forgot, id: Self.newID(), at: Date(), by: by, note: old))
+            return true
         }
     }
 
-    public func editNote(_ id: String, text: String) {
+    /// The owner's change to a note: its text and app. It locks, and no longer links to where it was
+    /// heard, since the words are now the owner's.
+    public func editNote(_ id: String, text: String, app: String?? = .none) {
         withFile(true) { f in
             guard let i = f.notes.firstIndex(where: { $0.id == id }) else { return }
+            let old = f.notes[i]
             f.notes[i].text = String(text.prefix(Self.maxNoteLength))
+            if case .some(let app) = app { f.notes[i].app = app }
+            f.notes[i].locked = true
+            f.notes[i].heard = nil
+            f.notes[i].edited = Date()
+            Self.log(&f, MemoryChangeRecord(action: MemoryChangeRecord.edited, id: Self.newID(), at: Date(), by: Self.owner, note: f.notes[i],
+                                            previous: old.text == f.notes[i].text ? nil : old.text, before: old))
         }
+    }
+
+    /// Puts back what a change took away or changed, and marks it undone. Undoing an agent's change
+    /// locks the item, so the agent does not make it again. False when there is nothing to put back
+    /// (already undone, or the item is gone or its place taken).
+    @discardableResult
+    public func undo(_ changeID: String) -> Bool {
+        withFile(true) { f in
+            guard var changes = f.changes, let c = changes.firstIndex(where: { $0.id == changeID }), changes[c].undone != true else { return false }
+            let change = changes[c]
+            let locks: Bool? = change.by == Self.owner ? nil : true
+            func routineIndex(_ name: String?) -> Int? { name.flatMap { n in f.skills.firstIndex { $0.name.caseInsensitiveCompare(n) == .orderedSame } } }
+            switch (change.action, change.note, change.routine) {
+            case (MemoryChangeRecord.forgot, var note?, _):
+                guard !f.notes.contains(where: { $0.id == note.id || $0.text.caseInsensitiveCompare(note.text) == .orderedSame }) else { return false }
+                if let locks { note.locked = locks }
+                f.notes.append(note)
+            case (MemoryChangeRecord.forgot, nil, var routine?):
+                guard routineIndex(routine.name) == nil else { return false }
+                if let locks { routine.locked = locks }
+                f.skills.append(routine)
+            case (MemoryChangeRecord.added, let note?, _):
+                guard let i = f.notes.firstIndex(where: { $0.id == note.id }) else { return false }
+                f.notes.remove(at: i)
+            case (MemoryChangeRecord.added, nil, _):
+                guard let i = routineIndex(change.routineName) else { return false }
+                f.skills.remove(at: i)
+            case (MemoryChangeRecord.edited, let note?, _):
+                guard let i = f.notes.firstIndex(where: { $0.id == note.id }) else { return false }
+                if var old = change.before {
+                    if let locks { old.locked = locks }
+                    f.notes[i] = old
+                } else {
+                    // An entry with only the text before (an agent's edit).
+                    guard let previous = change.previous else { return false }
+                    f.notes[i].text = previous
+                    if let locks { f.notes[i].locked = locks }
+                }
+            case (MemoryChangeRecord.edited, nil, var routine?):
+                guard let i = routineIndex(change.routineName) else { return false }
+                routine.locked = locks ?? f.skills[i].locked
+                f.skills[i] = routine
+            default:
+                return false
+            }
+            changes[c].undone = true
+            f.changes = changes
+            return true
+        }
+    }
+
+    private static func log(_ f: inout MemoryFile, _ change: MemoryChangeRecord) {
+        var changes = f.changes ?? []
+        changes.insert(change, at: 0)
+        if changes.count > maxChanges { changes.removeLast(changes.count - maxChanges) }
+        f.changes = changes
+    }
+
+    private static func newID() -> String { UUID().uuidString.lowercased() }
+
+    /// Drops the oldest unlocked items over the cap; locked ones are never dropped.
+    private static func trim<T>(_ items: inout [T], to cap: Int, keeping kept: (T) -> Bool) {
+        while items.count > cap, let i = items.firstIndex(where: { !kept($0) }) { items.remove(at: i) }
     }
 
     func logRun(_ log: SkillRunLog) {
@@ -525,6 +725,7 @@ public final class SkillStore: @unchecked Sendable {
         snapshot.schema = Self.schema
         snapshot.exported = Date()
         snapshot.extras = includeExtras ? extrasProvider?() : nil
+        snapshot.changes = nil
         return try Self.encoder.encode(snapshot)
     }
 
@@ -538,17 +739,26 @@ public final class SkillStore: @unchecked Sendable {
         guard incoming.schema.hasPrefix("poki.agent-backup/") else { throw ImportError("not a Poki agent backup (schema \(incoming.schema))") }
         guard Self.supportedSchemas.contains(incoming.schema) else { throw ImportError("a backup of a newer Poki (\(incoming.schema)); update Poki to import it") }
         var added = 0, replaced = 0, kept = 0, notes = 0
+        // An agent's import brings what it says, but not the owner's say: nothing comes locked, and
+        // nothing claims to be the owner's, an import's or Dream's. A note's "edited" and "heard"
+        // are the owner's change and one of our own conversations, so they are not carried either.
+        let agent = !Self.isReserved(by)
         withFile(true) { f in
-            for r in incoming.skills where !r.name.isEmpty {
-                let migrated = r.migrated()
-                if let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(migrated.name) == .orderedSame }) {
-                    if migrated.updated > f.skills[i].updated { f.skills[i] = migrated; replaced += 1 } else { kept += 1 }
-                } else { f.skills.append(migrated); added += 1 }
+            for var r in incoming.skills where !r.name.isEmpty {
+                r = r.migrated()
+                if agent { r.locked = nil; if Self.isReserved(r.savedBy) { r.savedBy = by } }
+                if let i = f.skills.firstIndex(where: { $0.name.caseInsensitiveCompare(r.name) == .orderedSame }) {
+                    // The owner locked ours: a newer copy from elsewhere does not replace it.
+                    if r.updated > f.skills[i].updated, !f.skills[i].isLocked { f.skills[i] = r; replaced += 1 } else { kept += 1 }
+                } else { f.skills.append(r); added += 1 }
             }
-            for n in incoming.notes where !f.notes.contains(where: { $0.text.caseInsensitiveCompare(n.text) == .orderedSame }) {
+            for var n in incoming.notes where !f.notes.contains(where: { $0.text.caseInsensitiveCompare(n.text) == .orderedSame }) {
+                if agent { n.locked = nil; n.edited = nil; n.heard = nil; if Self.isReserved(n.by) { n.by = by } }
+                // Another note's id would make forgetting or undoing by id reach the wrong one.
+                if f.notes.contains(where: { $0.id == n.id }) { n.id = String(UUID().uuidString.prefix(8)).lowercased() }
                 f.notes.append(n); notes += 1
             }
-            if f.notes.count > Self.maxNotes { f.notes.removeFirst(f.notes.count - Self.maxNotes) }
+            Self.trim(&f.notes, to: Self.maxNotes, keeping: \.isLocked)
         }
         if let extras = incoming.extras, !extras.isEmpty { extrasRestorer?(extras) }
         return "imported: \(added) skills added, \(replaced) replaced by newer ones, \(kept) kept (ours were newer), \(notes) notes added\(incoming.extras?.isEmpty == false ? ", and the app's saved sessions" : "")"
@@ -727,7 +937,7 @@ extension Computer {
     /// The `do` action as a skill step: element numbers become targets. nil for what is not kept
     /// (a handoff, a run, which records its own steps).
     func recordable(_ action: JSON) -> RecordedStep? {
-        guard case .object(var o) = action, o["handoff"] == nil, o["run"] == nil else { return nil }
+        guard case .object(var o) = action, o["handoff"] == nil, o["run"] == nil, o["path"] == nil else { return nil }
         var target: SkillTarget?
         var typed: String?
         var secret: Bool?
@@ -830,12 +1040,91 @@ extension Computer {
         }
         var params = skill.params
         if case .object(let given) = spec["with"] { for (k, v) in given { if let t = v.text { params[k] = t } } }
+        return try await replay(skill, params: params, store: store, until: until)
+    }
+
+    /// `{path: {goal, steps: [...]}}`: steps the agent wrote ahead for screens it has not read yet, each
+    /// target named by its text. They run as a routine does, without being saved.
+    func runPath(_ spec: JSON, until: Double) async throws -> String {
+        let routine = try Self.pathRoutine(spec)
+        return try await replay(routine, params: [:], store: nil, until: until)
+    }
+
+    /// A path's steps as a routine with no name. A target is the text the element shows, or
+    /// {label, type?}; a point stays a point. Numbers are refused: they are the latest read's, and a
+    /// path is for the screens after it.
+    static func pathRoutine(_ spec: JSON) throws -> Skill {
+        func refuse(_ why: String) -> ActionFailure { ActionFailure(message: "path: \(why); nothing was sent", delivery: .notSent) }
+        guard let given = spec["steps"]?.array ?? spec.array, !given.isEmpty else { throw refuse("give steps: [{tap: \"text\"}, …]") }
+        guard given.count <= 20 else { throw refuse("at most 20 steps") }
+        func target(_ spec: JSON) throws -> SkillTarget? {
+            if spec.array != nil { return nil }
+            if case .string(let label) = spec, Double(label) == nil, !label.isEmpty { return SkillTarget(type: SkillTarget.anyType, label: label) }
+            if case .object = spec, let label = spec["label"]?.string ?? spec["text"]?.string, !label.isEmpty {
+                return SkillTarget(type: spec["type"]?.string ?? SkillTarget.anyType, label: label)
+            }
+            if case .object = spec, spec["x"] != nil, spec["y"] != nil { return nil }
+            throw refuse("a target in a path is the element's text, {label, type?} or a point [x, y], not a number from an earlier read")
+        }
+        var steps: [SkillStep] = []
+        for (i, step) in given.enumerated() {
+            guard case .object(var o) = step, let kind = ActionKind(step), kind != .run, kind != .path, kind != .handoff else { throw refuse("step \(i + 1) is not an action a path can hold") }
+            let expect = (o["expect"]?.array?.compactMap(\.string) ?? o["expect"]?.string.map { [$0] })?.filter { !$0.isEmpty }
+            o["expect"] = nil
+            let optional = o["optional"]?.bool == true
+            o["optional"] = nil
+            var found: SkillTarget?
+            switch kind {
+            case .tap, .longPress:
+                if let t = try target(o[kind.rawValue] ?? .null) {
+                    found = t
+                    if case .object(var inner) = o[kind.rawValue] { inner["label"] = nil; inner["text"] = nil; inner["type"] = nil; inner["ref"] = "@"; o[kind.rawValue] = .object(inner) } else { o[kind.rawValue] = "@" }
+                }
+            case .type:
+                if o["ref"] != nil { throw refuse("step \(i + 1): name the field with into: \"its text\", not a number") }
+                if let into = o["into"] {
+                    guard let t = try target(into) else { throw refuse("step \(i + 1): into is the field's text") }
+                    found = t
+                    o["into"] = nil
+                    o["ref"] = "@"
+                }
+            case .scrollTo:
+                if o["scroll_to"]?["ref"] != nil || o["scroll_to"]?["in"] != nil { throw refuse("step \(i + 1): scroll_to takes the text to reach") }
+            case .drag, .pinch:
+                if Computer.refs(in: step).isEmpty == false { throw refuse("step \(i + 1) uses a number from an earlier read") }
+            default: break
+            }
+            steps.append(SkillStep(action: .object(o), target: found, app: nil, secret: nil, expect: expect?.isEmpty == false ? Array(expect!.prefix(4)) : nil, optional: optional ? true : nil))
+            if optional, found == nil { throw refuse("step \(i + 1): optional needs a target named by its text") }
+        }
+        let now = Date()
+        let dismiss = (spec["dismiss"]?.array?.compactMap(\.string) ?? []).filter { !$0.isEmpty }.prefix(6)
+        return Skill(name: "", description: spec["goal"]?.string ?? "", app: nil, steps: steps, params: [:], expect: spec["expect"]?.array?.compactMap(\.string) ?? [],
+                       read: Array((spec["read"]?.array?.compactMap(\.string) ?? []).prefix(6)),
+                       runs: 0, ok: 0, failuresInARow: 0, lastStop: nil, lastMs: nil, dismiss: dismiss.isEmpty ? nil : Array(dismiss), savedBy: "", created: now, updated: now)
+    }
+
+    /// The steps of a saved routine (`store` given) or of a path, in order. Each step waits for its
+    /// target and acts only on a single match. A step whose target is missing stops the run, with
+    /// nothing sent for it; a path may first close what it said may be closed (its `dismiss`).
+    func replay(_ skill: Skill, params: [String: String], store: SkillStore?, until: Double) async throws -> String {
+        let saved = store != nil
+        let title = saved ? "run \"\(skill.name)\"" : "path"
         let started = now()
         var log: [String] = []
         var done = 0
+        /// What was closed on the way because the path said it may be.
+        var closed: [String] = []
         let screen = size ?? ScreenSize(width: 10_000, height: 10_000)
+        /// Optional steps whose target was not there.
+        var skipped = 0
+        func fixedNote() -> String {
+            (closed.isEmpty ? "" : "; closed on the way: " + closed.joined(separator: "; "))
+                + (skipped > 0 ? "; \(skipped) optional \(skipped == 1 ? "step was" : "steps were") left out" : "")
+        }
         func finish(_ outcome: String, stop: SkillStop?) {
             let ms = Int(((now() - started) * 1000).rounded())
+            guard let store else { return }
             store.update(skill.name) { r in
                 r.runs += 1
                 r.lastMs = ms
@@ -846,7 +1135,8 @@ extension Computer {
         func stop(_ index: Int, _ why: String, _ delivery: Delivery = .notSent) -> ActionFailure {
             finish("stopped at step \(index + 1): \(why)", stop: SkillStop(step: index + 1, why: why, at: Date()))
             let sent = done == 0 ? "no step was sent" : "steps 1 to \(done) were sent"
-            return ActionFailure(message: "run \"\(skill.name)\" stopped at step \(index + 1) of \(skill.steps.count): \(why); \(sent). Go on by hand from the screen below; when the task is done, skills {action: \"save\", name: \"\(skill.name)\"} saves the path that worked over this one", delivery: delivery)
+            let after = saved ? "; when the task is done, skills {action: \"save\", name: \"\(skill.name)\"} saves the path that worked over this one" : ""
+            return ActionFailure(message: "\(title) stopped at step \(index + 1) of \(skill.steps.count): \(why); \(sent)\(fixedNote()). Go on by hand from the screen below\(after)", delivery: delivery)
         }
 
         var front = lastForeground
@@ -858,8 +1148,14 @@ extension Computer {
             } catch { throw stop(0, "\(app) could not be launched (\(error))") }
         }
 
+        /// No input goes into Poki, where the approval card and the approval settings are: a step that
+        /// would send it there stops the run, as a do sending it there is refused.
+        let inPoki = "Poki is in front, and \(CoreConfig.ownAppRefusal). Leave Poki first ({button: \"home\"} or {launch: \"bundle id\"})"
+
         var previous: String?
-        for (index, step) in skill.steps.enumerated() {
+        /// What may be closed when it is in the way of a step: what the path allows.
+        let allowed = (skill.dismiss ?? []).map { SkillTarget(type: SkillTarget.anyType, label: $0) }
+        steps: for (index, step) in skill.steps.enumerated() {
             if step.secret == true { throw stop(index, "it types into a password field, which a skill never keeps: type it yourself") }
             var action = step.action
             if let text = action["type"]?.string, case .object(var o) = action {
@@ -867,58 +1163,140 @@ extension Computer {
                 action = .object(o)
             }
             var scan: SensitiveScan?
+            /// The screen this step lands on was read for it, so `front` is the app really in front.
+            var read = false
             if let target = step.target {
-                let stepEnds = min(until, now() + config.actionCap)
+                // Wait for the target, alone, on screen; after a step that changed nothing yet, give the
+                // screen a moment to move on so the same label on the old screen is not taken for it.
+                var stepEnds = min(until, now() + config.actionCap)
                 var found: Element?
                 var why = "\(target.describe) is not on screen"
                 var reads = 0
-                var candidate: String?
+                var closedHere = 0
+                /// The still screen already looked at for something to close, and found without.
+                var lookedAt: String?
                 let readStart = now()
-                while now() < stepEnds - 0.2 {
-                    guard let tree = try? await runner.tree(timeout: min(config.readTimeout, max(0.3, stepEnds - now() - 0.1)), format: config.treeFormat) else { break }
-                    reads += 1
-                    let elements = listable(tree.elements, screen)
-                    let signature = elements.map { "\($0.key)@\($0.frame.described)" }.joined(separator: ";")
-                    let moved = previous == nil || signature != previous || now() - readStart > 0.8
-                    lastAll = tree.elements
-                    lastForeground = tree.foreground
-                    let matches = elements.filter(target.matches)
-                    if moved, !matches.isEmpty {
-                        let layout = Layout(all: tree.elements, screen: screen)
-                        let reachable = matches.filter { layout.touchPoint($0) != nil }
-                        let near = reachable.sorted { hypot($0.frame.centre.x - target.x, $0.frame.centre.y - target.y) < hypot($1.frame.centre.x - target.x, $1.frame.centre.y - target.y) }
-                        var pick: Element?
-                        if near.count == 1 { pick = near[0] }
-                        if near.count > 1 {
-                            let d0 = hypot(near[0].frame.centre.x - target.x, near[0].frame.centre.y - target.y)
-                            let d1 = hypot(near[1].frame.centre.x - target.x, near[1].frame.centre.y - target.y)
-                            if d0 < 40, d1 > 2 * d0 + 20 { pick = near[0] }
-                            why = "\(near.count) elements match \(target.describe) and none is clearly the recorded one"
-                        } else { why = "\(target.describe) is listed but not where a tap reaches it" }
-                        if let pick {
-                            let here = "\(pick.key)@\(pick.frame.described)"
-                            if here == candidate || now() - readStart > 1.5 { found = pick; break }
-                            candidate = here
-                            why = "\(target.describe) was still moving"
+                attempts: while true {
+                    // The match and its frame in the read before: a target is tapped only once it holds still
+                    // across two reads (a page sliding in moves its rows, and a tap then is lost), or after 1.5 s.
+                    var candidate: String?
+                    let attemptStart = now()
+                    var stillSince = attemptStart
+                    var lastSignature: String?
+                    var elements: [Element] = []
+                    var early = false
+                    while now() < stepEnds - 0.2 {
+                        // A read that fails (an app still launching, a runner busy with the last step) is
+                        // tried again while the step has time: one missed read is not a screen that differs.
+                        guard let tree = try? await runner.tree(timeout: min(config.readTimeout, max(0.3, stepEnds - now() - 0.1)), format: config.treeFormat) else {
+                            why = "the screen could not be read"
+                            await sleep(seconds: 0.25)
                             continue
                         }
+                        if why == "the screen could not be read" { why = "\(target.describe) is not on screen" }
+                        reads += 1
+                        elements = listable(tree.elements, screen)
+                        let signature = elements.map { "\($0.key)@\($0.frame.described)" }.joined(separator: ";")
+                        let moved = previous == nil || signature != previous || now() - attemptStart > 0.8
+                        if signature != lastSignature { stillSince = now(); lastSignature = signature }
+                        lastAll = tree.elements
+                        lastForeground = tree.foreground
+                        var matches = elements.filter(target.matches)
+                        // An alert takes every touch: a target behind one is not there to tap yet (the
+                        // tap would go nowhere, and the step after it would be the one to stop).
+                        if !matches.isEmpty, let alert = tree.elements.last(where: { $0.type == "Alert" && !$0.frame.isEmpty }), !matches.contains(where: { alert.contains($0) }) {
+                            matches = []
+                            why = "\(target.describe) is behind an alert\(alert.text.isEmpty ? "" : " (\"\(alert.text.prefix(60))\")")"
+                        }
+                        if moved, !matches.isEmpty {
+                            let layout = Layout(all: tree.elements, screen: screen)
+                            let reachable = matches.filter { layout.touchPoint($0) != nil }
+                            let (pick, reason) = Self.pick(among: reachable, for: target)
+                            if let reason { why = reason }
+                            if let pick {
+                                let here = "\(pick.key)@\(pick.frame.described)"
+                                if here == candidate || now() - attemptStart > 1.5 { found = pick; break }
+                                candidate = here
+                                why = "\(target.describe) was still moving"
+                                continue
+                            }
+                        }
+                        candidate = nil
+                        // A step for something only sometimes there does not wait for it on a still screen.
+                        if step.optional == true, moved, now() - stillSince >= Self.askAfterStill { break }
+                        // With something the path allows closing, a screen that has held still without
+                        // the target is looked at now, not after the step's whole time.
+                        if !allowed.isEmpty, moved, closedHere < Self.maxClosesPerStep, closed.count < Self.maxClosesPerRun, signature != lookedAt, now() - stillSince >= Self.askAfterStill { early = true; break }
+                        await sleep(seconds: 0.12)
                     }
-                    candidate = nil
-                    await sleep(seconds: 0.12)
+                    if found != nil || step.optional == true { break attempts }
+                    guard closedHere < Self.maxClosesPerStep, closed.count < Self.maxClosesPerRun, until - now() > 1.5, !elements.isEmpty else { break attempts }
+                    let layout = Layout(all: lastAll, screen: screen)
+                    // What the path said may be closed, alone on screen: closed, and the step is tried again.
+                    var closer: Element?
+                    for name in allowed {
+                        let there = elements.filter { name.matches($0) && layout.touchPoint($0) != nil && Self.tappable.contains($0.type) }
+                        if there.count == 1 { closer = there[0]; break }
+                    }
+                    // Nothing to close. Looked at early: the step still has its time, and a page that was
+                    // only slow gets it.
+                    guard let element = closer else {
+                        if !early { break attempts }
+                        lookedAt = lastSignature
+                        continue attempts
+                    }
+                    let signatureNow = elements.map { "\($0.key)@\($0.frame.described)" }.joined(separator: ";")
+                    if config.isPoki(lastForeground) { throw stop(index, "\(why); \(inPoki)") }
+                    // Closing it is a tap like any other: what the owner must approve stays theirs.
+                    refs[Self.runRef] = element
+                    let tap: JSON = ["tap": .number(Double(Self.runRef))]
+                    var closeScan = SensitiveScan(front: lastForeground, secureOnScreen: lastAll.contains(where: \.isSecure))
+                    if let reason = sensitive(tap, &closeScan) {
+                        refs[Self.runRef] = nil
+                        throw stop(index, "\(why); \(element.type) \"\(element.text.prefix(40))\" is in the way and closing it needs the owner's approval (\(reason))")
+                    }
+                    do { _ = try await perform(tap, until: min(until, now() + config.actionCap)) }
+                    catch let failure as ActionFailure { refs[Self.runRef] = nil; throw stop(index, "\(why); closing \(element.type) \"\(element.text.prefix(40))\" failed (\(failure.message))", failure.delivery) }
+                    catch { refs[Self.runRef] = nil; throw stop(index, "\(why); closing what was in the way failed (\(error))", .unknown) }
+                    refs[Self.runRef] = nil
+                    closedHere += 1
+                    closed.append("step \(index + 1): closed \(element.type) \"\(element.text.prefix(40))\" (allowed by the path)")
+                    log.append("before \(index + 1): closed \(element.type) \"\(element.text.prefix(40))\"")
+                    previous = signatureNow
+                    // Closing it changed the screen: the step gets its time again from here.
+                    stepEnds = min(until, now() + config.actionCap)
+                }
+                if found == nil, step.optional == true {
+                    skipped += 1
+                    log.append("\(index + 1) left out: \(target.describe) was not there")
+                    done = index + 1
+                    continue steps
                 }
                 guard let element = found else { throw stop(index, why + " (\(reads) reads in \(Int(((now() - readStart) * 1000).rounded())) ms)") }
                 refs[Self.runRef] = element
                 action = Self.replacingTarget(action, with: Self.runRef)
                 front = lastForeground
+                read = true
                 scan = SensitiveScan(front: lastForeground, secureOnScreen: lastAll.contains(where: \.isSecure))
             } else if config.sensitive.enabled, ActionKind(action)?.movesScreen == true {
                 scan = SensitiveScan(front: front, read: false, secureOnScreen: false)
                 if let tree = try? await runner.tree(timeout: min(config.readTimeout, max(0.3, until - now() - 0.1)), format: config.treeFormat) {
                     lastAll = tree.elements
                     lastForeground = tree.foreground
-                    front = tree.foreground
+                    front = tree.foreground ?? front
+                    read = true
                     let elements = listable(tree.elements, screen)
                     scan = SensitiveScan(front: front, secureOnScreen: elements.contains(where: \.isSecure), elements: elements)
+                }
+            }
+            if ActionKind(action)?.movesScreen == true {
+                // Not read for this step: a launch may not have opened what it named, so the runner says.
+                if !read, let info = try? await runner.raw("GET", "/wda/activeAppInfo", timeout: 1.5, countsAsMiss: false), let bundle = info["bundleId"]?.string, !bundle.isEmpty {
+                    front = Foreground(bundleID: bundle, name: info["name"]?.string)
+                }
+                if config.isPoki(front) {
+                    refs[Self.runRef] = nil
+                    throw stop(index, inPoki)
                 }
             }
             if var scan, let reason = sensitive(action, &scan) {
@@ -927,7 +1305,7 @@ extension Computer {
             }
             let began = now()
             let kind: String, text: String
-            do { (kind, text) = try await perform(action, until: min(until, now() + config.actionCap)) }
+            do { (kind, text) = try await perform(action, until: min(until, now() + actionCap(action))) }
             catch let failure as ActionFailure {
                 refs[Self.runRef] = nil
                 throw stop(index, failure.message, failure.delivery)
@@ -935,17 +1313,42 @@ extension Computer {
                 refs[Self.runRef] = nil
                 throw stop(index, "\(error)", .unknown)
             }
+            // The step is in this task's record too, so a task that goes on by hand saves whole. A
+            // path's target is kept as the element it found, the way a step sent by hand is.
+            var recorded = step
+            if let element = refs[Self.runRef], step.target?.type == SkillTarget.anyType { recorded.target = SkillTarget(element) }
             refs[Self.runRef] = nil
             if let spec = action["launch"] { front = Foreground(bundleID: spec.string ?? spec["bundle"]?.string, name: nil) }
             done = index + 1
             log.append("\(index + 1) \(text.prefix(80)) (\(Int(((now() - began) * 1000).rounded())) ms)")
-            var recorded = step
             recorded.app = lastForeground?.bundleID ?? step.app
+            recorded.optional = nil
+            // A path's typed text is what a saved skill's parameter is made of.
             trace.append(RecordedStep(step: recorded, typed: kind == "type" ? action["type"]?.string : nil, keysBefore: []))
             previous = listable(lastAll, screen).map { "\($0.key)@\($0.frame.described)" }.joined(separator: ";")
             if kind == "type" || kind == "key" { previous = nil }
+            // What the step said must be there afterwards, read from the tree: no model is asked.
+            if let wanted = step.expect, !wanted.isEmpty {
+                let ends = min(until, now() + 3)
+                var missing = wanted
+                while true {
+                    if let tree = try? await runner.tree(timeout: min(config.readTimeout, max(0.3, ends - now())), format: config.treeFormat) {
+                        lastAll = tree.elements
+                        lastForeground = tree.foreground
+                        let texts = listable(tree.elements, screen)
+                        missing = wanted.filter { want in !texts.contains { $0.text.localizedCaseInsensitiveContains(want) } }
+                    }
+                    if missing.isEmpty || now() >= ends - 0.2 { break }
+                    await sleep(seconds: 0.12)
+                }
+                if !missing.isEmpty { throw stop(index, "the step was sent, but \(missing.map { "\"\($0)\"" }.joined(separator: ", ")) did not appear after it", .sent) }
+                log.append("after \(index + 1): \(wanted.map { "\"\($0)\"" }.joined(separator: ", ")) on screen")
+                previous = listable(lastAll, screen).map { "\($0.key)@\($0.frame.described)" }.joined(separator: ";")
+            }
         }
 
+        if skill.steps.last?.expect?.isEmpty == false { runEndedOnARead = true }
+        // The end check and the readout.
         var outcome = "\(skill.steps.count) steps in \(Self.seconds(now() - started)) s"
         if !skill.expect.isEmpty || !skill.read.isEmpty {
             let checkEnds = min(until, now() + 3)
@@ -968,19 +1371,35 @@ extension Computer {
             if !missing.isEmpty {
                 let why = "the end check did not pass: \(missing.map { "\"\($0)\"" }.joined(separator: ", ")) not on screen"
                 finish("ran, end check failed", stop: SkillStop(step: skill.steps.count, why: why, at: Date()))
-                return "run \"\(skill.name)\": \(outcome), but \(why); look at the screen below before going on"
+                return "\(title): \(outcome), but \(why)\(fixedNote()); look at the screen below before going on"
             }
+            if !skill.expect.isEmpty || !values.isEmpty { runEndedOnARead = true }
             if !skill.expect.isEmpty { outcome += ", end check passed (\(skill.expect.map { "\"\($0)\"" }.joined(separator: ", ")) on screen)" }
             if !values.isEmpty { outcome += "; read: " + values.joined(separator: "; ") }
             else if !skill.read.isEmpty { outcome += "; the values to read (\(skill.read.joined(separator: ", "))) were not found: read them from the screen below" }
         }
+        outcome += fixedNote()
         finish("ok", stop: nil)
-        skillRanWhole = true
-        return "run \"\(skill.name)\": \(outcome)"
+        if saved { skillRanWhole = true }
+        return "\(title): \(outcome)"
     }
 
-    func runRoutine(_ spec: JSON, until: Double) async throws -> String {
-        try await runSkill(spec, until: until)
+    /// The one element a step acts on among those that match its target, or why none is taken: a
+    /// single match, or the one clearly nearest to where the target was recorded.
+    static func pick(among reachable: [Element], for target: SkillTarget) -> (Element?, String?) {
+        guard !reachable.isEmpty else { return (nil, "\(target.describe) is listed but not where a tap reaches it") }
+        if reachable.count == 1 { return (reachable[0], nil) }
+        // A path names a target by its text alone: among several, the one that takes a tap.
+        if !target.hasPlace {
+            let controls = reachable.filter { tappable.contains($0.type) }
+            if controls.count == 1 { return (controls[0], nil) }
+            return (nil, "\(reachable.count) elements read \(target.describe) and none is clearly the one meant")
+        }
+        func distance(_ e: Element) -> Double { hypot(e.frame.centre.x - target.x, e.frame.centre.y - target.y) }
+        let near = reachable.sorted { distance($0) < distance($1) }
+        let d0 = distance(near[0]), d1 = distance(near[1])
+        if d0 < 40, d1 > 2 * d0 + 20 { return (near[0], nil) }
+        return (nil, "\(near.count) elements match \(target.describe) and none is clearly the recorded one")
     }
 
     /// The number a run gives the element it found, for the one action it sends.
@@ -1048,26 +1467,31 @@ extension PokiCore {
         ], "required": ["action"], "additionalProperties": false],
     ]
 
-    func skillsCall(_ args: JSON, session: String?) -> ToolResult {
+    /// `conversation` is the app's saved conversation the call came from (Poki's own chat), kept with a
+    /// note as where it was heard.
+    func skillsCall(_ args: JSON, session: String?, conversation: String? = nil) -> ToolResult {
         guard let store = computer.memory else { return ToolResult(text: "skills: no memory on this phone", jpeg: nil, isError: true) }
         let action = args["action"]?.string ?? "list"
         let name = args["name"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let by = session == nil ? "Poki" : (clientNames.value[session!].flatMap { $0.isEmpty ? nil : $0 } ?? "an MCP client")
+        // A client's own name never passes for the owner, an import or Dream: those are the app's own.
+        let named = session.flatMap { clientNames.value[$0] }.flatMap { $0.isEmpty || SkillStore.isReserved($0) ? nil : $0 }
+        let by = session == nil ? "Poki" : named ?? "an MCP client"
         func fail(_ text: String) -> ToolResult { ToolResult(text: "skills \(action): \(text)", jpeg: nil, isError: true) }
+        let locked = "is locked by the owner: only they change or forget it, on Poki's Memory page"
         switch action {
         case "list":
             let skills = store.skills, notes = store.notes
-            var lines = ["skills (\(skills.count)):"] + skills.map { "- \($0.summary)" }
+            var lines = ["skills (\(skills.count)):"] + skills.map { "- \($0.summary)\($0.isLocked ? " (locked)" : "")" }
             if skills.isEmpty { lines = ["skills: none saved yet. After a task that worked, skills {action: \"save\", name, description} keeps its steps so do {run: name} repeats them in one call."] }
             lines.append(notes.isEmpty ? "notes: none" : "notes (\(notes.count)):")
-            lines += notes.map { "- [\($0.id)] \($0.text) (by \($0.by))" }
+            lines += notes.map { "- [\($0.id)] \($0.text) (by \($0.by)\($0.isLocked ? ", locked" : ""))" }
             if !computer.trace.isEmpty { lines.append("this task has \(computer.trace.count) recorded steps so far (save keeps them)") }
             return ToolResult(text: lines.joined(separator: "\n"), jpeg: nil)
         case "show":
             guard let r = store.skill(named: name) else { return fail("no skill named \"\(name)\"") }
             var lines = [r.summary]
             for (i, s) in r.steps.enumerated() {
-                lines.append("\(i + 1). \(s.action.serialized())\(s.target.map { " on \($0.describe) at [\(Int($0.x)), \(Int($0.y))]" } ?? "")\(s.app.map { " in \($0)" } ?? "")")
+                lines.append("\(i + 1). \(s.action.serialized())\(s.target.map { " on \($0.describe)\($0.hasPlace ? " at [\(Int($0.x)), \(Int($0.y))]" : "")" } ?? "")\(s.app.map { " in \($0)" } ?? "")")
             }
             if !r.expect.isEmpty { lines.append("end check: " + r.expect.map { "\"\($0)\"" }.joined(separator: ", ")) }
             if !r.read.isEmpty { lines.append("reads: " + r.read.joined(separator: ", ")) }
@@ -1082,16 +1506,17 @@ extension PokiCore {
             let (skill, note) = computer.skill(named: name, description: args["description"]?.string ?? store.skill(named: name)?.description ?? "", read: read, expect: expect, by: by)
             guard let skill else { return fail(note) }
             let replacing = store.skill(named: name) != nil
-            store.save(skill)
+            guard store.save(skill) else { return fail("\"\(name)\" \(locked); save this one under another name") }
             return ToolResult(text: "skills: \(replacing ? "saved over" : "saved") \"\(skill.name)\" (\(skill.steps.count) steps\(skill.app.map { " in \($0)" } ?? "")\(skill.params.isEmpty ? "" : "; it types " + skill.params.keys.sorted().joined(separator: ", ") + ", which with: changes")\(skill.expect.isEmpty ? "" : "; end check: " + skill.expect.map { "\"\($0)\"" }.joined(separator: ", "))). do {run: \"\(skill.name)\"} repeats it.\(note.isEmpty ? "" : " Note: \(note).")", jpeg: nil)
         case "edit":
-            guard store.skill(named: name) != nil else { return fail("no skill named \"\(name)\"") }
+            guard let current = store.skill(named: name) else { return fail("no skill named \"\(name)\"") }
+            guard !current.isLocked else { return fail("\"\(name)\" \(locked)") }
             var newSteps: [SkillStep]?
             if let text = args["steps"]?.string {
                 guard let steps = try? SkillStore.decoder.decode([SkillStep].self, from: Data(text.utf8)), !steps.isEmpty else { return fail("steps must be the JSON array show gives") }
                 newSteps = steps
             }
-            store.update(name) { r in
+            store.update(name, by: by) { r in
                 if let d = args["description"]?.string { r.description = d }
                 if let e = args["expect"]?.array { r.expect = e.compactMap(\.string) }
                 if let e = args["read"]?.array { r.read = e.compactMap(\.string) }
@@ -1103,17 +1528,25 @@ extension PokiCore {
                 }
                 r.updated = Date()
             }
-            if let rename = args["rename"]?.string, !rename.isEmpty { store.rename(name, to: rename) }
+            if let rename = args["rename"]?.string, !rename.isEmpty, !store.rename(name, to: rename, by: by) {
+                return fail("edited \"\(name)\", but kept its name: \"\(rename)\" is another skill's")
+            }
             return ToolResult(text: "skills: edited \"\(args["rename"]?.string ?? name)\"", jpeg: nil)
         case "forget":
-            guard store.forget(name) else { return fail("no skill named \"\(name)\"") }
+            if store.skill(named: name)?.isLocked == true { return fail("\"\(name)\" \(locked)") }
+            guard store.forget(name, by: by) else { return fail("no skill named \"\(name)\"") }
             return ToolResult(text: "skills: forgot \"\(name)\"", jpeg: nil)
         case "remember":
             let text = args["text"]?.string ?? ""
-            guard let note = store.remember(text, by: by) else { return fail("give the text to remember") }
+            // Heard in a conversation of Poki's own: kept with it, and with the app in front then.
+            let front = computer.lastForeground.flatMap { f in computer.config.isPoki(f) || f.bundleID == "com.apple.springboard" ? nil : f.bundleID }
+            let heard = conversation.map { NoteOrigin(session: $0, app: front) }
+            guard let note = store.remember(text, by: by, heard: heard) else { return fail("give the text to remember") }
             return ToolResult(text: "skills: remembered [\(note.id)] \(note.text)", jpeg: nil)
         case "forget_note":
-            guard store.forgetNote(args["text"]?.string ?? name) else { return fail("no such note") }
+            let which = args["text"]?.string ?? name
+            if store.note(which)?.isLocked == true { return fail("that note \(locked)") }
+            guard store.forgetNote(which, by: by) else { return fail("no such note") }
             return ToolResult(text: "skills: note forgotten", jpeg: nil)
         case "export":
             guard let data = try? store.exportData() else { return fail("could not be made") }

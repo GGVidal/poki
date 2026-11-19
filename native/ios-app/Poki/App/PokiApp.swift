@@ -36,6 +36,9 @@ struct PokiApp: App {
         #if DEBUG && targetEnvironment(simulator)
         TestCredential.importIfGiven()
         #endif
+        #if DEBUG
+        LaunchBackdropRender.writeIfAsked()
+        #endif
         // A memory backup Poki Setup put back (Documents/AgentBackup) is merged in off the main thread.
         Self.scheduleStartupWork()
         // The three-dimensional bear loads while the app starts, to be there when Poki's picture first shows.
@@ -96,6 +99,8 @@ struct RootView: View {
     @AppStorage(AppInterfaceSize.defaultsKey) private var interfaceSize = AppInterfaceSize.system
     @AppStorage(Appearance.key) private var appearance = Appearance.automatic.rawValue
     @Namespace private var profile
+    /// The launch screen is still over the first frame, letting go (`LaunchCurtain`).
+    @State private var curtain = true
 
     enum HomeRoute: Hashable { case chat, session(String), voice, setup }
 
@@ -261,6 +266,9 @@ struct RootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tint.page.ignoresSafeArea())
+        .overlay {
+            if curtain { LaunchCurtain(done: { curtain = false }).ignoresSafeArea().allowsHitTesting(false) }
+        }
         .onGeometryChange(for: Bool.self) { geometry in
             geometry.size.width >= Self.sidebarWidth + 1 + Self.minimumChatWidth
         } action: { showsSidebar = $0 }
@@ -348,6 +356,18 @@ struct RootView: View {
             openDetails([DetailsRoute.history])
         } else if url.host() == "approvals" {
             openDetails([DetailsRoute.approvals])
+        } else if url.host() == "memory" {
+            // poki://memory, and poki://memory/recent?change=<id> from a conversation's "Memory updated",
+            // which lights that change up.
+            let change = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "change" }?.value
+            openDetails(url.path() == "/recent" ? [SettingsRoute.memory, SettingsRoute.memoryPage(.recent(highlight: change))] : [SettingsRoute.memory])
+        } else if url.host() == "session" {
+            // poki://session/<id>: a memory's Source, back to the conversation it was heard in. A conversation
+            // that is no longer kept leaves the page where it is.
+            if let id = url.pathComponents.dropFirst().first, SessionStore.shared.session(id) != nil {
+                detailsOpen = false
+                openRun(id)
+            }
         } else if url.host() == "voice" {
             detailsOpen = false
             model.voice.open(url)
@@ -465,6 +485,8 @@ struct RootView: View {
             openDetails([DetailsRoute.model])
         case "memory":
             openDetails([SettingsRoute.memory])
+        case "memoryRecent":
+            openDetails([SettingsRoute.memory, SettingsRoute.memoryPage(.recent())])
         case "interfaceSize":
             openDetails([DetailsRoute.interfaceSize])
         case "appearance":

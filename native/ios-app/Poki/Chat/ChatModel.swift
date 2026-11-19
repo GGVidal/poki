@@ -1017,7 +1017,7 @@ final class ChatModel {
                     return splitViewRefusal("Use look with pane left or right to confirm the two visible apps first.")
                 }
                 let actions = args["actions"] as? [[String: Any]] ?? []
-                if args["finish"] as? Bool == true || actions.contains(where: { $0["launch"] != nil || $0["run"] != nil || $0["button"] != nil }) {
+                if args["finish"] as? Bool == true || actions.contains(where: { $0["launch"] != nil || $0["run"] != nil || $0["path"] != nil || $0["button"] != nil }) {
                     return splitViewRefusal("Keep both apps in place. Do not launch apps, use hardware buttons, or run skills. Finish with finish_task.")
                 }
             case "report_plan", "finish_task", "status", "screen_history": break
@@ -1074,7 +1074,8 @@ final class ChatModel {
             }
             return response
         default:
-            return await app.runTool(call.name, arguments: call.arguments)
+            // A note Poki keeps remembers this conversation: the Memory page links back to it.
+            return await app.runTool(call.name, arguments: call.arguments, conversation: call.name == "skills" || call.name == "routines" ? sessionID : nil)
         }
     }
 
