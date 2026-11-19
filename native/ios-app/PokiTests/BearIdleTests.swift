@@ -52,7 +52,7 @@ final class BearIdleTests: XCTestCase {
     /// remain strictly inside their white sclera across extreme gazes, head angles, blinks, and thinking.
     func testPupilsNeverLeaveWhiteScleraAcrossAnglesAndExpressions() {
         let gazes: [SIMD2<Float>] = [
-            SIMD2(0.011, 0.012), SIMD2(-0.011, 0.012), // ESP-871 thinking gaze that previously clipped
+            SIMD2(0.011, 0.012), SIMD2(-0.011, 0.012), // thinking gaze that previously clipped
             SIMD2(0.06, 0.06), SIMD2(-0.06, 0.06), SIMD2(0.06, -0.06), SIMD2(-0.06, -0.06),
             SIMD2(0.03, 0), SIMD2(-0.03, 0), SIMD2(0, 0.04), SIMD2(0, -0.04),
             BearStance.pose(.thinking).gaze,
@@ -64,22 +64,19 @@ final class BearIdleTests: XCTestCase {
             for yaw in yaws {
                 for pitch in pitches {
                     for gaze in gazes {
-                        for atten in [Float(0.45), 1.0] {
-                            let tr = BearEyeBounds.transforms(
-                                desiredGaze: gaze,
-                                headYaw: yaw,
-                                headPitch: pitch,
-                                thinkingLid: thinking,
-                                blinkAttenuation: atten
-                            )
-                            XCTAssertEqual(tr.right.gazeDelta, tr.left.gazeDelta, "eyes must move identically in sync")
-                            if gaze.x > 0 { XCTAssertGreaterThanOrEqual(tr.right.gazeDelta.x, 0, "right gaze must not push eye left") }
-                            if gaze.x < 0 { XCTAssertLessThanOrEqual(tr.right.gazeDelta.x, 0, "left gaze must not push eye right") }
-                            let clearR = BearEyeBounds.minNormalizedClearance(side: .right, totalDelta: tr.right.totalDelta)
-                            let clearL = BearEyeBounds.minNormalizedClearance(side: .left, totalDelta: tr.left.totalDelta, lidTopLimit: leftLid)
-                            XCTAssertGreaterThan(clearR, 0, "Eye_R clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
-                            XCTAssertGreaterThan(clearL, 0, "Eye_L clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
-                        }
+                        let tr = BearEyeBounds.transforms(
+                            desiredGaze: gaze,
+                            headYaw: yaw,
+                            headPitch: pitch,
+                            thinkingLid: thinking
+                        )
+                        XCTAssertEqual(tr.right.gazeDelta, tr.left.gazeDelta, "eyes must move identically in sync")
+                        if gaze.x > 0 { XCTAssertGreaterThanOrEqual(tr.right.gazeDelta.x, 0, "right gaze must not push eye left") }
+                        if gaze.x < 0 { XCTAssertLessThanOrEqual(tr.right.gazeDelta.x, 0, "left gaze must not push eye right") }
+                        let clearR = BearEyeBounds.minNormalizedClearance(side: .right, totalDelta: tr.right.totalDelta)
+                        let clearL = BearEyeBounds.minNormalizedClearance(side: .left, totalDelta: tr.left.totalDelta, lidTopLimit: leftLid)
+                        XCTAssertGreaterThan(clearR, 0, "Eye_R clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
+                        XCTAssertGreaterThan(clearL, 0, "Eye_L clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
                     }
                 }
             }
@@ -93,6 +90,30 @@ final class BearIdleTests: XCTestCase {
         )
         XCTAssertEqual(thinkTr.right.gazeDelta, thinkTr.left.gazeDelta)
         XCTAssertGreaterThan(thinkTr.right.gazeDelta.x, 0.010, "both eyes should look right together while thinking")
+    }
+
+    /// The pupils glide: standing at the home screen for ten minutes, neither pupil ever moves faster than
+    /// 0.18 model units a second (the sclera's room is about 0.03), at the rate it is drawn when it
+    /// moves (60 Hz) and when it is calm (30 Hz). Before, the eyes darted 0.03 across in 0.12 s and
+    /// were cut off in a single frame when a look began: up to 0.45 a second, which is the twitch.
+    func testThePupilsNeverTwitchWhileTheBearStands() {
+        for rate in [60.0, 30.0] {
+            var idle = BearIdle(now: 0)
+            var filter = BearPoseFilter()
+            var previous: (right: SIMD3<Float>, left: SIMD3<Float>)?
+            var fastest: Float = 0
+            for frame in 0..<Int(600 * rate) {
+                let now = Double(frame) / rate
+                let pose = filter.filter(idle.pose(at: now), at: now)
+                let eyes = BearEyeBounds.transforms(desiredGaze: pose.gaze, headYaw: pose.headYaw, headPitch: pose.headPitch, thinkingLid: pose.thinkExpression)
+                if let before = previous {
+                    let moved = max(simd_length(eyes.right.translation - before.right), simd_length(eyes.left.translation - before.left))
+                    fastest = max(fastest, moved * Float(rate))
+                }
+                previous = (eyes.right.translation, eyes.left.translation)
+            }
+            XCTAssertLessThan(fastest, 0.18, "fastest pupil speed at \(rate) Hz, in model units a second")
+        }
     }
 
     /// Second-order spring dynamics produce subtle anticipation and elastic overshoot on transitions
