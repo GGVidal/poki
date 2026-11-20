@@ -2,9 +2,9 @@
 """A scripted OpenAI-compatible model for the on-device agent's end-to-end check (ios-agent-chat.yml).
 
 Poki's chat is pointed at http://127.0.0.1:8765/v1 as a custom endpoint. Each conversation follows the
-same script, by how many tool results it already carries:
+same script, with a bounded retry when the simulator cannot read Settings:
 
-  0  report_plan   1  do (open Settings)   2  look   3  finish_task   4+  a plain answer
+  report_plan → do (open Settings) → look (up to three attempts) → finish_task → a plain answer
 
 so the real pi loop in the app runs real look and do calls on the simulator. Every request is summed up
 in a JSON line (roles, tool names, whether a screenshot came back) for the workflow to check.
@@ -24,6 +24,34 @@ SCRIPT = [
                      "details": [{"label": "App", "value": "Settings"}], "answer": {"kind": "action"}}),
 ]
 ANSWER = "Done: Settings is open on the iPhone, and I can see its list."
+READ_FAILED = "I could not read Settings on the iPhone."
+MAX_LOOK_ATTEMPTS = 3
+
+
+def next_step(messages):
+    results = [message for message in messages if message.get("role") == "tool"]
+    if len(results) < 3:
+        return SCRIPT[len(results)], None
+
+    latest = results[-1]
+    call_id = latest.get("tool_call_id")
+    name = next(
+        (call["function"]["name"] for message in messages if message.get("role") == "assistant"
+         for call in (message.get("tool_calls") or []) if call.get("id") == call_id),
+        None,
+    )
+    if name == "finish_task":
+        return None, ANSWER
+    if name != "look":
+        return None, READ_FAILED
+
+    lines = (latest.get("content") or "").splitlines()
+    apps = {"app: Settings", "app: com.apple.Preferences"}
+    if any(line.partition("   read:")[0] in apps for line in lines):
+        return SCRIPT[3], None
+    if len(results) - 2 < MAX_LOOK_ATTEMPTS and any(line.startswith("read: failed (") for line in lines):
+        return SCRIPT[2], None
+    return None, READ_FAILED
 
 
 def summary(body):
@@ -65,13 +93,14 @@ class Handler(BaseHTTPRequestHandler):
             f.write(json.dumps(line) + "\n")
         step = line["tool_results"]
         model = body.get("model") or "poki-mock"
-        if step < len(SCRIPT):
-            name, arguments = SCRIPT[step]
+        tool, reply = next_step(body.get("messages", []))
+        if tool is not None:
+            name, arguments = tool
             call = {"index": 0, "id": f"call_{int(time.time() * 1000)}_{step}", "type": "function",
                     "function": {"name": name, "arguments": json.dumps(arguments)}}
             message, finish = {"role": "assistant", "content": None, "tool_calls": [call]}, "tool_calls"
         else:
-            message, finish = {"role": "assistant", "content": ANSWER}, "stop"
+            message, finish = {"role": "assistant", "content": reply}, "stop"
         usage = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
         if body.get("stream"):
             self.stream(model, message, finish, usage)

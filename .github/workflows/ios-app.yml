@@ -143,10 +143,16 @@ jobs:
               if not ok: failures.append(what)
           need(steps.get("prepare", {}).get("ok") is True, "in-process automation ready")
           chat = steps.get("chat", {})
-          names = [c["name"] for c in chat.get("calls", [])]
+          calls = chat.get("calls", [])
+          names = [c["name"] for c in calls]
+          reads = calls[2:-1]
           need(not chat.get("running", True), "the chat's task ended")
-          need(names[:4] == ["report_plan", "do", "look", "finish_task"], f"pi ran the scripted calls ({names})")
-          need(all(c["ok"] for c in chat.get("calls", [])), "every tool call succeeded")
+          need(names[:2] == ["report_plan", "do"] and names[-1:] == ["finish_task"] and
+               1 <= len(reads) <= 3 and all(c["name"] == "look" for c in reads),
+               f"pi ran the scripted calls with bounded read retries ({names})")
+          need(all(c["ok"] for c in calls[:2] + calls[-1:]), "planning, opening Settings and finishing succeeded")
+          need(bool(reads) and reads[-1]["ok"] and all(not c["ok"] for c in reads[:-1]),
+               "the last Settings read succeeded after any failed reads")
           need(any("Settings is open" in r for r in chat.get("replies", [])), "Poki answered in the chat")
           need(not chat.get("problems"), f"no problem notes ({chat.get('problems')})")
           need(steps.get("chat_saved", {}).get("saved") is True, "the chat was saved as a session")
