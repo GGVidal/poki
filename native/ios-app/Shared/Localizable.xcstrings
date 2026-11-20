@@ -21898,6 +21898,28 @@
         }
       }
     },
+    "Memory Library" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memory"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "记忆库"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "記憶庫"
+          }
+        }
+      }
+    },
     "%@ Needed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -37339,13 +37361,13 @@
             "zh-Hans" : {
                 "stringUnit" : {
                     "state" : "translated",
-                    "value" : "“记忆”会保存供所有外部智能体共享的技能和备忘。连接检查包含日志、检查、后台保持、地址与实时活动预览。"
+                    "value" : "“记忆库”会保存供所有外部智能体共享的技能和备忘。连接检查包含日志、检查、后台保持、地址与实时活动预览。"
                 }
             },
             "zh-Hant" : {
                 "stringUnit" : {
                     "state" : "translated",
-                    "value" : "「記憶」會儲存供所有外部智慧體共享的技能和備忘。連線檢查包含日誌、檢查、背景保持、位址與即時動態預覽。"
+                    "value" : "「記憶庫」會儲存供所有外部智慧體共享的技能和備忘。連線檢查包含日誌、檢查、背景保持、位址與即時動態預覽。"
                 }
             }
         }
@@ -37361,13 +37383,13 @@
             "zh-Hans" : {
                 "stringUnit" : {
                     "state" : "translated",
-                    "value" : "Poki 在此 iPhone 上用于对话和语音的模型。“记忆”会保存供所有外部智能体共享的技能和备忘。"
+                    "value" : "Poki 在此 iPhone 上用于对话和语音的模型。“记忆库”会保存供所有外部智能体共享的技能和备忘。"
                 }
             },
             "zh-Hant" : {
                 "stringUnit" : {
                     "state" : "translated",
-                    "value" : "Poki 在此 iPhone 上用於對話和語音的模型。「記憶」會儲存供所有外部智慧體共享的技能和備忘。"
+                    "value" : "Poki 在此 iPhone 上用於對話和語音的模型。「記憶庫」會儲存供所有外部智慧體共享的技能和備忘。"
                 }
             }
         }
@@ -37405,13 +37427,13 @@
             "zh-Hans" : {
                 "stringUnit" : {
                     "state" : "translated",
-                    "value" : "仅在自动操作状态开启时显示运行提示条，智能体请求时开启、闲置时关闭。“记忆”会保存供所有外部智能体共享的技能和备忘。"
+                    "value" : "仅在自动操作状态开启时显示运行提示条，智能体请求时开启、闲置时关闭。“记忆库”会保存供所有外部智能体共享的技能和备忘。"
                 }
             },
             "zh-Hant" : {
                 "stringUnit" : {
                     "state" : "translated",
-                    "value" : "僅在自動操作狀態開啟時顯示運行提示條，智慧體請求時開啟、閒置時關閉。「記憶」會儲存供所有外部智慧體共享的技能和備忘。"
+                    "value" : "僅在自動操作狀態開啟時顯示運行提示條，智慧體請求時開啟、閒置時關閉。「記憶庫」會儲存供所有外部智慧體共享的技能和備忘。"
                 }
             }
         }
