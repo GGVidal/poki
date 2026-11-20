@@ -177,6 +177,8 @@ static BOOL SRABI(id target, SEL selector, const char *result, NSArray<NSString 
     BOOL _invalidated, _reused, _handlerFired;
     /// When the enable of Automation Mode under way began (uptime), 0 while none is.
     NSTimeInterval _enablingSince;
+    /// How long this prepare's enable of Automation Mode took, 0 when it reused an enabled session.
+    NSTimeInterval _lastEnableSeconds;
     NSString *_closeDetail, *_rebindDetail;
     /// Signalled by the current session's invalidation handler: close waits on it, not on a clock.
     dispatch_semaphore_t _gone;
@@ -204,6 +206,9 @@ static BOOL SRABI(id target, SEL selector, const char *result, NSArray<NSString 
     double value = _enablingSince > 0 ? NSProcessInfo.processInfo.systemUptime - _enablingSince : 0;
     [_lifecycleLock unlock];
     return value;
+}
+- (double)lastEnableSeconds {
+    [_lifecycleLock lock]; double value = _lastEnableSeconds; [_lifecycleLock unlock]; return value;
 }
 - (BOOL)enableWasReused {
     [_lifecycleLock lock]; BOOL value = _reused; [_lifecycleLock unlock]; return value;
@@ -304,6 +309,7 @@ static NSArray<NSString *> *SRSelectorsWith(Class cls, NSString *part) {
 }
 - (id)prepare:(NSError **)error {
     [_prepareLock lock];
+    [_lifecycleLock lock]; _lastEnableSeconds = 0; [_lifecycleLock unlock];
     @try { return [self prepareLocked:error]; }
     @finally { [_prepareLock unlock]; }
 }
@@ -460,7 +466,9 @@ static NSArray<NSString *> *SRSelectorsWith(Class cls, NSString *part) {
     // has been waiting is the evidence for asking the owner; a slow session open is not.
     [_lifecycleLock lock]; _enablingSince = NSProcessInfo.processInfo.systemUptime; [_lifecycleLock unlock];
     BOOL enabledNow = [session enableAutomationModeWithError:error];
-    [_lifecycleLock lock]; _enablingSince = 0; [_lifecycleLock unlock];
+    [_lifecycleLock lock];
+    _lastEnableSeconds = NSProcessInfo.processInfo.systemUptime - _enablingSince; _enablingSince = 0;
+    [_lifecycleLock unlock];
     if (!enabledNow) return nil;
     [_lifecycleLock lock];
     current = _observed == session && _generation == generation && !_invalidated && _token != nil;

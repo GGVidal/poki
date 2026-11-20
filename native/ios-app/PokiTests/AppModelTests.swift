@@ -549,6 +549,7 @@ final class PasscodeTests: XCTestCase {
 final class InProcessPasscodeTests: XCTestCase {
     private var saved: (relay: String?, relayEnabled: Any?, setup: SetupState)!
     private var savedAllowance: Any?
+    private var savedPasscode: Any?
     private var model: AppModel!
     private var session: FakeAutomation!
     private var launcher: FakeLauncher!
@@ -559,6 +560,7 @@ final class InProcessPasscodeTests: XCTestCase {
         // must not leave each open here refused as "open Poki first".
         InProcessWDA.gate.withLock { $0 = InProcessWDA.OpenGate() }
         savedAllowance = UserDefaults.standard.object(forKey: AutomationAllowance.key)
+        savedPasscode = UserDefaults.standard.object(forKey: AutomationAllowance.passcodeKey)
         UserDefaults.standard.removeObject(forKey: AutomationAllowance.key)
         saved = (UserDefaults.standard.string(forKey: "relayAddress"), UserDefaults.standard.object(forKey: "relayEnabled"), SetupState.load())
         session = FakeAutomation()
@@ -582,6 +584,7 @@ final class InProcessPasscodeTests: XCTestCase {
         session?.answer(nil)
         session?.releasePause()
         UserDefaults.standard.set(savedAllowance, forKey: AutomationAllowance.key)
+        UserDefaults.standard.set(savedPasscode, forKey: AutomationAllowance.passcodeKey)
         guard let saved, let model else { return }
         model.stopSession()
         UserDefaults.standard.set(saved.relay, forKey: "relayAddress")
@@ -1152,6 +1155,20 @@ final class InProcessPasscodeTests: XCTestCase {
         XCTAssertFalse(next.isError, next.text)
         XCTAssertTrue(next.text.contains("General"), next.text)
         XCTAssertTrue(model.hasOpenInProcessSession)
+    }
+
+    /// The log says, at each open and each passcode request, how long since automation last started
+    /// and since the passcode was last entered: Apple documents neither when iOS asks again nor from
+    /// when it counts, so the tester logs are what show it.
+    func testTheLogSaysHowLongSinceTheLastStartAndTheLastPasscode() {
+        let now = Date()
+        let boot = BootClock.current
+        let start = AutomationAllowance(boot: boot, at: now.addingTimeInterval(-90 * 60))
+        let passcode = AutomationAllowance(boot: boot, at: now.addingTimeInterval(-9 * 3600))
+        XCTAssertEqual(AutomationAllowance.ages(lastStart: start, passcode: passcode, boot: boot, at: now),
+                       "1.5 h after the last start, 9.0 h after the last passcode")
+        XCTAssertEqual(AutomationAllowance.ages(lastStart: AutomationAllowance(boot: boot - 600, at: now), passcode: nil, boot: boot, at: now),
+                       "no last start in this boot, no last passcode saved")
     }
 
     /// Talk Here starts a relaunched Poki in the background. On iOS 27 its first open asks for no

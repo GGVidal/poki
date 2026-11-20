@@ -36,6 +36,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// How long the enable of Automation Mode under way has been waiting, in seconds; 0 while none is.
 /// iOS shows its passcode screen from inside that call, so a long wait here is the owner being asked.
 - (double)enablingSeconds;
+/// How long the last prepare's enable of Automation Mode took, in seconds (iOS's passcode screen, when
+/// it asked, included); 0 when that prepare reused an enabled session or failed before enabling.
+- (double)lastEnableSeconds;
 /// Turns Automation Mode (and iOS's banner) off while the session stays open, when this iOS offers a
 /// way; the next prepare turns it on again. Keys: paused, how, selectors (what the session offers).
 - (NSDictionary<NSString *, id> *)pauseAutomation;

@@ -1213,7 +1213,8 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
         NSString *detail = error.localizedDescription ?: @"no session";
         if (loader) detail = [detail stringByAppendingFormat:@" (%s)", loader];
         NSString *code = [error.domain isEqualToString:@"RecoveredNative"] ? error.localizedDescription : [NSString stringWithFormat:@"%@ %ld", error.domain ?: @"unknown", (long)error.code];
-        return @{@"ok": @NO, @"code": code ?: @"unknown", @"detail": detail, @"seconds": @(seconds)};
+        return @{@"ok": @NO, @"code": code ?: @"unknown", @"detail": detail, @"seconds": @(seconds),
+                 @"enable_seconds": @([_sessions lastEnableSeconds])};
     }
     // Ready means readable: a session that is enabled but answers no element tree is not handed out
     // (issue 347: such a session was reported ready, and every read after it failed).
@@ -1225,7 +1226,7 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
                  @"seconds": @(seconds), @"warm_seconds": @(warm), @"device": [_sessions rebindDetail] ?: @"first"};
     }
     return @{@"ok": @YES, @"generation": @(generation), @"reused": @(_sessions.enableWasReused), @"seconds": @(seconds), @"warm_seconds": @(warm),
-             @"device": [_sessions rebindDetail] ?: @"first"};
+             @"enable_seconds": @([_sessions lastEnableSeconds]), @"device": [_sessions rebindDetail] ?: @"first"};
 }
 
 - (double)authorizationWaitSeconds { return [_sessions enablingSeconds]; }

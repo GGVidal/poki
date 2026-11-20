@@ -662,7 +662,9 @@ final class AppModel {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard epoch == self.inProcessEpoch else {
-                    self.log.add("runner", "an in-process open for \(why) answered after the session was closed: not taken")
+                    let answer = (result["ok"] as? Bool) == true ? "ready" : "\(result["code"] ?? "unknown")"
+                    self.log.add("runner", String(format: "an in-process open for %@ answered after the session was closed (%@, enable %.1f s): not taken",
+                                                  why, answer, result["enable_seconds"] as? Double ?? 0))
                     return
                 }
                 let ok = (result["ok"] as? Bool) == true
@@ -692,11 +694,20 @@ final class AppModel {
                     self.log.add("runner", "the kept session could not resume (\(resumeFailure)): it was closed and a new one opened for \(why)")
                 }
                 let waitedForPasscode = self.inProcessPasscode
+                // iOS's passcode screen is up inside the enable call: a long enable is iOS asking, also
+                // when the owner answered before Poki's next idle check saw the wait.
+                let enableSeconds = result["enable_seconds"] as? Double ?? 0
+                let askedForPasscode = waitedForPasscode || enableSeconds > Self.passcodeEvidence
+                // Read before this open counts as the last start (`automationStarted`).
+                let ages = AutomationAllowance.ages()
                 self.endPasscodeWait(opened: ok)
+                if ok, askedForPasscode { AutomationAllowance(boot: BootClock.current, at: Date()).savePasscodeEntered() }
                 let seconds = String(format: "%.2f", result["seconds"] as? Double ?? 0)
                 let warm = (result["warm_seconds"] as? Double).map { $0 > 0 ? String(format: ", first snapshot and screenshot %.2f s", $0) : "" } ?? ""
-                self.log.add("runner", ok ? "in-process session ready for \(why) (generation \(result["generation"] ?? 0), \((result["reused"] as? Bool) == true ? "already open" : "opened"), \(seconds) s\(warm))"
-                                          : "in-process session not ready for \(why): \(result["code"] ?? "unknown") after \(seconds) s")
+                let reused = (result["reused"] as? Bool) == true
+                let enable = String(format: "enable %.1f s", enableSeconds)
+                self.log.add("runner", ok ? "in-process session ready for \(why) (generation \(result["generation"] ?? 0), \(reused ? "already open" : "opened"), \(seconds) s\(warm)\(reused ? "" : "; \(askedForPasscode ? "after the passcode" : "no passcode"), \(enable), \(ages)"))"
+                                          : "in-process session not ready for \(why): \(result["code"] ?? "unknown") after \(seconds) s (\(enable), \(ages))")
                 if ok {
                     self.log.add("session-timing", String(format: "session_ready uptime=%.6f", ProcessInfo.processInfo.systemUptime))
                     self.automationStarted()
@@ -754,7 +765,7 @@ final class AppModel {
     private func beginPasscodeWait(waited: Double) {
         inProcessPasscode = true
         passcodeHint = true
-        log.add("runner", String(format: "iOS has been asked to allow automation for %.1f s: asking the owner for the passcode on the Live Activity", waited))
+        log.add("runner", String(format: "iOS has been asked to allow automation for %.1f s: asking the owner for the passcode on the Live Activity (%@)", waited, AutomationAllowance.ages()))
         inProcessSession = .waitingForPasscode
         host.update(runner: coreState(of: runner))
         activity.update { $0.phase = .handoff; $0.handoff = .init(id: Self.runnerPasscodeHandoff, kind: .automationPasscode, text: nil, app: nil, since: Date()) }
@@ -2633,10 +2644,34 @@ struct AutomationAllowance: Equatable {
         boot == current && now >= at && now.timeIntervalSince(at) < Self.lasts
     }
 
-    static var saved: AutomationAllowance? {
+    /// When the owner last entered the passcode iOS asked for: an open that waited on iOS's screen
+    /// and then opened. Kept beside the last start only for the log (`ages`).
+    static let passcodeKey = "automationPasscodeEntered"
+
+    static var saved: AutomationAllowance? { load(key) }
+    static var passcodeEntered: AutomationAllowance? { load(passcodeKey) }
+
+    private static func load(_ key: String) -> AutomationAllowance? {
         guard let pair = UserDefaults.standard.array(forKey: key) as? [Double], pair.count == 2 else { return nil }
         return AutomationAllowance(boot: pair[0], at: Date(timeIntervalSince1970: pair[1]))
     }
 
     func save() { UserDefaults.standard.set([boot, at.timeIntervalSince1970], forKey: Self.key) }
+    func savePasscodeEntered() { UserDefaults.standard.set([boot, at.timeIntervalSince1970], forKey: Self.passcodeKey) }
+
+    /// For the log at each open and each passcode request: how long since automation last started and
+    /// since the owner last entered the passcode, in this boot. Apple documents neither when iOS asks
+    /// again nor from when it counts; these lines in the phone's log are what shows it.
+    static func ages(lastStart: AutomationAllowance?, passcode: AutomationAllowance?, boot current: Double, at now: Date) -> String {
+        func age(_ allowance: AutomationAllowance?, _ what: String) -> String {
+            guard let allowance else { return "no \(what) saved" }
+            guard allowance.boot == current else { return "no \(what) in this boot" }
+            return String(format: "%.1f h after the %@", max(0, now.timeIntervalSince(allowance.at)) / 3600, what)
+        }
+        return "\(age(lastStart, "last start")), \(age(passcode, "last passcode"))"
+    }
+
+    static func ages(at now: Date = Date()) -> String {
+        ages(lastStart: saved, passcode: passcodeEntered, boot: BootClock.current, at: now)
+    }
 }
