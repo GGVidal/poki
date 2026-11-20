@@ -64,6 +64,10 @@ FOUNDATION_EXPORT CGPoint PKWorkspaceLauncherPoint(NSDictionary<NSString *, NSAr
 /// The visible Poki scene on Duo: "left", "right", "fullscreen", or "split-unknown" until a split side is confirmed.
 - (nullable NSString *)duoPlacement;
 @property (nonatomic, readonly) BOOL hasDuoCompanion;
+/// Preserve the first confirmed companion for this chat task when Poki's pane is replaced.
+- (BOOL)beginDuoCompanionTask;
+- (void)endDuoCompanionTask;
+@property (nonatomic, readonly) BOOL hasDuoCompanionTask;
 /// Loads the Developer libraries, opens the daemon session and enables Automation Mode, or reuses an
 /// enable of the same session and generation. Keys: ok, code, detail, generation, reused, seconds.
 - (NSDictionary<NSString *, id> *)prepare;

@@ -330,7 +330,7 @@ final class InProcessWDA: HTTPTransport, @unchecked Sendable {
             return refused(400, "invalid argument", "this would leave Split View; choose look {pane: \"auto\"} first to return to normal control")
         }
         if key == "POST /wda/homescreen", native.hasDuoCompanion {
-            return refused(400, "invalid argument", "not sent: Home would hide a Split View app. Keep Poki visible and ask the owner to open the task's app beside it.")
+            return refused(400, "invalid argument", "not sent: Home would hide the task's Split View app.")
         }
         do {
             if key == "GET /screenshot" {
