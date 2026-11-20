@@ -670,10 +670,41 @@ static id PKUniqueAutomationScreen(PKDisplayGeometry geometry) {
     return matched ?: (renderMatches == 1 ? rendered : nil);
 }
 
+// In Split View UIKit can describe the scene's own pane as its entire screen.
+// The pane still spans the short axis of the active panel.
+static PKDisplayGeometry PKDuoPanelForScene(PKDisplayGeometry scene) {
+    CGSize pane = scene.bounds.size;
+    if (!CGRectIsNull(scene.peer) || !UIInterfaceOrientationIsLandscape(scene.orientation) ||
+        pane.width <= 0 || pane.width >= pane.height) return scene;
+    CGFloat scale = round(MAX(scene.nativeSize.width, scene.nativeSize.height) / pane.height);
+    if (scale < 2 || scale > 4 || !PKDuoMatchesRenderSize(scene.nativeSize, pane, scale)) return scene;
+    CGSize panel = CGSizeZero;
+    for (id screen in [NSClassFromString(@"XCUIScreen") screens]) {
+        if (![screen respondsToSelector:@selector(bounds)]) continue;
+        CGSize grid = [screen bounds].size;
+        for (NSUInteger unit = 0; unit < 2; unit++) {
+            CGFloat divisor = unit == 0 ? scale : 1;
+            CGSize candidate = CGSizeMake(MAX(grid.width, grid.height) / divisor, MIN(grid.width, grid.height) / divisor);
+            if (fabs(candidate.height - pane.height) > 2 || candidate.width <= candidate.height ||
+                pane.width < candidate.width * 0.35 || pane.width > candidate.width * 0.55) continue;
+            if (panel.width > 0) return scene;
+            panel = candidate;
+        }
+    }
+    if (panel.width == 0 || !PKDuoFixedBasis(panel, scene.orientation, &scene.toFixed)) return scene;
+    scene.bounds = (CGRect){CGPointZero, panel};
+    scene.nativeSize = CGSizeZero;
+    // Either side may contain the target until an accessibility hit confirms its position.
+    scene.peer = (CGRect){CGPointZero, pane};
+    return scene;
+}
+
 static id PKAutomationScreen(PKDisplayGeometry geometry) {
     id main = [NSClassFromString(@"XCUIScreen") mainScreen];
     if (!geometry.routesDisplay) return main;
-    return PKUniqueAutomationScreen(geometry) ?: main;
+    id matched = PKUniqueAutomationScreen(geometry);
+    if (PKIsDuo() && !CGRectIsNull(geometry.peer)) return matched;
+    return matched ?: main;
 }
 
 static UIImage *PKNormalizeImage(UIImage *image, PKDisplayGeometry geometry) {
@@ -1021,7 +1052,7 @@ static NSInteger PKWorkspaceAppearanceOrder(NSArray<NSData *> *current, NSArray<
 
 - (CGRect)otherWorkspacePane {
     PKWorkspace *workspace = self.selectedWorkspace;
-    if (!workspace) return CGRectNull;
+    if (!workspace || workspace.leftPID == getpid() || workspace.rightPID == getpid()) return CGRectNull;
     return workspace.selectRight ? workspace.left : workspace.right;
 }
 
@@ -1052,11 +1083,67 @@ static NSInteger PKWorkspaceAppearanceOrder(NSArray<NSData *> *current, NSArray<
     return visible;
 }
 
+// Only the companion app is controllable when Poki itself occupies a pane.
+- (PKWorkspace *)companionOn:(PKDisplayGeometry)display ax:(id)ax session:(id)session
+                  generation:(uint64_t)generation element:(id *)element {
+    CGRect left, right;
+    CGRectDivide(display.bounds, &left, &right, CGRectGetWidth(display.bounds) / 2, CGRectMinXEdge);
+    int leftHit = PKPIDAt(ax, left, display), rightHit = PKPIDAt(ax, right, display);
+    int ownPID = getpid();
+    BOOL targetOnRight;
+    if (display.panePlacementKnown) {
+        targetOnRight = CGRectGetMidX(display.peer) > CGRectGetMidX(display.bounds);
+    } else if ((leftHit == ownPID) != (rightHit == ownPID)) {
+        targetOnRight = leftHit == ownPID;
+    } else {
+        return nil;
+    }
+    int targetHit = targetOnRight ? rightHit : leftHit;
+    if (targetHit == ownPID) return nil;
+    PKDisplayGeometry placed = display;
+    placed.panePlacementKnown = YES;
+    NSString *(^bundleForPID)(int) = ^NSString *(int pid) { return [self bundleForPID:pid session:session]; };
+    id target = PKForegroundElement(ax, placed, NULL, bundleForPID);
+    int pid = PKAXPid(target);
+    NSString *hitBundle = targetHit > 0 && targetHit != pid ? bundleForPID(targetHit) : nil;
+    if (pid <= 0 || pid == ownPID || (hitBundle.length && ![hitBundle isEqualToString:@"com.apple.springboard"] &&
+        ![hitBundle isEqualToString:@"com.apple.SleepLockScreen"])) return nil;
+    id root = PKRequestSnapshotWithin(1, ax, target, 2, 24, NULL);
+    CGRect frame = PKWorkspaceFrame(root, display, targetOnRight);
+    BOOL paneLocal = targetOnRight && CGRectIsNull(frame);
+    if (paneLocal) {
+        frame = PKWorkspaceFrame(root, display, NO);
+        if (!CGRectIsNull(frame)) {
+            CGFloat width = MAX(CGRectGetWidth(frame), CGRectGetWidth(display.peer));
+            frame.origin.x = CGRectGetMaxX(display.bounds) - width;
+        }
+    }
+    if (CGRectIsNull(frame)) return nil;
+    PKWorkspace *workspace = [PKWorkspace new];
+    workspace.display = display;
+    workspace.generation = generation;
+    workspace.selectRight = targetOnRight;
+    workspace.left = targetOnRight ? left : frame;
+    workspace.right = targetOnRight ? frame : right;
+    workspace.leftPID = targetOnRight ? ownPID : pid;
+    workspace.rightPID = targetOnRight ? pid : ownPID;
+    workspace.paneLocal = paneLocal;
+    if (element) *element = target;
+    return workspace;
+}
+
 /// The observed layout, with AX identity and physical positions independent of keyboard focus.
 - (PKWorkspace *)workspaceOn:(PKDisplayGeometry)display ax:(id)ax session:(id)session
                    generation:(uint64_t)generation known:(PKWorkspace *)known elements:(NSArray **)elements {
-    if (!PKIsDuo() || !display.routesDisplay || !CGRectIsNull(display.peer) ||
-        CGRectGetWidth(display.bounds) <= CGRectGetHeight(display.bounds) || [self isPokiSceneVisible]) return nil;
+    if (!PKIsDuo() || !display.routesDisplay || CGRectGetWidth(display.bounds) <= CGRectGetHeight(display.bounds)) return nil;
+    if (!CGRectIsNull(display.peer)) {
+        if (![self isPokiSceneVisible]) return nil;
+        id target = nil;
+        PKWorkspace *workspace = [self companionOn:display ax:ax session:session generation:generation element:&target];
+        if (workspace && elements) *elements = workspace.selectRight ? @[NSNull.null, target] : @[target, NSNull.null];
+        return workspace;
+    }
+    if ([self isPokiSceneVisible]) return nil;
     NSArray *active = PKActiveApplications(ax);
     if (active.count < 2) return nil;
     CGRect leftProbe, rightProbe;
@@ -1168,19 +1255,24 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
     PKDisplayGeometry display = self.displayGeometry;
     PKWorkspace *workspace = session ? [self workspaceOn:display ax:[self accessibilityFor:generation] session:session generation:generation known:self.selectedWorkspace elements:NULL] : nil;
     if (!workspace || !PKSameDisplay(display, self.displayGeometry)) {
-        if (code) *code = @"two visible apps could not be confirmed; open two apps in Split View with Poki in the background";
+        if (code) *code = @"the visible apps could not be confirmed; open the target app in Split View";
         return nil;
     }
     workspace.selectRight = [side isEqualToString:@"right"];
-    [self setWorkspace:workspace];
     int pid = workspace.selectRight ? workspace.rightPID : workspace.leftPID;
+    if (pid == getpid()) {
+        if (code) *code = @"Poki is in the requested pane; select the other pane";
+        return nil;
+    }
+    [self setWorkspace:workspace];
     int otherPID = workspace.selectRight ? workspace.leftPID : workspace.rightPID;
     NSString *identity = [NSString stringWithFormat:@"%@/%llu/%d/%d/%@/%@/%@/%ld/%@/%llu", side, generation, workspace.leftPID,
                           workspace.rightPID, NSStringFromCGRect(workspace.left), NSStringFromCGRect(workspace.right),
                           NSStringFromCGAffineTransform(workspace.display.toFixed), (long)workspace.display.orientation,
                           NSStringFromCGSize(workspace.display.nativeSize),
                           workspace.display.orientationRevision];
-    return @{@"bundleId": [self bundleForPID:pid session:session] ?: @"", @"otherBundleId": [self bundleForPID:otherPID session:session] ?: @"",
+    NSString *other = otherPID == getpid() ? NSBundle.mainBundle.bundleIdentifier : [self bundleForPID:otherPID session:session];
+    return @{@"bundleId": [self bundleForPID:pid session:session] ?: @"", @"otherBundleId": other ?: @"",
              @"identity": identity, @"x": @(CGRectGetMinX(workspace.selectRight ? workspace.right : workspace.left)),
              @"y": @(CGRectGetMinY(workspace.selectRight ? workspace.right : workspace.left))};
 }
@@ -1836,21 +1928,28 @@ static const int PKFrontKey = -1;
     // Pane-local accessibility needs the workspace's physical placement as well as the app.
     // On rotation recovery, hit tests, two snapshots and visual matching can exceed 2 s.
     NSDictionary *found = PKBounded(PKFrontKey, selected ? PKWorkspaceFrontSeconds : PKFrontSeconds, &given, ^id {
-        CGRect pane;
-        id chosen;
+        CGRect pane = CGRectNull;
+        id chosen = nil;
+        BOOL paneLocal = NO;
         if (selected) {
             NSArray *elements = nil;
             PKWorkspace *current = [weakSelf workspaceOn:geometry ax:ax session:session generation:generation known:selected elements:&elements];
             if (selected != weakSelf.selectedWorkspace || !PKSameWorkspace(selected, current)) return @{};
             pane = selected.selectRight ? current.right : current.left;
             chosen = elements[selected.selectRight ? 1 : 0];
+            paneLocal = selected.paneLocal;
+        } else if (PKIsDuo() && !CGRectIsNull(geometry.peer)) {
+            PKWorkspace *companion = [weakSelf companionOn:geometry ax:ax session:session generation:generation element:&chosen];
+            if (!companion) return @{};
+            pane = companion.selectRight ? companion.right : companion.left;
+            paneLocal = companion.paneLocal;
         } else {
             chosen = PKForegroundElement(ax, geometry, &pane, ^NSString *(int pid) { return [weakSelf bundleForPID:pid session:session]; });
         }
         int pid = PKAXPid(chosen);
         NSMutableDictionary *answer = [NSMutableDictionary dictionary];
         if (!CGRectIsNull(pane)) answer[@"pane"] = [NSValue valueWithCGRect:pane];
-        if (selected.paneLocal) answer[@"paneLocal"] = @YES;
+        if (paneLocal) answer[@"paneLocal"] = @YES;
         if (chosen && pid > 0) {
             answer[@"element"] = chosen;
             answer[@"bundleId"] = [weakSelf bundleForPID:pid session:session] ?: @"";
@@ -1962,6 +2061,7 @@ static const int PKFrontKey = -1;
 - (PKDisplayGeometry)displayGeometry {
     PKDisplayGeometry scene = self.sceneDisplayGeometry;
     if (!PKIsDuo() || !CGRectIsNull(scene.peer)) return scene;
+    if ([self isPokiSceneVisible]) return PKDuoPanelForScene(scene);
     uint64_t generation = self.generation;
     @synchronized (self) {
         if (_workspace || !_duoPanelGeneration || _duoPanelGeneration != generation) return scene;
@@ -2096,7 +2196,7 @@ static const int PKFrontKey = -1;
 - (PKDisplayGeometry)readDisplayGeometry {
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270100
     if (PKIsDuo()) {
-        if (self.hasSelectedPane || self.isPokiSceneVisible) return self.sceneDisplayGeometry;
+        if (self.hasSelectedPane || self.isPokiSceneVisible) return self.displayGeometry;
         PKOutcome *refused;
         uint64_t generation = 0;
         id session = [self current:&generation outcome:&refused];
@@ -2116,8 +2216,8 @@ static const int PKFrontKey = -1;
     if (self.selectedWorkspace && confirmed) {
         next = confirmed.CGRectValue;
     } else if (!CGRectIsNull(geometry.peer)) {
-        if (geometry.panePlacementKnown) next = geometry.peer;
-        else if (confirmed) next = confirmed.CGRectValue;
+        if (confirmed) next = confirmed.CGRectValue;
+        else if (geometry.panePlacementKnown) next = geometry.peer;
         else if (!CGRectIsNull(PKPeerPane(screen, frame))) next = CGRectIntersection(frame, screen);
     } else if (!PKIsDuo() && !CGRectIsEmpty(frame) && !CGRectIsInfinite(frame) &&
         (fabs(frame.size.width - screen.size.width) > 8 || fabs(frame.size.height - screen.size.height) > 8)) {
