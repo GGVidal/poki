@@ -232,15 +232,15 @@ impl Launcher {
         me.set("pairing", attempt, json!({"pairing": kind}));
         let mut device = match Device::open(config.device_address, &mut pairing, Duration::from_secs(20)).await {
             Ok(device) => device,
-            // On cellular the loopback can refuse the connection (GitHub issue 35) while the image
-            // mounted earlier is still there: the app's own session needs neither. It is ready only
+            // The loopback can refuse or drop the connection while the image mounted earlier
+            // is still there. The app's own session can use that image. It is ready only
             // once that session opens, and nothing here checked the pairing. The refusal's words go
             // with it, for the app's log. While the app looks for a moved remote pairing port on
             // Wi-Fi, a refusal is `NotListening` and waits for that port; once the search ends, the
             // same refusal comes here again.
             Err(failure)
                 if config.in_process
-                    && failure.remote_stage == Some(Stage::Connect)
+                    && matches!(failure.remote_stage, Some(Stage::Connect | Stage::Handshake))
                     && config.ddi_marker.as_deref().is_some_and(Path::is_file) =>
             {
                 let status = json!({"runner": "in-process", "code": "local_ddi", "detail": failure.detail});
