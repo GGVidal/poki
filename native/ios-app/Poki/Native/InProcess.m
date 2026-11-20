@@ -596,6 +596,7 @@ static BOOL PKSameDisplay(PKDisplayGeometry a, PKDisplayGeometry b) {
 @end
 
 @interface PKDuoCompanionTask : NSObject
+@property (nonatomic, copy, nullable) NSString *initialPokiPane;
 @property (atomic, strong, nullable) PKWorkspace *target;
 @end
 @implementation PKDuoCompanionTask
@@ -1086,6 +1087,7 @@ static NSInteger PKWorkspaceAppearanceOrder(NSArray<NSData *> *current, NSArray<
     if (!placement || [placement isEqualToString:@"fullscreen"] || self.hasSelectedPane) return NO;
     @synchronized (self) {
         _duoCompanionTask = [PKDuoCompanionTask new];
+        _duoCompanionTask.initialPokiPane = [placement isEqualToString:@"split-unknown"] ? nil : placement;
         _capturedDisplay = nil;
         _lastFront = nil;
         _viewport = CGRectNull;
@@ -1798,7 +1800,7 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
         PKDuoCompanionTask *companionTask = self.duoCompanionTask;
         PKDisplayGeometry geometry = self.displayGeometry;
         BOOL companion = selected && (selected.leftPID == getpid() || selected.rightPID == getpid());
-        if (companionTask && (CGRectIsNull(geometry.peer) || !refreshViewport)) {
+        if (companionTask && (CGRectIsNull(geometry.peer) || (!refreshViewport && !self.isPokiSceneVisible))) {
             if (code) *code = @"target_pane_unconfirmed";
             return nil;
         }
@@ -1828,7 +1830,16 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
         if (selected && refreshViewport && ![self sharedFront:&workspaceFront ax:NULL code:code]) return nil;
         NSValue *heldPane = nil;
         if (!refreshViewport && !CGRectIsNull(geometry.peer)) {
-            if (companion) {
+            if (companionTask) {
+                workspaceFront = [self heldCompanionInfo:geometry];
+                PKWorkspace *target = companionTask.target;
+                NSString *pokiPane = target.selectRight ? @"left" : @"right";
+                int targetPID = target.selectRight ? target.rightPID : target.leftPID;
+                if (target && [workspaceFront[@"pokiPane"] isEqualToString:pokiPane] &&
+                    [workspaceFront[@"pid"] intValue] == targetPID &&
+                    [workspaceFront[@"bundleId"] isEqualToString:target.targetBundle])
+                    heldPane = workspaceFront[@"pane"];
+            } else if (companion) {
                 workspaceFront = [self heldCompanionInfo:geometry];
                 if ([workspaceFront[@"identity"] isEqualToString:selected.identity]) heldPane = workspaceFront[@"pane"];
             } else if (selected && selected.generation == self.generation && PKSameDisplay(selected.display, geometry)) {
@@ -1837,7 +1848,10 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
                 heldPane = [self heldCompanionInfo:geometry][@"pane"];
             }
         }
-        if (selected && !refreshViewport && !heldPane) { if (code) *code = @"target_pane_unconfirmed"; return nil; }
+        if ((selected || companionTask) && !refreshViewport && !heldPane) {
+            if (code) *code = @"target_pane_unconfirmed";
+            return nil;
+        }
         id screen = request ? PKUniqueAutomationScreen(geometry) : PKAutomationScreen(geometry);
         if (!screen) { if (code) *code = @"target_display_unavailable"; return nil; }
         // A JPEG from testmanagerd (what WebDriverAgent uses): a fraction of the PNG's bytes to
@@ -1866,6 +1880,7 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
             // the tree read; during a held request use only a previously confirmed split crop.
             PKDisplayGeometry current = self.displayGeometry;
             if (companionTask != self.duoCompanionTask ||
+                (companionTask && !refreshViewport && !self.isPokiSceneVisible) ||
                 ((request || selected || !CGRectIsNull(geometry.peer) || !CGRectIsNull(current.peer)) &&
                  (selected != self.selectedWorkspace || !PKSameDisplay(geometry, current)))) {
                 if (code) *code = @"display_changed_during_screenshot";
@@ -1917,7 +1932,8 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
                 }
                 @synchronized (self) {
                     if ((request && request != _duoCaptureRequest) ||
-                        (companionTask && (companionTask != _duoCompanionTask || inputs != _inputs)) ||
+                        (companionTask && (companionTask != _duoCompanionTask || inputs != _inputs ||
+                         (!refreshViewport && [workspaceFront[@"companionGeneration"] unsignedLongLongValue] != _sessions.generation))) ||
                         (companion && (selected != _workspace || inputs != _inputs || selected.generation != _sessions.generation))) {
                         if (code) *code = @"display_changed_during_screenshot";
                         return nil;
@@ -2117,6 +2133,22 @@ static const NSTimeInterval PKWorkspaceFrontSeconds = 4.0;
 static const NSTimeInterval PKFrontSeconds = 2.0;
 static const int PKFrontKey = -1;
 
+- (BOOL)pinDuoCompanion:(PKWorkspace *)observed task:(PKDuoCompanionTask *)task session:(id)session {
+    if (!observed.targetBundle.length || !self.isPokiSceneVisible ||
+        !PKSameDisplay(observed.display, self.displayGeometry) ||
+        ![_sessions isCurrent:session generation:observed.generation]) return NO;
+    NSString *pokiPane = observed.selectRight ? @"left" : @"right";
+    if (task.initialPokiPane && ![task.initialPokiPane isEqualToString:pokiPane]) return NO;
+    @synchronized (self) {
+        if (task != _duoCompanionTask) return NO;
+        if (!task.target) task.target = observed;
+        PKWorkspace *target = task.target;
+        return target.selectRight == observed.selectRight &&
+            (target.selectRight ? target.rightPID == observed.rightPID : target.leftPID == observed.leftPID) &&
+            [target.targetBundle isEqualToString:observed.targetBundle];
+    }
+}
+
 - (BOOL)bindDuoCompanionTarget {
     PKDuoCompanionTask *task = self.duoCompanionTask;
     if (!task || !self.isPokiSceneVisible) return NO;
@@ -2135,13 +2167,7 @@ static const int PKFrontKey = -1;
         workspace.targetBundle = [self bundleForPID:PKAXPid(element) session:session];
         return workspace.targetBundle.length ? workspace : nil;
     });
-    if (!target || !self.isPokiSceneVisible || !PKSameDisplay(display, self.displayGeometry) ||
-        ![_sessions isCurrent:session generation:generation]) return NO;
-    @synchronized (self) {
-        if (task != _duoCompanionTask) return NO;
-        if (!task.target) task.target = target;
-        return YES;
-    }
+    return [self pinDuoCompanion:target task:task session:session];
 }
 
 /// The front app's AX element, with its bundle id and pid in `info`.
@@ -2181,6 +2207,7 @@ static const int PKFrontKey = -1;
         id chosen = nil;
         BOOL paneLocal = NO;
         NSString *ownPane = nil;
+        PKWorkspace *unboundCompanion = nil;
         if (companionTask && !pokiVisible) {
             PKWorkspace *target = companionTask.target;
             if (!target) return @{};
@@ -2201,9 +2228,12 @@ static const int PKFrontKey = -1;
             if (!companion) return @{};
             if (companionTask) {
                 PKWorkspace *target = companionTask.target;
-                if (!target || target.selectRight != companion.selectRight) return @{};
-                int targetPID = target.selectRight ? target.rightPID : target.leftPID;
-                if (targetPID != PKAXPid(chosen)) return @{};
+                if (target) {
+                    int targetPID = target.selectRight ? target.rightPID : target.leftPID;
+                    if (target.selectRight != companion.selectRight || targetPID != PKAXPid(chosen)) return @{};
+                } else {
+                    unboundCompanion = companion;
+                }
             }
             pane = companion.selectRight ? companion.right : companion.left;
             paneLocal = companion.paneLocal;
@@ -2229,7 +2259,11 @@ static const int PKFrontKey = -1;
         if (chosen && pid > 0) {
             NSString *bundle = [owner bundleForPID:pid session:session] ?: @"";
             if (companionTask && (companionTask != owner.duoCompanionTask ||
-                ![bundle isEqualToString:companionTask.target.targetBundle])) return @{};
+                (!unboundCompanion && ![bundle isEqualToString:companionTask.target.targetBundle]))) return @{};
+            if (unboundCompanion) {
+                unboundCompanion.targetBundle = bundle;
+                answer[@"unboundCompanion"] = unboundCompanion;
+            }
             answer[@"element"] = chosen;
             answer[@"bundleId"] = bundle;
             answer[@"pid"] = @(pid);
@@ -2237,9 +2271,14 @@ static const int PKFrontKey = -1;
         return answer;
     });
     if (![found isKindOfClass:NSDictionary.class]) { if (code) *code = given ?: @"no_front_app"; return nil; }
+    PKWorkspace *unboundCompanion = found[@"unboundCompanion"];
+    if (unboundCompanion && ![self pinDuoCompanion:unboundCompanion task:companionTask session:session]) {
+        if (code) *code = @"split_view_changed";
+        return nil;
+    }
     if (info) {
         NSMutableDictionary *copy = [found mutableCopy];
-        [copy removeObjectForKey:@"element"];
+        [copy removeObjectsForKeys:@[@"element", @"unboundCompanion"]];
         *info = copy;
     }
     if (!found[@"element"] && code) *code = selected || companionTask ? @"split_view_changed" : @"no_front_app";

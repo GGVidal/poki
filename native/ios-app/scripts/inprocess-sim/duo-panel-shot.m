@@ -347,6 +347,29 @@ static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop, BOOL
     return YES;
 }
 
+
+static BOOL checkCompanionBindingRetry(PKDisplayGeometry scene, CGSize crop) {
+    CompanionFixture *runner = companion(scene);
+    runner.missTarget = YES;
+    if (![runner beginDuoCompanionTask] || [runner bindDuoCompanionTarget]) {
+        NSLog(@"the startup binding must fail while the companion cannot be confirmed");
+        return NO;
+    }
+    runner.missTarget = NO;
+    return checkShot(runner, 2, crop, 255, @"first read retries the startup binding", YES);
+}
+
+static BOOL checkCompanionTaskHeldPicture(PKDisplayGeometry scene, CGSize crop) {
+    CompanionFixture *runner = companion(scene);
+    if (![runner beginDuoCompanionTask] || ![runner bindDuoCompanionTarget]) return NO;
+    if ([runner screenshot:NULL refreshViewport:NO]) {
+        NSLog(@"a held picture was returned without a confirmed front read");
+        return NO;
+    }
+    if ([runner sourceXML:NULL code:NULL]) return NO;
+    return checkShot(runner, 2, crop, 255, @"held AX read preserves the confirmed task pane picture", NO);
+}
+
 int main(void) {
     @autoreleasepool {
         CGSize cover = CGSizeMake(1398, 2034), inner = CGSizeMake(2852, 2006);
@@ -404,6 +427,9 @@ int main(void) {
         BOOL activation = checkCompanionActivation(geometry);
         BOOL afterSwitch = checkCompanionAfterSwitch(geometry, crop, NO);
         BOOL switchBeforeRead = checkCompanionAfterSwitch(geometry, crop, YES);
-        return launchPlacement && recoveredEdge && picture && inset && activation && afterSwitch && switchBeforeRead ? 0 : 1;
+        BOOL bindingRetry = checkCompanionBindingRetry(geometry, crop);
+        BOOL heldTaskPicture = checkCompanionTaskHeldPicture(geometry, crop);
+        return launchPlacement && recoveredEdge && picture && inset && activation && afterSwitch && switchBeforeRead &&
+            bindingRetry && heldTaskPicture ? 0 : 1;
     }
 }
