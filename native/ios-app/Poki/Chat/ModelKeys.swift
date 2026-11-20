@@ -176,19 +176,21 @@ enum ModelProvider: String, CaseIterable, Identifiable, Sendable {
     /// Room for a reasoning model's thinking and its answer when the catalog does not say.
     private static let unlistedReasoningMaxTokens = 32_768
 
-    /// pi's catalog entry for a custom address's model id: OpenAI's first, then the other labs', by the
-    /// whole id or by its last part after a gateway's `vendor/` prefix.
+    /// Prefer a named model vendor's catalog over a gateway entry for the qualified model ID.
     static func catalogMatch(_ id: String) -> Model? {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        var ids = [trimmed]
-        if let last = trimmed.split(separator: "/").last.map(String.init), last != trimmed { ids.append(last) }
         let providers = ["openai", "anthropic", "google", "deepseek"] + getProviders().map(\.rawValue).sorted()
+        let parts = trimmed.split(separator: "/").map(String.init)
+        let unqualified = parts.last ?? trimmed
+        // GPT-6.1 Terra is missing from PiSwift's catalog; it has Sol's setup (see `piModel`).
+        func lookupID(_ id: String) -> String { id == "gpt-6.1-terra" ? "gpt-6.1-sol" : id }
+        if let vendor = parts.dropLast().last,
+           let model = getModel(provider: vendor.lowercased(), modelId: lookupID(unqualified)) { return model }
+        let ids = unqualified == trimmed ? [trimmed] : [trimmed, unqualified]
         for candidate in ids {
-            // GPT-6.1 Terra is missing from PiSwift's catalog; it has Sol's setup (see `piModel`).
-            let lookup = candidate == "gpt-6.1-terra" ? "gpt-6.1-sol" : candidate
             for provider in providers {
-                if let model = getModel(provider: provider, modelId: lookup) { return model }
+                if let model = getModel(provider: provider, modelId: lookupID(candidate)) { return model }
             }
         }
         return nil

@@ -67,6 +67,7 @@ enum ConnectionCheck {
         let cancel = CancellationToken()
         var options = SimpleStreamOptions()
         options.apiKey = key.isEmpty && provider == .custom ? "none" : key
+        if provider == .custom, model.reasoning { options.reasoning = .low }
         // A connection check runs before a conversation exists. Give this probe its own
         // routing identifier, using PiSwift's OpenCode host and provider checks.
         options.headers = openCodeSessionHeaders(model: model, sessionId: UUID().uuidString, headers: options.headers)

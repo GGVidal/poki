@@ -1,19 +1,5 @@
 import SwiftUI
 
-/// A custom provider in the account list: its name and what it is used for.
-struct CustomAccountRow: View {
-    var provider: CustomProvider
-    var body: some View {
-        HStack(spacing: 12) {
-            ProviderTile(provider: .custom)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: provider.displayName)
-                Text(ModelAccounts.uses(provider)).font(.footnote).foregroundStyle(Color(.secondaryLabel))
-            }
-        }
-    }
-}
-
 /// One custom provider: its addresses and the API each speaks, what it is used for (the text chat,
 /// live voice), and Delete.
 struct CustomProviderDetail: View {
@@ -149,7 +135,10 @@ struct CustomProviderEditor: View {
                             Picker("API", selection: $endpoint.api) {
                                 ForEach(CustomAPIStyle.allCases) { Text(verbatim: $0.name).tag($0) }
                             }
-                            if let outcome = results[endpoint.id], !testing { resultView(outcome) }
+                            if let outcome = results[endpoint.id], !testing {
+                                ConnectionCheckFeedback(result: outcome.result, api: outcome.api)
+                                    .accessibilityIdentifier("customEditor.result")
+                            }
                         }
                     }
                     .onDelete { draft.endpoints.remove(atOffsets: $0); if draft.endpoints.isEmpty { draft.endpoints = [CustomEndpoint(url: "")] } }
@@ -237,25 +226,6 @@ struct CustomProviderEditor: View {
         }
     }
 
-    @ViewBuilder private func resultView(_ outcome: Outcome) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label {
-                Text(outcome.result.words)
-            } icon: {
-                Image(systemName: outcome.result.passed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-            }
-            .foregroundStyle(outcome.result.passed ? Color(.systemGreen) : Color(.systemOrange))
-            if outcome.result.passed {
-                Text(verbatim: AppLocalization.text(LocalizedStringResource("Answered in the \(outcome.api.name) API")))
-                    .foregroundStyle(Color(.secondaryLabel))
-            }
-            if let detail = outcome.result.detail { Text(verbatim: detail) }
-        }
-        .font(.footnote)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("customEditor.result")
-    }
-
     // MARK: Addresses and the key
 
     private static func host(_ address: String) -> String? {
@@ -295,7 +265,7 @@ struct CustomProviderEditor: View {
 
     // MARK: Testing and saving
 
-    /// Tests every address in turn. Once saved, what Automatic found at each is kept, and with
+    /// Tests every address in turn. Automatic results for saved addresses are kept, and with
     /// `closeIfPassed` the page closes when the first address works.
     private func test(closeIfPassed: Bool) {
         testing = true
@@ -310,8 +280,8 @@ struct CustomProviderEditor: View {
                 let run = await ConnectionCheck.runCustom(url: endpoint.normalized, key: keys[endpoint.id] ?? "", modelID: model,
                                                           api: endpoint.api, reasoning: reasoning)
                 results[endpoint.id] = Outcome(result: run.result, api: run.api)
-                if saved, run.result.passed, endpoint.api == .automatic {
-                    CustomProviders.record(found: run.api, endpoint: endpoint.id, provider: providerID)
+                if run.result.passed {
+                    CustomProviders.record(found: run.api, endpoint: endpoint, provider: providerID)
                 }
             }
             testing = false

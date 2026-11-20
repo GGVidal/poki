@@ -209,12 +209,30 @@ final class CustomModelDiscoveryTests: XCTestCase {
         XCTAssertEqual(provider.backups.map(\.normalized), ["https://backup.test/v1"])
     }
 
-    func testRequestsMoveToTheNextAddressWithTheirPath() {
+    func testDeletingAnotherServiceKeepsTheCurrentService() throws {
+        let first = CustomProvider(endpoints: [CustomEndpoint(url: address)], model: "first")
+        let removed = CustomProvider(endpoints: [CustomEndpoint(url: address)], model: "removed")
+        let current = CustomProvider(endpoints: [CustomEndpoint(url: address)], model: "current")
+        for provider in [first, removed, current] { try ModelKeys.saveCustom(provider, typedKey: "", keepKey: false) }
+
+        CustomProviders.remove(removed.id)
+
+        XCTAssertEqual(CustomProviders.all.map(\.id), [first.id, current.id])
+        XCTAssertEqual(ModelKeys.selectedModel, CustomProviders.choiceID(current.id, "current"))
+    }
+
+    func testRequestsMoveToTheNextAddressWithItsOwnAPIPath() {
         let moved = CustomEndpointClient.moved(URL(string: address + "/responses"), from: address, to: "https://backup.test/gateway/v1/")
         XCTAssertEqual(moved?.absoluteString, "https://backup.test/gateway/v1/responses")
         // pi adds /v1 to an address without a path; a backup that ends in /v1 does not get it twice.
         let bare = CustomEndpointClient.moved(URL(string: "https://model-server.test/v1/responses"), from: "https://model-server.test", to: "https://backup.test/v1")
         XCTAssertEqual(bare?.absoluteString, "https://backup.test/v1/responses")
+        let toBare = CustomEndpointClient.moved(URL(string: address + "/responses"), from: address, to: "https://backup.test")
+        XCTAssertEqual(toBare?.absoluteString, "https://backup.test/v1/responses")
+        let toGateway = CustomEndpointClient.moved(URL(string: "https://model-server.test/v1/responses"), from: "https://model-server.test", to: "https://backup.test/gateway")
+        XCTAssertEqual(toGateway?.absoluteString, "https://backup.test/gateway/responses")
+        let completions = CustomEndpointClient.moved(URL(string: address + "/chat/completions"), from: address, to: "https://backup.test")
+        XCTAssertEqual(completions?.absoluteString, "https://backup.test/chat/completions")
         XCTAssertNil(CustomEndpointClient.moved(URL(string: "https://elsewhere.test/v1/responses"), from: address, to: "https://backup.test/v1"))
     }
 
@@ -228,7 +246,7 @@ final class CustomModelDiscoveryTests: XCTestCase {
         provider.endpoints[0].url = "https://model-server.test/other/v1"
         CustomProviders.upsert(provider)
         XCTAssertNil(CustomProviders.provider(provider.id)?.primary?.found)
-        CustomProviders.record(found: .chatCompletions, endpoint: provider.endpoints[0].id, provider: provider.id)
+        CustomProviders.record(found: .chatCompletions, endpoint: provider.endpoints[0], provider: provider.id)
         XCTAssertEqual(CustomProviders.provider(provider.id)?.primary?.sent, .chatCompletions)
     }
 
@@ -251,7 +269,7 @@ final class CustomModelDiscoveryTests: XCTestCase {
 
     /// Live voice on a custom provider: one account at a time, its Realtime key asked of its own first
     /// address, without a key header when it has none, and the key names that address for the call.
-    func testLiveVoiceRunsOnACustomProviderWithRealtime() async throws {
+    func testLiveVoiceRequestsACustomServiceClientSecret() async throws {
         let openAIVoice = UserDefaults.standard.object(forKey: "voice.openai.enabled")
         defer { UserDefaults.standard.set(openAIVoice, forKey: "voice.openai.enabled") }
         let provider = CustomProviders.upsert(CustomProvider(endpoints: [CustomEndpoint(url: address)], model: "m"))

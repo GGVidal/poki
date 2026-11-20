@@ -158,6 +158,7 @@ final class ConnectionCheckTests: XCTestCase {
         XCTAssertEqual(sent.url?.path, "/v1/responses")
         XCTAssertEqual(sent.json["model"] as? String, "house-model")
         XCTAssertEqual(sent.json["store"] as? Bool, false)
+        XCTAssertEqual((sent.json["reasoning"] as? [String: Any])?["effort"] as? String, "low")
         XCTAssertEqual(ModelServerStub.requests.count, 1)
     }
 

@@ -139,10 +139,12 @@ enum CustomProviders {
     }
 
     /// Keeps what Automatic found at an address after a passing test.
-    static func record(found: CustomAPIStyle, endpoint: UUID, provider id: UUID) {
+    static func record(found: CustomAPIStyle, endpoint: CustomEndpoint, provider id: UUID) {
         var list = all
-        guard let p = list.firstIndex(where: { $0.id == id }),
-              let e = list[p].endpoints.firstIndex(where: { $0.id == endpoint }), list[p].endpoints[e].found != found else { return }
+        guard endpoint.api == .automatic, let p = list.firstIndex(where: { $0.id == id }),
+              let e = list[p].endpoints.firstIndex(where: {
+                  $0.id == endpoint.id && $0.normalized == endpoint.normalized && $0.api == .automatic
+              }), list[p].endpoints[e].found != found else { return }
         list[p].endpoints[e].found = found
         all = list
         ModelKeys.saved += 1
@@ -150,12 +152,13 @@ enum CustomProviders {
 
     /// Removes the provider, its key, its model lists and its models from the chat's menu.
     static func remove(_ id: UUID) {
+        let wasSelected = ModelKeys.selectedProvider == .custom && parse(ModelKeys.selectedModel)?.provider == id
         removeKey(id)
         ModelCatalog.invalidateCustom(id)
         UserDefaults.standard.removeObject(forKey: "models.listed.voice.custom.\(id.uuidString)")
         all = all.filter { $0.id != id }
         if UserDefaults.standard.string(forKey: selectedKey) == id.uuidString { UserDefaults.standard.removeObject(forKey: selectedKey) }
-        if ModelKeys.selectedProvider == .custom, let next = ModelCatalog.available(.custom).first {
+        if wasSelected, let next = ModelCatalog.available(.custom).first {
             ModelKeys.selectedModel = next.id
         }
         ModelKeys.saved += 1

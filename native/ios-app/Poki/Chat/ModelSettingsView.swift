@@ -38,10 +38,16 @@ struct ModelSettingsView: View {
             if ModelProvider.allCases.contains(where: ModelAccounts.isSetUp) {
             Section {
                 ForEach(ModelProvider.allCases.filter { $0 != .custom && ModelAccounts.isSetUp($0) }) { provider in
-                    NavigationLink { AccountDetail(provider: provider) } label: { AccountRow(provider: provider) }
+                    let usage = ModelAccounts.uses(provider)
+                    NavigationLink { AccountDetail(provider: provider) } label: {
+                        AccountRow(provider: provider, name: provider.name, usage: usage)
+                    }
                 }
                 ForEach(CustomProviders.all) { custom in
-                    NavigationLink { CustomProviderDetail(id: custom.id) } label: { CustomAccountRow(provider: custom) }
+                    let usage = ModelAccounts.uses(custom)
+                    NavigationLink { CustomProviderDetail(id: custom.id) } label: {
+                        AccountRow(provider: .custom, name: custom.displayName, usage: usage)
+                    }
                 }
                 Button("Add Account", systemImage: "plus") { adding = true }
             } header: {
@@ -167,15 +173,42 @@ enum ModelAccounts {
 }
 
 private struct AccountRow: View {
-    var provider: ModelProvider
+    let provider: ModelProvider
+    let name: String
+    let usage: String
     var body: some View {
         HStack(spacing: 12) {
             ProviderTile(provider: provider)
             VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: provider.name)
-                Text(ModelAccounts.uses(provider)).font(.footnote).foregroundStyle(Color(.secondaryLabel))
+                Text(verbatim: name)
+                Text(verbatim: usage).font(.footnote).foregroundStyle(Color(.secondaryLabel))
             }
         }
+    }
+}
+
+struct ConnectionCheckFeedback: View {
+    let result: ConnectionCheck.Result
+    var api: CustomAPIStyle? = nil
+    var saved = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label {
+                Text(result.words)
+            } icon: {
+                Image(systemName: result.passed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            }
+            .foregroundStyle(result.passed ? Color(.systemGreen) : Color(.systemOrange))
+            if let api, result.passed {
+                Text(verbatim: AppLocalization.text(LocalizedStringResource("Answered in the \(api.name) API")))
+                    .foregroundStyle(Color(.secondaryLabel))
+            }
+            if let detail = result.detail { Text(verbatim: detail) }
+            if saved, !result.passed { Text("Saved. Change it and save again, or keep it as it is.") }
+        }
+        .font(.footnote)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -469,18 +502,8 @@ struct KeyEntry: View {
                         .accessibilityIdentifier("keyEntry.test")
                     } footer: {
                         if let result, !testing {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Label {
-                                    Text(result.words)
-                                } icon: {
-                                    Image(systemName: result.passed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                                }
-                                .foregroundStyle(result.passed ? Color(.systemGreen) : Color(.systemOrange))
-                                if let detail = result.detail { Text(verbatim: detail) }
-                                if saved, !result.passed { Text("Saved. Change it and save again, or keep it as it is.") }
-                            }
-                            .accessibilityElement(children: .combine)
-                            .accessibilityIdentifier("keyEntry.result")
+                            ConnectionCheckFeedback(result: result, saved: saved)
+                                .accessibilityIdentifier("keyEntry.result")
                         }
                     }
                 }

@@ -70,17 +70,21 @@ final class CustomEndpointClient: ProviderHTTPClient, @unchecked Sendable {
         CustomProviders.provider(piProvider: model.provider)?.backups.map(\.normalized) ?? []
     }
 
-    /// The request's address moved from the first base address to `other`, keeping the path pi added
-    /// (`/responses`, `/chat/completions`); nil when the request is not for the first address.
+    /// Resolve the original API against the backup's own base address, using pi's path rules.
     static func moved(_ url: URL?, from base: String, to other: String) -> URL? {
-        guard let text = url?.absoluteString else { return nil }
-        let from = ModelCatalog.normalizedAddress(base)
-        let to = ModelCatalog.normalizedAddress(other)
-        guard !from.isEmpty, text.hasPrefix(from) else { return nil }
-        var rest = String(text.dropFirst(from.count))
-        // pi adds /v1 to an address without a path; the other address may already end in it.
-        if !from.hasSuffix("/v1"), to.hasSuffix("/v1"), rest.hasPrefix("/v1/") { rest = String(rest.dropFirst(3)) }
-        return URL(string: to + rest)
+        guard let url else { return nil }
+        let responses = url.path.hasSuffix("/responses")
+        guard url == requestURL(base, responses: responses) else { return nil }
+        return requestURL(other, responses: responses)
+    }
+
+    private static func requestURL(_ address: String, responses: Bool) -> URL? {
+        let base = ModelCatalog.normalizedAddress(address)
+        guard let url = URL(string: base), url.host != nil else { return nil }
+        let route = responses ? "/responses" : "/chat/completions"
+        if base.hasSuffix(route) { return url }
+        let prefix = responses && url.path.isEmpty ? "/v1" : ""
+        return URL(string: base + prefix + route)
     }
 
     /// A failure another address may not have: no connection, or a gateway with nothing behind it.
