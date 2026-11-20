@@ -62,6 +62,7 @@ struct ChatView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
     @Environment(\.coveredByDrawer) private var coveredByDrawer
+    @Environment(\.inDuoSplitView) private var inDuoSplitView
 
     private var sampleScene: String? { UserDefaults.standard.string(forKey: "pokiChat") }
 
@@ -128,7 +129,7 @@ struct ChatView: View {
         let status = PokiStatus.current(model: model, chat: chat)
         let home = isGreeting
         // The Duo's left pane can inherit a leading inset from the unfolded display.
-        let homeEdges: Edge.Set = home && openThreads != nil && !coveredByDrawer && PKInProcess.canUseDuoSplitView()
+        let homeEdges: Edge.Set = home && openThreads != nil && !coveredByDrawer && inDuoSplitView
             ? .leading : []
         ZStack {
             ChatTranscript(entries: shown, typing: chat.awaitingModel, canRetry: chat.canRetry, retry: chat.retry, session: chat.sessionID,

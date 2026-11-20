@@ -38,7 +38,7 @@ final class ChatScrollTests: XCTestCase {
     }
 
     func testHomeComposerKeepsItsMarginsInTheDuoLeftPane() throws {
-        let (reference, actual) = try duoHomeComposerFrames(size: CGSize(width: 469, height: 669))
+        let (reference, actual) = try duoHomeComposerFrames(size: CGSize(width: 469, height: 669), inDuoSplitView: true)
         XCTAssertEqual(actual.minX, reference.minX, accuracy: 1, "The left safe area moved the composer")
         XCTAssertEqual(actual.maxX, reference.maxX, accuracy: 1, "The right side of the composer moved")
     }
@@ -51,11 +51,12 @@ final class ChatScrollTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(actual.minX, 84, "The folded home must keep the composer inside the safe area")
     }
 
-    private func duoHomeComposerFrames(size: CGSize? = nil) throws -> (CGRect, CGRect) {
+    private func duoHomeComposerFrames(size: CGSize? = nil, inDuoSplitView: Bool = false) throws -> (CGRect, CGRect) {
         try XCTSkipUnless(PKInProcess.canUseDuoSplitView(), "Run on the iPhone Duo simulator.")
         let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
         let chat = ChatModel(app: app)
-        let root = UIHostingController(rootView: RootView().environment(app).environment(chat))
+        let root = UIHostingController(rootView: RootView().environment(app).environment(chat)
+            .environment(\.inDuoSplitView, inDuoSplitView))
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let size = size ?? scene.screen.bounds.size
         let pane = DuoPaneWindow(windowScene: scene)
