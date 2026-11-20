@@ -21,6 +21,7 @@ final class BearModel {
         let expressions: Entity?
         let clips: BearClips
         let light: EnvironmentResource
+        let outfitLight: EnvironmentResource?
     }
 
     private(set) var loaded: Loaded?
@@ -51,7 +52,15 @@ final class BearModel {
                 } else {
                     expressions = nil
                 }
-                loaded = Loaded(entity: entity, expressions: expressions, clips: clips, light: light)
+                let outfitLight: EnvironmentResource?
+                if let url = Bundle.main.url(forResource: "BearOutfit-light", withExtension: "png"),
+                   let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                    outfitLight = try? await EnvironmentResource(equirectangular: image, withName: "BearOutfit-light")
+                } else {
+                    outfitLight = nil
+                }
+                loaded = Loaded(entity: entity, expressions: expressions, clips: clips, light: light, outfitLight: outfitLight)
             } catch {
                 failed = true
             }
@@ -377,6 +386,11 @@ extension EnvironmentValues {
 }
 
 struct ModelBear<Flat: View>: View {
+    private struct DressResponse {
+        var x: CGFloat = 1
+        var y: CGFloat = 1
+    }
+
     var act: BearAct?
     var side: CGFloat
     var live = true
@@ -392,10 +406,17 @@ struct ModelBear<Flat: View>: View {
     @State private var handle = BearHandle()
     @State private var hops = 0
     @State private var hopped = Date.distantPast
+    @State private var outfit = BearOutfitModels()
+    @State private var fadingToBare = false
+    @State private var dressChanges = 0
+    @State private var dressDelay = 0.0
     private var store: BearModel { BearModel.shared }
+    private var wardrobe: BearWardrobe { BearWardrobe.shared }
     private var modelled: Bool { act != nil }
 
-    private var usable: Bool { !reduceMotion && !DeviceStrain.shared.resting && !store.failed }
+    private var usable: Bool {
+        (!reduceMotion || outfit.selection != .bare || fadingToBare) && !DeviceStrain.shared.resting && !store.failed
+    }
     private var showsModel: Bool { modelled && usable && drawn }
 
     var body: some View {
@@ -403,7 +424,9 @@ struct ModelBear<Flat: View>: View {
             flat().opacity(showsModel || (modelled && usable && !waited) ? 0 : 1)
             if usable, let loaded = store.loaded {
                 LiveBear(loaded: loaded, pixels: Int((side * displayScale).rounded()), handle: handle, act: act ?? .ready,
-                         live: live && modelled && shown && !covered && scenePhase == .active) {
+                         live: live && modelled && shown && !covered && scenePhase == .active,
+                         animated: !reduceMotion, outfit: outfit,
+                         colorOverride: outfit.selection == wardrobe.selection ? wardrobe.colors : nil) {
                     withAnimation(waited ? .easeOut(duration: 0.3) : nil) { drawn = true }
                 }
                 .aspectRatio(1, contentMode: .fit)
@@ -411,6 +434,21 @@ struct ModelBear<Flat: View>: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: modelled)
+        .keyframeAnimator(initialValue: DressResponse(), trigger: dressChanges) { content, size in
+            content.scaleEffect(x: size.x, y: size.y, anchor: .bottom)
+        } keyframes: { _ in
+            let wearing = outfit.selection != .bare
+            KeyframeTrack(\.x) {
+                LinearKeyframe(1, duration: dressDelay)
+                CubicKeyframe(wearing ? 1.03 : 0.985, duration: wearing ? 0.09 : 0.1)
+                SpringKeyframe(1, duration: wearing ? 0.36 : 0.34, spring: .bouncy(duration: 0.36, extraBounce: 0.4))
+            }
+            KeyframeTrack(\.y) {
+                LinearKeyframe(1, duration: dressDelay)
+                CubicKeyframe(wearing ? 0.955 : 1.035, duration: wearing ? 0.09 : 0.1)
+                SpringKeyframe(1, duration: wearing ? 0.36 : 0.34, spring: .bouncy(duration: 0.36, extraBounce: 0.4))
+            }
+        }
         .keyframeAnimator(initialValue: 1.0, trigger: hops) { content, scale in
             content.scaleEffect(x: 2 - scale, y: scale, anchor: .bottom)
         } keyframes: { _ in
@@ -428,6 +466,28 @@ struct ModelBear<Flat: View>: View {
             try? await Task.sleep(for: .milliseconds(300))
             waited = true
         }
+        .task(id: wardrobe.selection) {
+            let selection = wardrobe.selection
+            async let headwear = wardrobe.load(selection.headwear, for: .headwear)
+            async let clothes = wardrobe.load(selection.clothes, for: .clothes)
+            let models = await BearOutfitModels(selection: selection, headwear: headwear, clothes: clothes)
+            guard !Task.isCancelled else { return }
+            fadingToBare = reduceMotion && selection == .bare && outfit.selection != .bare && showsModel
+            if showsModel, !reduceMotion, selection != outfit.selection {
+                let changing = BearOutfitSlot.allCases.filter { selection[$0] != outfit.selection[$0] }
+                dressDelay = changing.enumerated().compactMap { index, slot in
+                    selection[slot].map { _ in
+                        Double(index) * 0.08 + (outfit.selection[slot] == nil ? 0 : 0.08) + (slot == .headwear ? 0.12 : 0.08)
+                    }
+                }.max() ?? 0.04
+                dressChanges += 1
+            }
+            outfit = models
+            if fadingToBare {
+                try? await Task.sleep(for: .milliseconds(180))
+                if !Task.isCancelled { fadingToBare = false }
+            }
+        }
         .onChange(of: usable) { _, usable in if !usable { drawn = false } }
         .onAppear { shown = true }
         .onDisappear { shown = false }
@@ -440,6 +500,9 @@ private struct LiveBear: UIViewRepresentable {
     let handle: BearHandle
     let act: BearAct
     let live: Bool
+    let animated: Bool
+    let outfit: BearOutfitModels
+    let colorOverride: BearOutfitColors?
     let drawn: () -> Void
 
     func makeUIView(context: Context) -> BearCanvas {
@@ -449,8 +512,10 @@ private struct LiveBear: UIViewRepresentable {
     }
 
     func updateUIView(_ canvas: BearCanvas, context: Context) {
+        canvas.animated = animated
         canvas.act = act
         canvas.live = live
+        if let colorOverride { canvas.wear(outfit, colors: colorOverride) }
     }
 
     static func dismantleUIView(_ canvas: BearCanvas, coordinator: ()) { canvas.live = false }
@@ -477,6 +542,7 @@ private final class BearCanvas: UIView {
     private var idleSkin: (index: Int, joints: BearIdleJoints)?
     private var faceSkin: (index: Int, joints: BearIdleJoints)?
     private var expressionOverlay: BearExpressionOverlay?
+    private var dressing: BearDressing?
     private var rate = 60
     private var reaction: BearReaction?
     private var stance = BearStanceChange(.ready, at: CACurrentMediaTime())
@@ -529,6 +595,21 @@ private final class BearCanvas: UIView {
                 link?.isPaused = true
                 wake?.cancel()
             }
+        }
+    }
+
+    var animated = true {
+        didSet {
+            guard animated != oldValue, live else { return }
+            playback.play([.idle], at: CACurrentMediaTime())
+            resume()
+        }
+    }
+
+    func wear(_ outfit: BearOutfitModels, colors: BearOutfitColors) {
+        let motion: BearDressing.Motion = !presented ? .immediate : (animated ? .animated : .fade)
+        if dressing?.wear(outfit, colors: colors, motion: motion, now: CACurrentMediaTime()) == true, live {
+            resume()
         }
     }
 
@@ -602,6 +683,11 @@ private final class BearCanvas: UIView {
         if held == clips.idle.lowerBound { idleSkin = faceSkin }
 
         let idleFrame = Int((clips.idle.lowerBound * clips.fps).rounded())
+        if let (index, _) = faceSkin {
+            let dressing = BearDressing(names: skins[index].jointNames, light: loaded.outfitLight)
+            renderer.entities.append(dressing.root)
+            self.dressing = dressing
+        }
         if let exprTemplate = loaded.expressions,
            let (idx, _) = faceSkin,
            let bindSet = poses[idleFrame], idx < bindSet.count {
@@ -641,7 +727,7 @@ private final class BearCanvas: UIView {
     }
 
     fileprivate func sayHi() -> Bool {
-        guard live, presented, playback.free, !reacting(at: CACurrentMediaTime()) else { return false }
+        guard live, animated, presented, playback.free, !reacting(at: CACurrentMediaTime()) else { return false }
         let now = CACurrentMediaTime()
         idle.attend(at: now)
         playback.greet(at: now)
@@ -666,11 +752,11 @@ private final class BearCanvas: UIView {
     fileprivate func tick() {
         guard live, !rendering, let renderer, let layer = layer as? CAMetalLayer else { return }
         let now = CACurrentMediaTime()
-        let time = playback.time(
+        let time = animated ? playback.time(
             at: now,
             clips: clips,
             steady: !moving || !(idle.busy(at: now) || reacting(at: now) || stance.changing(at: now) || eyesBusy)
-        )
+        ) : clips.idle.lowerBound
         guard var standing = pose(at: time * clips.fps) else { return }
         let blinkMoment = playback.blink(at: now)
         if let blink = blinkMoment, let (index, joints) = faceSkin, index < standing.count {
@@ -678,7 +764,7 @@ private final class BearCanvas: UIView {
         }
 
         var finalMove = BearIdle.Pose()
-        if moving, let (index, joints) = idleSkin, index < standing.count {
+        if animated, moving, let (index, joints) = idleSkin, index < standing.count {
             var target = idle.pose(at: now, blinking: playback.move == .blink)
             #if DEBUG
             if let side = UserDefaults.standard.string(forKey: "pokiBearLook").flatMap(Float.init) {
@@ -695,6 +781,13 @@ private final class BearCanvas: UIView {
             eyesBusy = finalMove.shut > 0.05 || finalMove.smile > 0.05
         }
         if let reaction, !reacting(at: now) { self.reaction = nil }
+        var outfitChanged = false
+        if let dressing, let (index, _) = faceSkin {
+            let gesture = playback.move == .idle || playback.move == .blink
+                ? min(1, max(finalMove.raise, finalMove.arms, finalMove.scratch, finalMove.work)) : 1
+            dressing.poseArms(&standing[index], at: now, gesture: gesture)
+            outfitChanged = dressing.update(standing[index], at: now)
+        }
         for (skin, joints) in zip(skins, standing) { skin.jointTransforms = joints }
 
         if let overlay = expressionOverlay, let (index, _) = faceSkin, index < skins.count, index < standing.count {
@@ -712,7 +805,7 @@ private final class BearCanvas: UIView {
         let needsHighRate = playback.move != .idle || idle.busy(at: now) || reaction != nil
             || stance.changing(at: now) || poseFilter.active || !still.contains(stance.act) || idle.darting(at: now)
             || playback.nextBlink - now <= Self.lead
-        let wanted = needsHighRate ? 60 : 30
+        let wanted = needsHighRate || outfitChanged ? 60 : 30
         if wanted != rate {
             rate = wanted
             link?.preferredFrameRateRange = CAFrameRateRange(minimum: Float(wanted), maximum: Float(wanted), preferred: Float(wanted))
@@ -724,9 +817,10 @@ private final class BearCanvas: UIView {
                 try renderer.update(0)
             }
             let pose = skins.flatMap { $0.jointTransforms.map(\.matrix) }
-            if presented, Self.same(pose, lastPose) {
+            if presented, !outfitChanged, Self.same(pose, lastPose) {
                 if settling == 0 {
-                    if playback.move == .idle, !moving { sleepUntilBlink() }
+                    if !animated { link?.isPaused = true }
+                    else if playback.move == .idle, !moving { sleepUntilBlink() }
                     return
                 }
                 settling -= 1
