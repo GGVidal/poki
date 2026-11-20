@@ -1,6 +1,21 @@
 import RealityKit
 import simd
 
+/// Mouth expressions from PokiBear-expressions.usdz. The joy reaction uses the model's own mouth.
+enum BearFace: Int, CaseIterable {
+    case think, sad, ask, sleep, surprise
+
+    var prefix: String {
+        switch self {
+        case .think: "Expr_Think"
+        case .sad: "Expr_Sad"
+        case .ask: "Expr_Ask"
+        case .sleep: "Expr_Sleep"
+        case .surprise: "Expr_Surp"
+        }
+    }
+}
+
 /// What the bear does by itself while it stands there, so that it is alive without a tap:
 /// organic asymmetric breathing, slow non-repeating weight shifts between feet, quick eye
 /// micro-saccades that return to the viewer, and randomized small gestures where the eyes lead
@@ -33,8 +48,12 @@ struct BearIdle {
         var shut: Float = 0
         /// How far the mouth is open (from a quarter on), and the sparkles out, from 0 to 1.
         var mouth: Float = 0, sparkles: Float = 0
-        /// How far the thinking mouth has replaced the resting smile.
-        var thinkExpression: Float = 0
+        /// How far each face (`BearFace`) is drawn over the bear's own, from 0 (none) to 1.
+        var faces = SIMD8<Float>(repeating: 0)
+        subscript(face: BearFace) -> Float {
+            get { faces[face.rawValue] }
+            set { faces[face.rawValue] = newValue }
+        }
 
         static func + (a: Pose, b: Pose) -> Pose {
             var p = Pose()
@@ -47,7 +66,7 @@ struct BearIdle {
             p.bend = a.bend + b.bend; p.reach = a.reach + b.reach; p.work = a.work + b.work; p.tap = a.tap + b.tap
             p.raise = a.raise + b.raise; p.lower = a.lower + b.lower; p.shut = a.shut + b.shut
             p.mouth = a.mouth + b.mouth; p.sparkles = a.sparkles + b.sparkles
-            p.thinkExpression = a.thinkExpression + b.thinkExpression
+            p.faces = a.faces + b.faces
             return p
         }
 
@@ -62,7 +81,7 @@ struct BearIdle {
             p.bend = a.bend * w; p.reach = a.reach * w; p.work = a.work * w; p.tap = a.tap * w
             p.raise = a.raise * w; p.lower = a.lower * w; p.shut = a.shut * w
             p.mouth = a.mouth * w; p.sparkles = a.sparkles * w
-            p.thinkExpression = a.thinkExpression * w
+            p.faces = a.faces * w
             return p
         }
     }
@@ -516,8 +535,9 @@ struct BearIdleJoints {
             joints[idx].rotation = arcLTransform.rotation * joints[idx].rotation
         }
 
-        // Hide the default smile mouth while the thinking wavy mouth overlay is shown.
-        if pose.thinkExpression > 0.35, pose.mouth < 0.25, let closedMouth = mouths.first, closedMouth < joints.count {
+        // Hide the default smile mouth while a face that draws its own mouth is shown. Done keeps the
+        // model's open mouth, so it is not among them.
+        if BearFace.allCases.contains(where: { pose[$0] > 0.35 }), pose.mouth < 0.25, let closedMouth = mouths.first, closedMouth < joints.count {
             joints[closedMouth].translation.z -= Self.swap
         }
 

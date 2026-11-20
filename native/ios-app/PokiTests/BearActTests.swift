@@ -1,4 +1,5 @@
 import XCTest
+import RealityKit
 @testable import Poki
 
 /// The bear's acts for Poki's states: every state was a flat picture over the bear but ready and at work.
@@ -10,6 +11,34 @@ final class BearActTests: XCTestCase {
         XCTAssertEqual(PokiMood.tripped.act, .failed)
         let held: [BearAct] = [.thinking, .working, .asking, .waiting, .paused, .lost, .listening, .speaking, .hello]
         for act in held { XCTAssertNotEqual(BearStance.pose(act), BearIdle.Pose(), "\(act)") }
+    }
+
+    func testEachMouthExpressionFollowsItsState() throws {
+        let stances: [(BearAct, BearFace?)] = [
+            (.ready, nil), (.thinking, .think), (.working, nil), (.asking, .ask), (.waiting, nil),
+            (.paused, .sleep), (.lost, nil), (.listening, nil), (.speaking, nil), (.hello, .surprise),
+        ]
+        for (act, face) in stances {
+            let pose = BearStance.pose(act)
+            for other in BearFace.allCases { XCTAssertEqual(pose[other], other == face ? 1 : 0, "\(act) \(other)") }
+        }
+        let reactions: [(BearAct, BearFace?)] = [(.done, nil), (.failed, .sad)]
+        for (act, face) in reactions {
+            let pose = try XCTUnwrap(BearReaction(act, at: 0)).pose(at: BearReaction.rise + 0.2)
+            for other in BearFace.allCases { XCTAssertEqual(pose[other], other == face ? 1 : 0, "\(act) \(other)") }
+        }
+    }
+
+    func testDoneAndAsleepKeepTheAuthoredEyeArcs() throws {
+        let rig = try XCTUnwrap(BearIdleJoints(names: ["Body", "Head", "Eye_R", "Eye_L", "SmileEye_R", "SmileEye_L"]))
+        let done = try XCTUnwrap(BearReaction(.done, at: 0)).pose(at: BearReaction.rise + 0.2)
+        let asleep = BearStance.pose(.paused)
+        for pose in [done, asleep] {
+            var eyes = Array(repeating: Transform(), count: 6)
+            rig.apply(pose, to: &eyes)
+            XCTAssertGreaterThan(eyes[4].scale.y, 0)
+            XCTAssertGreaterThan(eyes[5].scale.y, 0)
+        }
     }
 
     /// A reaction comes in, holds, and leaves the bear standing as it found it, in a few seconds.

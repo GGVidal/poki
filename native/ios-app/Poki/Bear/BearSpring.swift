@@ -109,7 +109,7 @@ struct BearPoseFilter {
     private var shut = SecondOrderSpring(.face)
     private var mouth = SecondOrderSpring(.face)
     private var sparkles = SecondOrderSpring(.face)
-    private var thinkExpression = SecondOrderSpring(.face)
+    private var faces = Array(repeating: SecondOrderSpring(.face), count: 8)
 
     private var lastTime: TimeInterval?
 
@@ -118,7 +118,7 @@ struct BearPoseFilter {
           && headYaw.settled && headPitch.settled && headRoll.settled
           && gazeX.settled && gazeY.settled
           && shoulders.settled && arms.settled && raise.settled
-          && bend.settled && reach.settled && thinkExpression.settled)
+          && bend.settled && reach.settled && faces.allSatisfy(\.settled))
     }
 
     mutating func reset(to pose: BearIdle.Pose, at now: TimeInterval) {
@@ -147,7 +147,7 @@ struct BearPoseFilter {
         shut.snap(to: pose.shut)
         mouth.snap(to: pose.mouth)
         sparkles.snap(to: pose.sparkles)
-        thinkExpression.snap(to: pose.thinkExpression)
+        for i in 0..<8 { faces[i].snap(to: pose.faces[i]) }
     }
 
     mutating func filter(_ target: BearIdle.Pose, at now: TimeInterval) -> BearIdle.Pose {
@@ -194,7 +194,7 @@ struct BearPoseFilter {
         out.shut = min(max(shut.step(dt: dt, target: target.shut), 0), 1)
         out.mouth = min(max(mouth.step(dt: dt, target: target.mouth), 0), 1)
         out.sparkles = min(max(sparkles.step(dt: dt, target: target.sparkles), 0), 1)
-        out.thinkExpression = min(max(thinkExpression.step(dt: dt, target: target.thinkExpression), 0), 1)
+        for i in 0..<8 { out.faces[i] = min(max(faces[i].step(dt: dt, target: target.faces[i]), 0), 1) }
         return out
     }
 }

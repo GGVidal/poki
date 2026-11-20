@@ -288,8 +288,13 @@ private struct EyePads {
 /// Keeps the mouth expressions aligned with the bear's skinned head.
 @MainActor
 private struct BearExpressionOverlay {
+    private struct Part {
+        let face: BearFace
+        let entity: Entity
+    }
+
     let root: Entity
-    private let thinkMouth: Entity?
+    private let parts: [Part]
     private let headChain: [Int]
     private let headBindInverse: simd_float4x4
 
@@ -319,11 +324,15 @@ private struct BearExpressionOverlay {
         let content = template.clone(recursive: true)
         root.addChild(content)
 
-        var mouth: ModelEntity?
+        var parts: [Part] = []
         func collect(_ entity: Entity) {
             if let model = entity as? ModelEntity, model.model != nil {
                 model.isEnabled = false
-                if model.name.hasPrefix("Expr_ThinkMouth") { mouth = model }
+                if let face = BearFace.allCases.first(where: {
+                    model.name.hasPrefix($0.prefix + "Mouth") || model.name.hasPrefix($0.prefix + "Tongue")
+                }) {
+                    parts.append(Part(face: face, entity: model))
+                }
             }
             for child in entity.children { collect(child) }
         }
@@ -333,7 +342,7 @@ private struct BearExpressionOverlay {
         let bindHeadWorld = skinWorld * Self.chainMatrix(chain, in: bindJoints)
 
         self.root = root
-        self.thinkMouth = mouth
+        self.parts = parts
         self.headChain = chain
         self.headBindInverse = bindHeadWorld.inverse
     }
@@ -349,14 +358,16 @@ private struct BearExpressionOverlay {
     func update(
         skin: ModelEntity,
         joints: [Transform],
-        thinkWeight: Float,
+        faces: SIMD8<Float>,
         mouthOpen: Float
     ) {
         let skinWorld = skin.transformMatrix(relativeTo: nil)
         let headWorld = skinWorld * Self.chainMatrix(headChain, in: joints)
         root.transform = Transform(matrix: headWorld * headBindInverse)
 
-        thinkMouth?.isEnabled = thinkWeight > 0.35 && mouthOpen < 0.25
+        for part in parts {
+            part.entity.isEnabled = faces[part.face.rawValue] > 0.35 && mouthOpen < 0.25
+        }
     }
 }
 
@@ -690,7 +701,7 @@ private final class BearCanvas: UIView {
             overlay.update(
                 skin: skins[index],
                 joints: standing[index],
-                thinkWeight: finalMove.thinkExpression,
+                faces: finalMove.faces,
                 mouthOpen: finalMove.mouth
             )
         }
