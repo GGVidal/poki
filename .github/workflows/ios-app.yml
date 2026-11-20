@@ -145,14 +145,19 @@ jobs:
           chat = steps.get("chat", {})
           calls = chat.get("calls", [])
           names = [c["name"] for c in calls]
-          reads = calls[2:-1]
+          finished = names[-1:] == ["finish_task"]
+          reads = calls[2:-1] if finished else calls[2:]
           need(not chat.get("running", True), "the chat's task ended")
-          need(names[:2] == ["report_plan", "do"] and names[-1:] == ["finish_task"] and
+          need(names[:2] == ["report_plan", "do"] and finished and
                1 <= len(reads) <= 3 and all(c["name"] == "look" for c in reads),
                f"pi ran the scripted calls with bounded read retries ({names})")
-          need(all(c["ok"] for c in calls[:2] + calls[-1:]), "planning, opening Settings and finishing succeeded")
+          need(names[:1] == ["report_plan"] and calls[0]["ok"] and finished and calls[-1]["ok"],
+               "planning and finishing succeeded")
           need(bool(reads) and reads[-1]["ok"] and all(not c["ok"] for c in reads[:-1]),
                "the last Settings read succeeded after any failed reads")
+          need(any(r.get("observed_settings") for r in requests), "a fresh read identified Settings")
+          if len(calls) > 1 and calls[1]["name"] == "do" and not calls[1]["ok"]:
+              print("The open call returned an error; the later Settings read must verify the outcome.")
           need(any("Settings is open" in r for r in chat.get("replies", [])), "Poki answered in the chat")
           need(not chat.get("problems"), f"no problem notes ({chat.get('problems')})")
           need(steps.get("chat_saved", {}).get("saved") is True, "the chat was saved as a session")

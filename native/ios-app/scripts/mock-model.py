@@ -26,6 +26,7 @@ SCRIPT = [
 ANSWER = "Done: Settings is open on the iPhone, and I can see its list."
 READ_FAILED = "I could not read Settings on the iPhone."
 MAX_LOOK_ATTEMPTS = 3
+SETTINGS_NAMES = {"Settings", "设置", "設定", "com.apple.Preferences"}
 
 
 def next_step(messages):
@@ -46,8 +47,7 @@ def next_step(messages):
         return None, READ_FAILED
 
     lines = (latest.get("content") or "").splitlines()
-    apps = {"app: Settings", "app: com.apple.Preferences"}
-    if any(line.partition("   read:")[0] in apps for line in lines):
+    if any(line.startswith("app: ") and line[5:].partition("   read:")[0] in SETTINGS_NAMES for line in lines):
         return SCRIPT[3], None
     if len(results) - 2 < MAX_LOOK_ATTEMPTS and any(line.startswith("read: failed (") for line in lines):
         return SCRIPT[2], None
@@ -88,12 +88,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("content-length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
+        tool, reply = next_step(body.get("messages", []))
         line = summary(body)
+        line["observed_settings"] = tool is not None and tool[0] == "finish_task"
         with open(self.log_path, "a") as f:
             f.write(json.dumps(line) + "\n")
         step = line["tool_results"]
         model = body.get("model") or "poki-mock"
-        tool, reply = next_step(body.get("messages", []))
         if tool is not None:
             name, arguments = tool
             call = {"index": 0, "id": f"call_{int(time.time() * 1000)}_{step}", "type": "function",
