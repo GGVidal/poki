@@ -65,6 +65,7 @@ public struct Element: Equatable, Sendable {
 public struct Foreground: Equatable, Sendable {
     public var bundleID: String?
     public var name: String?
+    var pokiPane: String? = nil
     public var describe: String {
         if bundleID == "com.apple.springboard" { return "Home screen (SpringBoard: the home screen, the App Switcher, a banner or a system alert)" }
         if let name, !name.isEmpty { return name }
@@ -193,22 +194,23 @@ extension Runner {
         let appValue = await app
         let bundleID = appValue?["bundleId"]?.string.flatMap { $0.isEmpty ? nil : $0 }
         let appName = appValue?["name"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+        let pokiPane = appValue?["pokiPane"]?.string
         let sourceValue: JSON
         do { sourceValue = try await source } catch var error as RunnerError {
             // An app whose tree cannot be read is still the app in front (on the phone, WeChat's in-process
             // read: "Error getting main window kAXError"); without it the app read before stays in front.
-            if bundleID != nil || appName != nil { error.foreground = Foreground(bundleID: bundleID, name: appName) }
+            if bundleID != nil || appName != nil { error.foreground = Foreground(bundleID: bundleID, name: appName, pokiPane: pokiPane) }
             throw error
         }
         if xml {
             guard let text = sourceValue.string, let parsed = flattenXML(Data(text.utf8)) else {
                 throw RunnerError(message: "the runner's XML tree could not be read", delivery: .notSent)
             }
-            return (parsed.elements, Foreground(bundleID: bundleID, name: appName ?? parsed.root.label ?? parsed.root.name))
+            return (parsed.elements, Foreground(bundleID: bundleID, name: appName ?? parsed.root.label ?? parsed.root.name, pokiPane: pokiPane))
         }
         let root = (try? sourceValue.string.map(JSON.parse)) ?? sourceValue
         let name = appName ?? root["label"]?.text ?? root["name"]?.text
-        return (flatten(root), Foreground(bundleID: bundleID, name: name))
+        return (flatten(root), Foreground(bundleID: bundleID, name: name, pokiPane: pokiPane))
     }
 
     func screenshot(timeout: Double) async throws -> Data {

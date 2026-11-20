@@ -5,6 +5,25 @@ import XCTest
 /// slow drags, no-op actions that looked like success, the picture's scale, collapsed cells, fixed
 /// waits and repeated text.
 final class LookDoTests: XCTestCase {
+    func testDuoCompanionAcceptsPictureCoordinatesWithoutAnElementTree() async {
+        let (core, wda, _) = makeCore(FakeWDA(dynamicSize: true, paneSelection: true)) { $0.humanize = false }
+        wda.set("POST /poki/pane") { _ in
+            (200, ["value": ["identity": "left/duo", "bundleId": "com.apple.Preferences", "otherBundleId": "nz.zheha.poki", "x": 0, "y": 0]])
+        }
+        wda.set("GET /wda/activeAppInfo") { _ in
+            (200, ["value": ["bundleId": "com.apple.Preferences", "pokiPane": "right"]])
+        }
+        wda.source([])
+
+        let read = await core.call("look", ["pane": "left"], session: "chat-task")
+        XCTAssertFalse(read.isError, read.text)
+        XCTAssertNotNil(read.jpeg)
+        XCTAssertEqual(read.splitView?.side, "left")
+        XCTAssertTrue(read.text.contains("Poki is on the right"), read.text)
+        _ = await core.call("do", ["actions": [["tap": [100, 100]]]], session: "chat-task")
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1)
+    }
+
     func testSplitViewSetupKeepsTheLauncherPrivateAndReleasesTheQueueOnStop() async throws {
         let (core, wda, _) = makeCore(FakeWDA(dynamicSize: true, paneSelection: true))
         wda.set("POST /poki/workspace-launcher") { _ in (200, ["value": true]) }

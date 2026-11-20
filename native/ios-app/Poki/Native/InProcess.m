@@ -1972,6 +1972,7 @@ static const int PKFrontKey = -1;
         CGRect pane = CGRectNull;
         id chosen = nil;
         BOOL paneLocal = NO;
+        NSString *ownPane = nil;
         if (selected) {
             NSArray *elements = nil;
             PKWorkspace *current = [weakSelf workspaceOn:geometry ax:ax session:session generation:generation known:selected elements:&elements];
@@ -1979,16 +1980,20 @@ static const int PKFrontKey = -1;
             pane = selected.selectRight ? current.right : current.left;
             chosen = elements[selected.selectRight ? 1 : 0];
             paneLocal = selected.paneLocal;
+            if (current.leftPID == getpid()) ownPane = @"left";
+            if (current.rightPID == getpid()) ownPane = @"right";
         } else if (PKIsDuo() && !CGRectIsNull(geometry.peer)) {
             PKWorkspace *companion = [weakSelf companionOn:geometry ax:ax session:session generation:generation element:&chosen];
             if (!companion) return @{};
             pane = companion.selectRight ? companion.right : companion.left;
             paneLocal = companion.paneLocal;
+            ownPane = companion.selectRight ? @"left" : @"right";
         } else {
             chosen = PKForegroundElement(ax, geometry, &pane, ^NSString *(int pid) { return [weakSelf bundleForPID:pid session:session]; });
         }
         int pid = PKAXPid(chosen);
         NSMutableDictionary *answer = [NSMutableDictionary dictionary];
+        if (ownPane) answer[@"pokiPane"] = ownPane;
         if (!CGRectIsNull(pane)) {
             answer[@"pane"] = [NSValue valueWithCGRect:pane];
             if (PKIsDuo() && !CGRectIsNull(geometry.peer)) {
@@ -2116,6 +2121,18 @@ static const int PKFrontKey = -1;
         panel.orientationRevision = scene.orientationRevision + _duoPanelRevision;
         return panel;
     }
+}
+
+- (NSString *)duoPlacement {
+    if (!PKIsDuo() || ![self isPokiSceneVisible]) return nil;
+    PKDisplayGeometry scene = self.sceneDisplayGeometry;
+    if (CGRectIsNull(scene.peer)) return @"fullscreen";
+    if (!scene.panePlacementKnown) return nil;
+    return CGRectGetMidX(scene.peer) > CGRectGetMidX(scene.bounds) ? @"left" : @"right";
+}
+
+- (BOOL)hasDuoCompanion {
+    return PKIsDuo() && !CGRectIsNull(self.displayGeometry.peer);
 }
 
 // Poki's own scene can remain attached to the cover while Clock is active on the inner
@@ -2528,6 +2545,15 @@ static NSString *PKDaemonReply(NSTimeInterval seconds, void (^send)(void (^)(NSE
 /// (or starts it), terminate ends it. XCUIApplication itself refuses to exist outside a UI test bundle.
 /// Launch and activate return once the app is in front.
 - (nullable NSString *)app:(NSString *)bundle action:(NSString *)action {
+    PKWorkspace *selected = self.selectedWorkspace;
+    if (self.hasDuoCompanion || (selected && (selected.leftPID == getpid() || selected.rightPID == getpid()))) {
+        NSDictionary *front = nil;
+        [self front:&front ax:NULL];
+        NSString *ownSide = front[@"pokiPane"] ?: self.duoPlacement;
+        if ([action isEqualToString:@"activate"] && [front[@"pokiPane"] length] && [front[@"bundleId"] isEqualToString:bundle]) return nil;
+        NSString *targetSide = [ownSide isEqualToString:@"left"] ? @"right" : [ownSide isEqualToString:@"right"] ? @"left" : @"opposite";
+        return [NSString stringWithFormat:@"not sent: keep Poki in Split View. Ask the owner to open %@ in the %@ pane, then look again.", bundle, targetSide];
+    }
     [self forgetFront];
     @try {
         PKOutcome *refused;

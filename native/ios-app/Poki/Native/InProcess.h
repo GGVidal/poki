@@ -61,6 +61,9 @@ FOUNDATION_EXPORT CGPoint PKWorkspaceLauncherPoint(NSDictionary<NSString *, NSAr
 /// Loads the developer frameworks only. Does not open a session or ask for the passcode.
 - (BOOL)developerFrameworksAvailable;
 + (BOOL)canUseDuoSplitView;
+/// The visible Poki scene on Duo: "left", "right", "fullscreen", or nil when placement is unknown.
+- (nullable NSString *)duoPlacement;
+@property (nonatomic, readonly) BOOL hasDuoCompanion;
 /// Loads the Developer libraries, opens the daemon session and enables Automation Mode, or reuses an
 /// enable of the same session and generation. Keys: ok, code, detail, generation, reused, seconds.
 - (NSDictionary<NSString *, id> *)prepare;
@@ -96,7 +99,7 @@ FOUNDATION_EXPORT CGPoint PKWorkspaceLauncherPoint(NSDictionary<NSString *, NSAr
 /// The latest accessibility request this process gave up on that testmanagerd is still serving: keys
 /// pid (0: the accessibility server, -1: a lookup of the app in front) and seconds. nil when none is.
 - (nullable NSDictionary<NSString *, id> *)unanswered;
-/// The app in front: bundleId, name, pid. Empty when accessibility gives none.
+/// The app in front: bundleId, name, pid, and pokiPane when it is beside Poki.
 - (NSDictionary<NSString *, id> *)frontApp;
 /// Confirms a named app icon or its Split View menu item from the system tree and a fresh local screenshot.
 - (nullable PKOutcome *)openWorkspaceLauncherItem:(NSArray<NSString *> *)labels menu:(BOOL)menu;

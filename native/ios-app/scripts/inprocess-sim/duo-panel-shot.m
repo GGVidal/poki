@@ -218,6 +218,18 @@ static BOOL checkInsetWindow(PKDisplayGeometry scene, CGSize image) {
     return sent;
 }
 
+static BOOL checkCompanionActivation(PKDisplayGeometry scene) {
+    CompanionFixture *runner = companion(scene);
+    NSString *error = [runner app:@"com.apple.calculator" action:@"activate"];
+    if (error) { NSLog(@"the app already beside Poki should stay in place: %@", error); return NO; }
+    error = [runner app:@"com.apple.Preferences" action:@"activate"];
+    if (![error hasPrefix:@"not sent:"] || ![error containsString:@"right pane"]) {
+        NSLog(@"changing apps should preserve Poki and name the target pane: %@", error);
+        return NO;
+    }
+    return YES;
+}
+
 int main(void) {
     @autoreleasepool {
         CGSize cover = CGSizeMake(1398, 2034), inner = CGSizeMake(2852, 2006);
@@ -270,6 +282,7 @@ int main(void) {
         geometry.peer = CGRectMake(482, 0, 469, 669);
         geometry.panePlacementKnown = YES;
         BOOL inset = checkInsetWindow(geometry, crop);
-        return picture && inset ? 0 : 1;
+        BOOL activation = checkCompanionActivation(geometry);
+        return picture && inset && activation ? 0 : 1;
     }
 }

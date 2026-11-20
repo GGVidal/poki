@@ -189,7 +189,9 @@ final class Computer: @unchecked Sendable {
         let reading = await runner.read(timeout: budget, extra: max(0, min(4, until - now() - budget - 3)), format: config.treeFormat,
                                         callEnds: until, allowHostPicture: !inWorkspace, workspace: inWorkspace)
         if let pane = selectedPane {
-            confirmedPaneRead = reading.foreground?.bundleID == pane.app && !reading.elements.isEmpty && reading.png != nil
+            let besidePoki = config.isPoki(Foreground(bundleID: pane.other, name: nil))
+            confirmedPaneRead = reading.foreground?.bundleID == pane.app && reading.png != nil &&
+                (besidePoki || !reading.elements.isEmpty)
             if !confirmedPaneRead {
                 invalidateWorkspaceRead()
                 return ToolResult(text: (["Split View: the \(pane.side) pane could not be confirmed; call look with that pane again"] +
@@ -437,6 +439,9 @@ final class Computer: @unchecked Sendable {
         }
         let app = reading.foreground?.describe ?? "unknown"
         var header = ["app: \(app)   read: \(ISO8601DateFormatter().string(from: Date())) (\(reading.ms) ms)" + (notes.isEmpty ? "" : "   note: \(notes.joined(separator: "; "))")]
+        if let side = reading.foreground?.pokiPane, side == "left" || side == "right" {
+            header.append("Duo Split View: Poki is on the \(side). The picture, elements and input are for the \(side == "left" ? "right" : "left") pane.")
+        }
         if jpeg != nil { header.append(size != nil ? "screenshot: \(width) px wide, 1 px = 1 screen point (the same points as the frames and taps)" : "screenshot: \(width) px wide; screen size unknown") }
         header += did.map { "did: \($0)" }
         if let error { header.append("error: \(error)") }
@@ -566,7 +571,12 @@ final class Computer: @unchecked Sendable {
             } else {
                 workspaceReads.removeValue(forKey: selectedPane.side)
             }
-            result.text += "\nSplit View: \(selectedPane.side) is \(selectedPane.app); the other pane is \(selectedPane.other). Use look with pane left or right before acting on the other app."
+            result.text += "\nSplit View: \(selectedPane.side) is \(selectedPane.app); the other pane is \(selectedPane.other)."
+            if config.isPoki(Foreground(bundleID: selectedPane.other, name: nil)) {
+                result.text += " Poki only controls the \(selectedPane.side) pane."
+            } else {
+                result.text += " Use look with pane left or right before acting on the other app."
+            }
         }
         if begins, let app = lastForeground { origin = (app, session, now()) } else if origin?.session == session { origin?.lastCall = now() }
         if begins, let line = skillsLine() { result.text += "\n" + line }
