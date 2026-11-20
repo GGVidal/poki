@@ -169,6 +169,31 @@ final class AutomationAuthorizationTests: XCTestCase {
         XCTAssertEqual(wda.sent.filter { $0.hasSuffix("/wda/tap") }.count, 1)
     }
 
+    func testBackUsesAnEdgeSwipeWhenOnlyTheScreenshotIsFreshAfterAuthorization() async {
+        let (core, wda, host) = makeCore()
+        host.state.value = .automationReady(revision: 1)
+        wda.tree([Node("Button", "Back", [8, 50, 60, 40])], app: "Settings")
+        let previous = await core.callTool("look", arguments: "{}")
+        XCTAssertTrue(previous.text.contains("Button \"Back\""), previous.text)
+
+        host.state.value = .automationReady(revision: 2)
+        wda.set("GET /source") { _ in (500, ["value": ["error": "tree unavailable"]]) }
+        wda.set("GET /screenshot") { _ in (200, ["value": .string(Data("current screen".utf8).base64EncodedString())]) }
+        let current = await core.callTool("look", arguments: "{}")
+        XCTAssertTrue(current.text.contains("no element tree"), current.text)
+        XCTAssertNotNil(current.jpeg)
+        XCTAssertNotEqual(current.jpeg, previous.jpeg)
+
+        let back = await core.callTool("do", arguments: #"{"actions":[{"back":true}]}"#)
+
+        XCTAssertFalse(back.isError, back.text)
+        XCTAssertTrue(wda.bodies("POST /wda/tap").isEmpty, back.text)
+        let gestures = wda.bodies("POST /wda/pressAndDragWithVelocity")
+        XCTAssertEqual(gestures.count, 1, back.text)
+        XCTAssertEqual(gestures.first?["fromX"]?.double, 2)
+        XCTAssertEqual(gestures.first?["toX"]?.double, 234)
+    }
+
     func testOriginalLookSurvivesSlowOpeningBeforeTheAuthorizationPrompt() async {
         let (core, wda, host) = makeCore { $0.runnerWait = 0 }
         let opening = RunnerState.openingAutomationSession("opening the in-process automation session")

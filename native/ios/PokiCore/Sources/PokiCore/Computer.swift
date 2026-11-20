@@ -49,7 +49,10 @@ final class Computer: @unchecked Sendable {
     var listed: [(ref: Int, element: Element)] = []
     var nextRef = 1
     /// Every element of the latest tree with a frame, listed or not (for what covers what).
-    var lastAll: [Element] = []
+    var lastAll: [Element] = [] {
+        didSet { currentBackTarget = BackTarget(in: lastAll) }
+    }
+    private(set) var currentBackTarget = BackTarget(in: [])
     /// When the latest tree was read (a `wait_until: settled` takes a fresh one as its first sample).
     var lastTreeAt: Double?
     /// A swipe or drag went out that no tree read has shown yet: `scroll_to` reads before it swipes
@@ -235,6 +238,7 @@ final class Computer: @unchecked Sendable {
             return ToolResult(text: lines.joined(separator: "\n"), jpeg: stale, isError: true, screenEvidence: [])
         }
         let treeRead = !reading.elements.isEmpty || reading.notes.isEmpty
+        if !treeRead { currentBackTarget = BackTarget(in: []) }
         let sameApp = reading.foreground?.bundleID == nil || reading.foreground?.bundleID == lastForeground?.bundleID
         lastForeground = reading.foreground ?? lastForeground
         if config.isPoki(reading.foreground) { return pokiInFront(reading, did: did, error: error, extra: extra) }
@@ -893,7 +897,9 @@ final class Computer: @unchecked Sendable {
             return !evidence.isEmpty && steps.allSatisfy {
                 ActionKind($0) != .path && canActAfterAuthorization($0, evidence: evidence)
             }
-        case .run, .back, .key:
+        case .back:
+            return currentBackTarget.button == nil ? !evidence.isEmpty : evidence.contains(.references)
+        case .run, .key:
             return !evidence.isEmpty
         }
     }
@@ -1441,7 +1447,10 @@ final class Computer: @unchecked Sendable {
         for (i, action) in actions.enumerated() {
             let index = offset + i
             defer { if let kind = ActionKind(action), kind.changesScreen(action) { moved = true; changed = (kind.rawValue, now()) } }
-            if moved, let held = await pressNow(action, after: changed, approved: approved[index], until: until - config.readTimeout - 0.5) {
+            let check = moved
+                ? await pressNow(action, after: changed, approved: approved[index], until: until - config.readTimeout - 0.5)
+                : (problem: nil, backTarget: nil)
+            if let held = check.problem {
                 did.append("\(action.serialized()) (not_sent)")
                 error = "action \(index + 1) was not sent: \(held)\(i + 1 < actions.count ? "; the actions after it were not sent" : "")"
                 break
@@ -1457,7 +1466,9 @@ final class Computer: @unchecked Sendable {
             let givenUp = runner.actionsGivenUp.value
             let recorded = recordable(action)
             do {
-                let (kind, text) = try await withDeadline(left, "action \(index + 1)") { [self] in try await perform(action, until: actionsUntil) }
+                let (kind, text) = try await withDeadline(left, "action \(index + 1)") { [self] in
+                    try await perform(action, until: actionsUntil, backTarget: check.backTarget)
+                }
                 if let recorded { trace.append(recorded) }
                 lastKind = kind
                 did.append("\(text) (sent, \(Int(((now() - began) * 1000).rounded())) ms)")
@@ -1517,22 +1528,23 @@ final class Computer: @unchecked Sendable {
     /// two reads in a row that agree (as `wait_until: settled`), within `settleWindow`, so a page still
     /// sliding in is not read as the one it covers; a screen that never holds still is judged on the
     /// latest read.
-    func pressNow(_ action: JSON, after changed: (kind: String, at: Double)?, approved: String?, until: Double) async -> String? {
+    func pressNow(_ action: JSON, after changed: (kind: String, at: Double)?, approved: String?, until: Double) async -> (problem: String?, backTarget: BackTarget?) {
         let rules = config.rules
-        guard rules.enabled, let kind = ActionKind(action), kind.presses(action) else { return nil }
+        guard let kind = ActionKind(action), kind.presses(action), rules.enabled || kind == .back else { return (nil, nil) }
         if let changed {
             let pause = min((Self.settle[changed.kind] ?? 0.4) - (now() - changed.at), until - now() - 0.3)
             if pause > 0.01 { await sleep(seconds: pause) }
         }
         guard let screen = size, let elements = await settledRead(until: min(until, now() + Self.settleWindow)) else {
-            return "the action before it may have changed the screen, and it could not be read again to check this one. Choose the remaining actions from the fresh screen below and send them in a new do"
+            return ("the action before it may have changed the screen, and it could not be read again to check this one. Choose the remaining actions from the fresh screen below and send them in a new do", nil)
         }
+        let backTarget = kind == .back ? BackTarget(in: elements.all) : nil
         let scan = SensitiveScan(front: elements.foreground, secureOnScreen: false, elements: listable(elements.all, screen))
-        for press in presses(kind, action, scan, unread: false) {
+        for press in presses(kind, action, scan, unread: false, backTarget: backTarget) {
             guard let reason = rules.reason(touching: press.element, typing: false, app: press.judged == .stroke ? nil : scan.front, secureOnScreen: false), reason != approved else { continue }
-            return "the action before it may have changed the screen, and where it touches now it needs the owner's approval (\(reason)). Choose the remaining actions from the fresh screen below and send them in a new do"
+            return ("the action before it may have changed the screen, and where it touches now it needs the owner's approval (\(reason)). Choose the remaining actions from the fresh screen below and send them in a new do", nil)
         }
-        return nil
+        return (nil, backTarget)
     }
 
     /// Up to `pause` seconds before the read after the actions, ended early once the screen differs
@@ -1777,7 +1789,7 @@ final class Computer: @unchecked Sendable {
     /// stroke on a screen that was read (a stroke inside one tall button, or across a wide one). A
     /// key's tap lands on the keyboard's own return key (Go, Search, Send: `returnKeyLabels`), judged
     /// with the key.
-    func presses(_ kind: ActionKind, _ action: JSON, _ scan: SensitiveScan, unread: Bool) -> [(element: Element?, atPoint: Bool, judged: Press)] {
+    func presses(_ kind: ActionKind, _ action: JSON, _ scan: SensitiveScan, unread: Bool, backTarget: BackTarget? = nil) -> [(element: Element?, atPoint: Bool, judged: Press)] {
         // On a screen read after the numbers were given, a number is judged by what lies where it is touched.
         func under(_ p: (x: Double, y: Double)?) -> Element? { p.flatMap { element(at: $0, in: scan.elements) } }
         func at(_ spec: JSON?) -> (element: Element?, atPoint: Bool, judged: Press)? {
@@ -1801,7 +1813,7 @@ final class Computer: @unchecked Sendable {
             if let a = spec?.array, a.count == 4 { return [at([a[0], a[1]]), at([a[2], a[3]])].compactMap { $0 } }
             return [at(spec?["from"]), at(spec?["to"])].compactMap { $0 }
         case .back:
-            guard let button = Self.backButton(in: lastAll) else { return [] }
+            guard let button = (backTarget ?? currentBackTarget).button else { return [] }
             return [(scan.elements == nil ? button : under(button.frame.centre), false, .button)]
         case .swipe: return stroke(in: spec?["in"] ?? action["in"], spec?.string ?? spec?["direction"]?.string ?? "", spec?["distance"]?.string ?? "long")
         case .scrollTo: return stroke(in: spec?["in"], ["down": "up", "up": "down", "right": "left", "left": "right"][spec?["direction"]?.string ?? "down"] ?? "up", "scroll")
