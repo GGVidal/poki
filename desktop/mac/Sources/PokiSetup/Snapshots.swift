@@ -7,43 +7,16 @@ import SwiftUI
 enum Snapshots {
     static func run(into dir: URL) async {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? await Task.sleep(for: .seconds(2))
+        try? await Task.sleep(for: .seconds(3))
         guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && !($0.className.contains("StatusBar")) }) else {
             print("snapshot: no window")
             NSApp.terminate(nil)
             return
         }
-        window.setContentSize(NSSize(width: 960, height: 740))
+        window.setContentSize(NSSize(width: 960, height: 680))
         window.center()
         guard let model = AppModel.current else {
             print("snapshot: no model")
-            NSApp.terminate(nil)
-            return
-        }
-        if ProcessInfo.processInfo.environment["POKI_SETUP_WIZARD_WALK"] == "1" {
-            let langPrefix = L10n.isSimplifiedChinese ? "zh" : "en"
-            NSApp.appearance = NSAppearance(named: .aqua)
-            model.page = .setup
-            let states: [WizardStateId] = [
-                .deviceDisconnected,
-                .deviceUntrusted,
-                .developerModeOff,
-                .accountSignedOut,
-                .readyToInstall,
-                .ddiUnmounted,
-                .appUntrusted,
-                .pokiNotStarted,
-                .completed,
-            ]
-            for s in states {
-                model.applyDemoWizardState(s)
-                try? await Task.sleep(for: .milliseconds(700))
-                save(window, to: dir.appendingPathComponent("mac-wizard-\(langPrefix)-\(s.rawValue).png"))
-            }
-            model.page = .phones
-            try? await Task.sleep(for: .milliseconds(700))
-            save(window, to: dir.appendingPathComponent("mac-wizard-\(langPrefix)-phones.png"))
-            print("snapshot: wizard walk done")
             NSApp.terminate(nil)
             return
         }
@@ -61,6 +34,7 @@ enum Snapshots {
     }
 
     private static func save(_ window: NSWindow, to url: URL) {
+        // The real window, as the window server draws it (materials, title bar, shadows).
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         p.arguments = ["-x", "-o", "-l", String(window.windowNumber), url.path]
@@ -72,6 +46,7 @@ enum Snapshots {
             print("snapshot: \(url.lastPathComponent)")
             return
         }
+        // Fallback: AppKit's own drawing of the views (no window-server materials).
         if let view = window.contentView?.superview ?? window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
             if let data = rep.representation(using: .png, properties: [:]) {

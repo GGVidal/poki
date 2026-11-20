@@ -181,6 +181,28 @@ fn with_the_image_mounted_a_refused_loopback_starts_the_local_session() {
     assert!(!events.iter().any(|v| v["state"] == "waiting_network"), "{events:?}");
 }
 
+#[test]
+fn usb_prepared_image_opens_without_a_pairing_record_or_loopback() {
+    let marker = temp("usb-prepared-image");
+    std::fs::write(&marker, b"").unwrap();
+    let config: Config = serde_json::from_value(json!({
+        "pairing_file": temp("usb-wizard-has-no-pairing-file"),
+        "in_process": true,
+        "use_mounted_image_only": true,
+        "ddi_marker": marker,
+    })).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let launcher = Arc::new(Launcher::new(config, Box::new(move |event| sink.lock().unwrap().push(event))));
+    launcher.clone().start();
+    wait_for(&events, 5, settled);
+    launcher.stop();
+    std::fs::remove_file(marker).unwrap();
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|event| event["state"] == "running" && event["code"] == "local_ddi"), "{events:?}");
+    assert!(!events.iter().any(|event| event["state"] == "connecting" || event["state"] == "pairing"), "{events:?}");
+}
+
 /// Mounting the image needs the developer services, so without it the loopback error stands.
 #[test]
 fn without_the_image_a_refused_loopback_still_waits_for_the_network() {
@@ -197,12 +219,24 @@ fn the_runner_app_waits_for_the_loopback_with_the_image_mounted() {
     assert!(!events.iter().any(|v| v["state"] == "running"), "{events:?}");
 }
 
-/// Only a refused connection means the loopback is not there. One that is taken and then dropped is
-/// a loopback in trouble: its error stands, so the owner and the log still see it.
+/// A loopback that takes the connection and drops it (a proxy app on cellular, GitHub issue 69) is no
+/// more use than one that refuses it, and the app's own session on the mounted image needs neither:
+/// the launcher hands over to it, so the Live Activity does not ask to turn on a loopback while
+/// tasks run. The handshake's own words go with it, for the app's log.
 #[test]
-fn a_dropped_handshake_is_not_handed_to_the_mounted_image() {
+fn with_the_image_mounted_a_dropped_handshake_starts_the_local_session() {
     let events = launch_without_the_device(true, true, Loopback::DropsTheHandshake, settled);
-    assert!(events.iter().any(|v| v["code"] == "handshake"), "{events:?}");
+    let running = events.iter().find(|v| v["state"] == "running").unwrap_or_else(|| panic!("no running state: {events:?}"));
+    assert_eq!(running["code"], "local_ddi", "{running}");
+    assert!(running["detail"].as_str().unwrap_or_default().starts_with("remote pairing handshake failed"), "{running}");
+    assert!(!events.iter().any(|v| v["state"] == "failed"), "{events:?}");
+}
+
+/// Without the image the developer services are needed to mount it: a dropped handshake stays an error.
+#[test]
+fn without_the_image_a_dropped_handshake_still_fails() {
+    let events = launch_without_the_device(true, false, Loopback::DropsTheHandshake, settled);
+    assert!(events.iter().any(|v| v["state"] == "failed" && v["code"] == "handshake"), "{events:?}");
     assert!(!events.iter().any(|v| v["state"] == "running"), "{events:?}");
 }
 

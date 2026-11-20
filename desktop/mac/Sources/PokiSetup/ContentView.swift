@@ -11,8 +11,14 @@ struct ContentView: View {
                         Label(p.title, systemImage: p.symbol).tag(p)
                     }
                 }
-                Section(L10n.tr("Advanced")) {
+                Section(localized("Advanced")) {
                     ForEach([Page.relay, .debug]) { p in
+                        Label(p.title, systemImage: p.symbol).tag(p)
+                    }
+                }
+                // For people developing Poki. Test Builds shows once GitHub is signed in.
+                Section(localized("Developer")) {
+                    ForEach(model.dev.signedIn ? [Page.testBuilds, .github] : [Page.github]) { p in
                         Label(p.title, systemImage: p.symbol).tag(p)
                     }
                 }
@@ -29,29 +35,38 @@ struct ContentView: View {
                 case .account: AccountView()
                 case .relay: RelayView()
                 case .debug: DiagnosticsView()
+                case .testBuilds: TestBuildsView()
+                case .github: GitHubAccountView()
                 }
             }
             .navigationTitle(model.page.title)
+            .alert(localized("Close Poki on \(model.closeAsk?.name ?? localized("the device"))?"), isPresented: Binding(get: { model.closeAsk != nil }, set: { _ in })) {
+                Button(localized("Close Poki and Update")) { model.answerClose(true) }
+                    .keyboardShortcut(.defaultAction)
+                Button(localized("Cancel"), role: .cancel) { model.answerClose(false) }
+            } message: {
+                Text(localized("Poki is open on the device, in front or in the background. Poki Setup closes it so the update installs cleanly. You can skip this question under Developer › Test Builds."))
+            }
         }
         .overlay(alignment: .bottom) {
             if let text = model.banner {
-                Banner(text: text) { model.banner = nil }
+                Banner(text: text.text) { model.banner = nil }
                     .padding(16)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.snappy, value: model.banner)
+        .animation(.snappy, value: model.banner?.text)
         .sheet(isPresented: $model.needsCode) { VerificationCodeSheet() }
-        .alert(L10n.fmt("Poki Setup %@ is available", displayVersion(model.updatePrompt ?? "")), isPresented: Binding(get: { model.updatePrompt != nil }, set: { if !$0 { model.updatePrompt = nil } })) {
-            Button(L10n.tr("Restart to Update")) {
+        .alert(localized("Poki Setup \(displayVersion(model.updatePrompt ?? "")) is available"), isPresented: Binding(get: { model.updatePrompt != nil }, set: { if !$0 { model.updatePrompt = nil } })) {
+            Button(localized("Restart to Update")) {
                 Task {
-                    do { try await model.installUpdate() } catch { model.banner = error.localizedDescription }
+                    do { try await model.installUpdate() } catch { model.banner = .verbatim(error.localizedDescription) }
                 }
             }
             .keyboardShortcut(.defaultAction)
-            Button(L10n.tr("Later"), role: .cancel) {}
+            Button(localized("Later"), role: .cancel) {}
         } message: {
-            Text(L10n.tr("Poki Setup downloads the update, checks its signature and restarts."))
+            Text(localized("Poki Setup downloads the update, checks its signature and restarts."))
         }
     }
 }
@@ -66,10 +81,10 @@ private struct SidebarFooter: View {
         HStack(spacing: 10) {
             AccountBadge(name: model.account?.name, appleID: model.account?.appleId, signedIn: signedIn)
             VStack(alignment: .leading, spacing: 1) {
-                Text(signedIn ? (model.account?.name ?? L10n.tr("Signed In")) : hasKeychainError ? L10n.tr("Keychain Locked") : L10n.tr("Not Signed In"))
+                Text(signedIn ? (model.account?.name ?? localized("Signed In")) : hasKeychainError ? localized("Keychain Locked") : localized("Not Signed In"))
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
-                Text(signedIn ? (model.account?.appleId ?? "") : hasKeychainError ? L10n.tr("Choose “Always Allow” and retry") : L10n.tr("Sign in to set up Poki"))
+                Text(signedIn ? (model.account?.appleId ?? "") : hasKeychainError ? localized("Choose “Always Allow” and retry") : localized("Sign in to set up Poki"))
                     .font(.caption)
                     .foregroundStyle(hasKeychainError ? Color.orange : Color.secondary)
                     .lineLimit(1)
@@ -86,18 +101,19 @@ private struct SidebarFooter: View {
 private struct VerificationCodeSheet: View {
     @EnvironmentObject var model: AppModel
     @State private var code = ""
+    @State private var resendAt = Date.distantPast
     @State private var working = false
     @State private var error: String?
 
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "lock.shield").font(.system(size: 40)).foregroundStyle(Color.pokiBlue)
-            Text(L10n.tr("Two-Factor Authentication")).font(.title2.weight(.semibold))
-            Text(L10n.tr(model.codeVia == "sms" ? "Enter the code Apple sent to your phone number." : "Enter the verification code shown on your other Apple devices."))
+            Text(localized("Two-Factor Authentication")).font(.title2.weight(.semibold))
+            Text(model.codeVia == "sms" ? localized("Enter the code Apple sent to your phone number.") : localized("Enter the verification code shown on your other Apple devices."))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField(L10n.tr("6-digit code"), text: $code)
+            TextField(localized("6-digit code"), text: $code)
                 .font(.system(size: 24, weight: .medium, design: .monospaced))
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
@@ -109,16 +125,17 @@ private struct VerificationCodeSheet: View {
                     if digits.count == 6 { Task { await verify() } }
                 }
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Button(localized("Resend Code")) { Task { await resend() } }
+                    .disabled(working || context.date < resendAt)
+            }
             HStack {
-                Button(L10n.tr("Cancel")) {
-                    model.needsCode = false
-                    code = ""
-                    error = nil
-                }
-                .keyboardShortcut(.cancelAction)
+                Button(localized("Use Another Account")) {
+                    Task { await changeAccount() }
+                }.disabled(working)
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
-                Button(L10n.tr("Verify")) { Task { await verify() } }
+                Button(localized("Verify")) { Task { await verify() } }
                     .pokiProminentButton()
                     .keyboardShortcut(.defaultAction)
                     .disabled(code.count != 6 || working)
@@ -126,6 +143,25 @@ private struct VerificationCodeSheet: View {
         }
         .padding(24)
         .frame(width: 380)
+    }
+
+    private func resend() async {
+        guard !working else { return }
+        working = true
+        error = nil
+        defer { working = false }
+        do {
+            resendAt = try await model.resendSignInCode()
+            code = ""
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func changeAccount() async {
+        guard !working else { return }
+        working = true
+        defer { working = false }
+        do { try await model.changeSignInAccount() }
+        catch { self.error = error.localizedDescription }
     }
 
     private func verify() async {
@@ -184,14 +220,14 @@ private struct Banner: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
-            Button(L10n.tr("Copy")) {
+            Button(localized("Copy")) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             }
             .buttonStyle(.borderless)
             Button(action: close) { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
-                .accessibilityLabel(L10n.tr("Dismiss"))
+                .accessibilityLabel(localized("Dismiss"))
         }
         .padding(12)
         .frame(maxWidth: 560)

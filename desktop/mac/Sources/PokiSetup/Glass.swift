@@ -139,8 +139,8 @@ struct PageHero<Trailing: View>: View {
                 }
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(L10n.tr(title)).font(.title3.weight(.bold)).lineLimit(1)
-                Text(L10n.tr(subtitle)).font(.callout).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text(title).font(.title3.weight(.bold)).lineLimit(1)
+                Text(subtitle).font(.callout).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             trailing()

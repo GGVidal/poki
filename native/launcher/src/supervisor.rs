@@ -37,6 +37,8 @@ pub struct Config {
     /// image (the XCTest libraries the app loads) and starts no runner.
     #[serde(default)]
     pub in_process: bool,
+    #[serde(default)]
+    pub use_mounted_image_only: bool,
     /// A file the mounted developer disk image puts on the phone, as the app's own process sees it.
     /// In-process, when the loopback refuses the connection and this file is there, the app opens its
     /// own session on the image. None: no such fallback.
@@ -215,6 +217,15 @@ impl Launcher {
     /// One launch and the watch over it. Ok when a running runner later stopped answering.
     async fn once(me: std::sync::Arc<Self>, attempt: u32, commands: &mut watch::Receiver<Command>) -> Result<(), Failure> {
         let config = me.config.clone();
+        if config.in_process && config.use_mounted_image_only {
+            if config.ddi_marker.as_deref().is_some_and(Path::is_file) {
+                let status = json!({"runner": "in-process", "code": "local_ddi"});
+                return Self::hold_in_process(&me, attempt, status, commands).await;
+            }
+            return Err(Failure::new("The developer disk image is no longer mounted.")
+                .fix("Reconnect this iPhone to Poki Setup to mount the image, or restore the local connection in Setup.")
+                .code("ddi_unmounted"));
+        }
         me.set("connecting", attempt, json!({}));
         let mut pairing = Pairing::read(&config.pairing_file, config.host_name.as_deref())?;
         let kind = pairing.kind().name();

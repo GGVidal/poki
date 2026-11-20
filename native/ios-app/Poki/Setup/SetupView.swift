@@ -110,7 +110,12 @@ struct SetupView: View {
                 "Open **Settings › Developer**. It appears once Developer Mode is on.",
                 "Turn on **Enable UI Automation**.",
             ])
-            ConfirmCard(step: .automation, title: "UI Automation is on", isOn: binding(\.uiAutomation))
+            if model.usesMountedImageWithoutLoopback, model.passcodeExpected || !model.setup.uiAutomation {
+                Button("Start") { model.verifyMountedImageAutomation() }
+                    .disabled(model.passcodeConfirmationPending)
+            } else {
+                ConfirmCard(step: .automation, title: "UI Automation is on", isOn: binding(\.uiAutomation))
+            }
         case .background: BackgroundPage()
         }
     }
@@ -712,7 +717,9 @@ struct SetupChecklist: View {
         .listStyle(.insetGrouped)
         .navigationTitle(AppLocalization.text("Setup"))
         .onAppear { model.loopback.resume() }
-        .sheet(isPresented: $guiding) { SetupGuide(start: SetupStep.shown.first { !model.isDone($0) }) }
+        .sheet(isPresented: $guiding) {
+            SetupGuide(start: SetupStep.shown.first { !model.isDone($0) }).modifier(AutomationNotices())
+        }
         .background(EmptyView().sheet(isPresented: Binding(get: { model.signer.needsCodeSheet && !detailsOpen }, set: { model.signer.needsCodeSheet = $0 })) { VerificationCodeSheet() })
     }
 }
@@ -725,7 +732,7 @@ struct SetupStepRow: View {
     var body: some View {
         let done = model.stepReadyForUse(step)
         LabeledContent {
-            if step == .loopback && !model.loopback.isWorking && (model.hasOpenInProcessSession || model.canStartTasks) {
+            if step == .loopback && !model.loopback.isWorking && (model.hasOpenInProcessSession || model.canStartTasks || model.mountedImageStandsIn) {
                 Text("Local automation ready").foregroundStyle(.secondary)
             } else if step == .loopback && model.loopback.state == .checking && model.setup.loopback != .none {
                 Text("Checking…").foregroundStyle(.secondary)
@@ -886,7 +893,12 @@ struct SetupStepPage: View {
                 "Open **Settings › Developer**. It appears once Developer Mode is on.",
                 "Turn on **Enable UI Automation**.",
             ])
-            ConfirmCard(step: .automation, title: "UI Automation is on", isOn: binding(\.uiAutomation))
+            if model.usesMountedImageWithoutLoopback, model.passcodeExpected || !model.setup.uiAutomation {
+                Button("Start") { model.verifyMountedImageAutomation() }
+                    .disabled(model.passcodeConfirmationPending)
+            } else {
+                ConfirmCard(step: .automation, title: "UI Automation is on", isOn: binding(\.uiAutomation))
+            }
         case .background: BackgroundPage()
         }
     }

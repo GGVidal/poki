@@ -77,13 +77,14 @@ enum PokiHandoff {
     nonisolated(unsafe) private static var lastWritten: Data?
 
     /// Writes the hello when what it says changed (and on the first call of each launch).
-    static func writeHello(loopbackWorking: Bool, loopbackSay: String?) {
+    static func writeHello(loopbackWorking: Bool, loopbackSay: String?, uiAutomationReady: Bool = false) {
         guard let key = phoneKey() else { return }
         let info = Bundle.main.infoDictionary
         let offer: [String: String] = ["kem": ModelKeySeal.kem, "public_key": key.publicKey.x963Representation.base64URL, "key_id": ModelKeySeal.keyID(key.publicKey)]
         var loopback: [String: Any] = ["working": loopbackWorking]
         if !loopbackWorking { loopback["say"] = loopbackSay ?? "" }
         var hello: [String: Any] = ["schema": "poki.hello/1", "model_key": offer, "loopback": loopback]
+        hello["ui_automation_ready"] = uiAutomationReady
         hello["version"] = info?["CFBundleShortVersionString"] as? String ?? "?"
         hello["build"] = info?["CFBundleVersion"] as? String ?? "?"
         if let update = PokiUpdateInfo.read(app: .main, channelFile: AppFiles.support.appendingPathComponent("signer/state/channel.json"), requestFile: folder.appendingPathComponent("update-request.json")) {

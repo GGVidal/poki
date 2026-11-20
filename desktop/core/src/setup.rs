@@ -2,7 +2,7 @@
 //! team, sign Poki for it, install it, hand the pairing file over, remember the phone.
 use crate::apple::anisette::{Provider, Source};
 use crate::apple::gsa::{self, AppToken, Outcome as SignInOutcome, Pending};
-use crate::apple::portal::{FEATURE_APP_GROUPS, Portal, Team};
+use crate::apple::portal::{self, FEATURE_APP_GROUPS, Portal, Team};
 use crate::apple::{identity, store};
 #[cfg(feature = "device")]
 use crate::device::{self, Phone};
@@ -357,9 +357,29 @@ impl Signer {
     }
 
     pub async fn teams(&mut self) -> Result<Vec<Team>> {
+        let saved = self.account.xcode_token.clone();
         let token = self.token().await?;
+        match self.list_teams(&token).await {
+            // The portal turned away the saved Xcode token though Apple's own time on it has not run
+            // out. Drop it and ask once more with a fresh one: from the session, or with a kept password
+            // from one fresh sign-in. Without a password this ends in SESSION_EXPIRED, and the app asks
+            // the person to sign in again. Only the portal's answer leads here. When token() itself
+            // fails, such as a kept password Apple no longer takes, nothing is tried again, since every
+            // wrong password brings Apple's account lock closer. Nor when token() had only just fetched
+            // the token: another one from the same session would fare no better.
+            Err(e) if portal::turned_token_away(&e) && saved.is_some_and(|s| s.token == token.token) => {
+                self.account.xcode_token = None;
+                self.persist()?;
+                let token = self.token().await?;
+                self.list_teams(&token).await
+            }
+            other => other,
+        }
+    }
+
+    async fn list_teams(&mut self, token: &AppToken) -> Result<Vec<Team>> {
         let session = self.account.session.clone().unwrap();
-        let mut portal = Portal::new(&session, &token, self.client.anisette())?;
+        let mut portal = Portal::new(&session, token, self.client.anisette())?;
         portal.teams().await
     }
 
@@ -522,8 +542,15 @@ pub struct Options {
     pub wait: Option<Duration>,
     /// Also serve the pairing file on the LAN for the phone's QR (for later, Wi-Fi-only use).
     pub hand_off: bool,
+    pub usb_only: bool,
     /// Pre-seed the developer disk image into Poki's container.
     pub seed_ddi: bool,
+    /// The test build `ipa` came from (Developer > Test Builds), kept in the device's record so
+    /// renewals can sign it again.
+    pub test_build: Option<crate::devbuilds::BuildRef>,
+    /// Close Poki on the device before replacing it. Without it, an install that finds Poki
+    /// running stops with [`Error::PokiRunning`] so the person can be asked first.
+    pub close_poki: bool,
 }
 
 #[cfg(feature = "device")]
@@ -562,26 +589,34 @@ pub async fn pick_phone(udid: Option<&str>) -> Result<Phone> {
 pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Result<Done> {
     let wait = opts.wait.unwrap_or(Duration::from_secs(120));
     reporter.step("phone", "Finding the iPhone");
-    let phone = pick_phone(opts.udid.as_deref()).await?;
+    let phone = if opts.usb_only {
+        crate::wizard::usb_phone(opts.udid.as_deref().ok_or_else(|| Error::device("Choose a USB device first."))?).await?
+    } else {
+        pick_phone(opts.udid.as_deref()).await?
+    };
     reporter.done("phone", Some(phone.udid.clone()));
 
     reporter.step("pair", "Pairing with the iPhone");
     let lockdown_record = device::pairing::pair(&phone, reporter, wait).await?;
-    if let Err(e) = device::pairing::enable_network(&phone).await {
+    if !opts.usb_only && let Err(e) = device::pairing::enable_network(&phone).await {
         reporter.note("pair", format!("Could not let the iPhone use this pairing over the network ({e}); Poki may need to pair on the phone."));
     }
     let facts = device::info::read(&phone).await?;
-    // iOS 26.4 and later only accept an RPPairing record over the loopback Poki uses.
-    let needs_remote = device::pairing::needs_remote_record(&facts.ios);
-    let record = match device::pairing::pair_remote(&phone, reporter, wait).await {
-        Ok(r) => Some(r),
-        Err(e) if needs_remote => {
-            reporter.note("pair", format!("Remote pairing did not finish ({e}). Poki can pair on the iPhone instead."));
-            None
-        }
-        Err(e) => {
-            tracing::info!("remote pairing not made, using the lockdown record: {e}");
-            Some(lockdown_record)
+    let record = if opts.usb_only {
+        Some(lockdown_record)
+    } else {
+        // iOS 26.4 and later only accept an RPPairing record over the loopback Poki uses.
+        let needs_remote = device::pairing::needs_remote_record(&facts.ios);
+        match device::pairing::pair_remote(&phone, reporter, wait).await {
+            Ok(record) => Some(record),
+            Err(error) if needs_remote => {
+                reporter.note("pair", format!("Remote pairing did not finish ({error}). Poki can pair on the iPhone instead."));
+                None
+            }
+            Err(error) => {
+                tracing::info!("remote pairing not made, using the lockdown record: {error}");
+                Some(lockdown_record)
+            }
         }
     };
     reporter.done("pair", Some(format!("{} · iOS {}", facts.name, facts.ios)));
@@ -599,12 +634,24 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
     let team = signer.team().await?;
     reporter.done("account", Some(format!("{} ({})", team.name, if team.is_free { "free, 7-day signing" } else { "paid" })));
 
-    reporter.step("release", "Getting Poki");
+    match &opts.test_build {
+        Some(b) if opts.ipa.is_none() => reporter.step("release", &format!("Downloading test build {}", b.run_number)),
+        _ => reporter.step("release", "Getting Poki"),
+    }
     let (ipa, signing_zip, tag) = match &opts.ipa {
+        None if opts.test_build.is_some() => {
+            let b = opts.test_build.as_ref().expect("checked above");
+            let (ipa, zipp) = crate::devbuilds::fetch(b.artifact_id, reporter, "release").await?;
+            (ipa, zipp, b.tag())
+        }
         Some(p) => {
             let beside = p.with_file_name("Poki-signing.zip");
             let zipp = opts.signing_zip.clone().or_else(|| beside.is_file().then_some(beside));
-            (p.clone(), zipp, format!("local:{}", p.file_name().unwrap_or_default().to_string_lossy()))
+            let tag = match &opts.test_build {
+                Some(b) => b.tag(),
+                None => format!("local:{}", p.file_name().unwrap_or_default().to_string_lossy()),
+            };
+            (p.clone(), zipp, tag)
         }
         None => {
             let rel = release::latest().await?;
@@ -621,11 +668,61 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
     device::install::install_profiles(&phone, &built.profiles, reporter).await?;
     let existing = device::install::find_apps(&phone, crate::POKI_BUNDLE_ID).await.unwrap_or_default();
     let upgrade = existing.iter().any(|a| a.bundle_id == built.bundle_id);
+    if upgrade {
+        let path = existing.iter().find(|a| a.bundle_id == built.bundle_id).and_then(|a| a.path.clone());
+        make_sure_poki_is_closed(&phone, path, opts.close_poki, reporter).await?;
+    }
     device::install::install_ipa(&phone, &built.ipa, upgrade, reporter).await?;
 
+    reporter.step("pairing_file", "Giving Poki its pairing file");
+    let mut handed = false;
+    match &record {
+        None => reporter.done("pairing_file", Some("Poki pairs on the iPhone itself".into())),
+        Some(record) => {
+            // Right after an install the phone sometimes drops the first container connection; try again.
+            let mut placed = device::container::place_pairing_file(&phone, &built.bundle_id, record).await;
+            for _ in 0..2 {
+                if placed.is_ok() { break; }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                placed = device::container::place_pairing_file(&phone, &built.bundle_id, record).await;
+            }
+            match placed {
+                Ok(true) => {
+                    handed = true;
+                    reporter.done("pairing_file", Some("placed in Poki's container".into()));
+                }
+                Ok(false) => {
+                    handed = true;
+                    reporter.done("pairing_file", Some("Poki already has its own pairing; kept it".into()));
+                }
+                Err(e) if opts.usb_only => reporter.note("pairing_file", format!("Could not copy the pairing file over USB ({e}). Poki can pair on the iPhone if needed.")),
+                Err(e) => reporter.note("pairing_file", format!("Could not write into Poki's container ({e}); the QR hand-off below does it instead.")),
+            }
+        }
+    }
     let apple_id = signer.account.apple_id().unwrap_or("").to_string();
-    let mut post = RealPostInstall { phone: &phone, built: &built, apple_id: &apple_id };
-    let (handed, handoff) = finish_device_install(&mut post, record.as_deref(), &opts, reporter).await?;
+    hand_signing_identity(&phone, &built, &apple_id, reporter).await;
+    if opts.seed_ddi {
+        if let Err(e) = device::ddi::seed_container(&phone, &built.bundle_id, reporter).await {
+            reporter.note("pairing_file", format!("Developer disk image not pre-seeded ({e}); Poki downloads it itself."));
+        }
+        // Mount it too, from here, so automation can start before Poki ever reaches its loopback.
+        // Poki mounts it again by itself after a restart; a failure here only means it will.
+        if !matches!(device::ddi::mounted(&phone).await, Ok(true)) {
+            if let Err(e) = device::ddi::mount(&phone, reporter).await {
+                tracing::warn!(error = %e, "mounting the developer disk image from the computer failed");
+                reporter.note("mount", format!("The developer disk image was not mounted from this computer ({e}). Poki mounts it itself when it connects."));
+                reporter.done("mount", None);
+            }
+        }
+    }
+    let handoff = if let (true, Some(record)) = (!opts.usb_only && (opts.hand_off || !handed), &record) {
+        let server = pairshare::serve(record.clone()).await?;
+        reporter.waiting("pairing_file", format!("Scan the code with the iPhone's Camera, or open {} on the iPhone", server.handoff.link));
+        Some(server)
+    } else {
+        None
+    };
 
     let rec = keeper::Record {
         udid: phone.udid.clone(),
@@ -646,10 +743,60 @@ pub async fn run(signer: &mut Signer, opts: Options, reporter: &Reporter) -> Res
         last_error: None,
         wifi_address: facts.wifi_address.clone(),
         pairing_handed_off: handed,
+        test_build: opts.test_build.clone(),
     };
     keeper::put(rec.clone())?;
     reporter.done("all", Some(format!("Poki {} is on {}", built.version, facts.name)));
     Ok(Done { record: rec, handoff, notes: built.notes })
+}
+
+#[cfg(feature = "device")]
+/// Before an update replaces Poki: checks it is not running, and closes it when `close` says so.
+/// When the device cannot say what is running (the developer disk image is not mounted, an older
+/// iOS), the update goes on, as it did before this check.
+pub async fn make_sure_poki_is_closed(phone: &Phone, app_path: Option<String>, close: bool, reporter: &Reporter) -> Result<()> {
+    reporter.step("close", "Making sure Poki is closed");
+    if !matches!(device::ddi::mounted(phone).await, Ok(true)) {
+        if let Err(e) = device::ddi::mount(phone, &Reporter::silent()).await {
+            tracing::warn!(error = %e, "could not mount the developer disk image before checking for Poki");
+        }
+    }
+    match device::running::poki(phone, app_path.clone()).await {
+        Ok(list) if list.is_empty() => {
+            reporter.done("close", Some("Poki is not running".into()));
+            Ok(())
+        }
+        Ok(_) if close => {
+            reporter.part("close", 0.5, Some("Closing Poki on the device".into()));
+            device::running::close_poki(phone, app_path).await?;
+            reporter.done("close", Some("Closed Poki".into()));
+            Ok(())
+        }
+        Ok(_) => Err(Error::PokiRunning("Poki is open on the device. Close it before updating, or let Poki Setup close it.".into())),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not check whether Poki is running");
+            reporter.note("close", format!("Could not check whether Poki is running ({e}). Updating anyway."));
+            reporter.done("close", None);
+            Ok(())
+        }
+    }
+}
+
+/// Whether Poki is running on the device: Some(true or false), or None when the device cannot say.
+#[cfg(feature = "device")]
+pub async fn poki_running(udid: &str) -> Result<Option<bool>> {
+    let phone = pick_phone(Some(udid)).await?;
+    if !matches!(device::ddi::mounted(&phone).await, Ok(true)) {
+        let _ = device::ddi::mount(&phone, &Reporter::silent()).await;
+    }
+    let path = device::install::find_apps(&phone, crate::POKI_BUNDLE_ID).await.ok().and_then(|apps| apps.into_iter().find_map(|a| a.path));
+    match device::running::poki(&phone, path).await {
+        Ok(l) => Ok(Some(!l.is_empty())),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not tell whether Poki is running");
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(feature = "device")]
@@ -667,15 +814,29 @@ pub async fn renew(signer: &mut Signer, udid: &str, reporter: &Reporter) -> Resu
         let facts = device::info::read(&phone).await?;
         let teams = signer.teams().await?;
         let team = teams.into_iter().find(|t| t.team_id == rec.team_id).ok_or_else(|| Error::msg(format!("The Apple ID signed in is not on team {} any more.", rec.team_name)))?;
-        let rel = release::latest().await?;
-        let (ipa, zipp) = release::fetch(&rel, reporter).await?;
+        // A test build is signed again while renewals keep test builds (Developer > Test Builds).
+        let kept = match &rec.test_build {
+            Some(b) => crate::devbuilds::for_renewal(b, reporter).await.map(|found| (found, b.clone())),
+            None => None,
+        };
+        let (ipa, zipp, tag, test_build) = match kept {
+            Some(((ipa, zipp), b)) => (ipa, zipp, b.tag(), Some(b)),
+            None => {
+                let rel = release::latest().await?;
+                let (ipa, zipp) = release::fetch(&rel, reporter).await?;
+                (ipa, zipp, rel.tag, None)
+            }
+        };
         let out = crate::paths::cache_dir()?.join(format!("Poki-{}-{}.ipa", team.team_id, udid));
         let built = sign_for_team(signer, &team, Some((udid, &facts.name)), &ipa, zipp.as_deref(), &out, reporter).await?;
         device::install::install_profiles(&phone, &built.profiles, reporter).await?;
+        // A renewal runs by itself, or after the person was asked: it closes Poki first.
+        let path = device::install::find_apps(&phone, &rec.bundle_id).await.ok().and_then(|apps| apps.into_iter().find(|a| a.bundle_id == rec.bundle_id).and_then(|a| a.path));
+        make_sure_poki_is_closed(&phone, path, true, reporter).await?;
         device::install::install_ipa(&phone, &built.ipa, true, reporter).await?;
         let apple_id = signer.account.apple_id().unwrap_or("").to_string();
         hand_signing_identity(&phone, &built, &apple_id, reporter).await;
-        Ok(keeper::Record { version: built.version, build: built.build, release_tag: rel.tag, signed_at: keeper::now(), profile_expires_at: built.profile_expires_at, last_checked_at: Some(keeper::now()), last_error: None, wifi_address: facts.wifi_address.clone().or(rec.wifi_address.clone()), ..rec.clone() })
+        Ok(keeper::Record { version: built.version, build: built.build, release_tag: tag, test_build, signed_at: keeper::now(), profile_expires_at: built.profile_expires_at, last_checked_at: Some(keeper::now()), last_error: None, wifi_address: facts.wifi_address.clone().or(rec.wifi_address.clone()), ..rec.clone() })
     }
     .await;
     match result {
@@ -709,126 +870,4 @@ pub async fn renew_due(signer: &mut Signer, reporter: &Reporter) -> Vec<(String,
     }
     signer.set_caller(prev_caller);
     out
-}
-
-#[cfg(feature = "device")]
-pub(crate) trait PostInstallOps {
-    async fn place_pairing(&mut self, record: &[u8]) -> Result<bool>;
-    async fn hand_identity(&mut self, reporter: &Reporter);
-    async fn seed_ddi(&mut self, reporter: &Reporter) -> Result<()>;
-    async fn mount_ddi(&mut self, reporter: &Reporter) -> Result<()>;
-    async fn serve_handoff(&mut self, record: Vec<u8>) -> Result<pairshare::Server>;
-}
-
-#[cfg(feature = "device")]
-struct RealPostInstall<'a> {
-    phone: &'a Phone,
-    built: &'a SignedBuild,
-    apple_id: &'a str,
-}
-
-#[cfg(feature = "device")]
-impl PostInstallOps for RealPostInstall<'_> {
-    async fn place_pairing(&mut self, record: &[u8]) -> Result<bool> {
-        let mut placed = device::container::place_pairing_file(self.phone, &self.built.bundle_id, record).await;
-        for _ in 0..2 {
-            if placed.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            placed = device::container::place_pairing_file(self.phone, &self.built.bundle_id, record).await;
-        }
-        placed
-    }
-    async fn hand_identity(&mut self, reporter: &Reporter) {
-        hand_signing_identity(self.phone, self.built, self.apple_id, reporter).await;
-    }
-    async fn seed_ddi(&mut self, reporter: &Reporter) -> Result<()> {
-        device::ddi::seed_container(self.phone, &self.built.bundle_id, reporter).await
-    }
-    async fn mount_ddi(&mut self, reporter: &Reporter) -> Result<()> {
-        device::ddi::mount(self.phone, reporter).await
-    }
-    async fn serve_handoff(&mut self, record: Vec<u8>) -> Result<pairshare::Server> {
-        pairshare::serve(record).await
-    }
-}
-
-#[cfg(feature = "device")]
-pub(crate) async fn finish_device_install(
-    ops: &mut impl PostInstallOps,
-    record: Option<&[u8]>,
-    opts: &Options,
-    reporter: &Reporter,
-) -> Result<(bool, Option<pairshare::Server>)> {
-    reporter.step("pairing_file", "Giving Poki its pairing file");
-    let mut handed = false;
-    match record {
-        None => reporter.done("pairing_file", Some("Poki pairs on the iPhone itself".into())),
-        Some(record) => match ops.place_pairing(record).await {
-            Ok(true) => {
-                handed = true;
-                reporter.done("pairing_file", Some("placed in Poki's container".into()));
-            }
-            Ok(false) => {
-                handed = true;
-                reporter.done("pairing_file", Some("Poki already has its own pairing; kept it".into()));
-            }
-            Err(e) => reporter.note("pairing_file", format!("Could not write into Poki's container ({e}); the QR hand-off below does it instead.")),
-        },
-    }
-    ops.hand_identity(reporter).await;
-    if opts.seed_ddi {
-        if let Err(e) = ops.seed_ddi(reporter).await {
-            reporter.note("pairing_file", format!("Developer disk image not pre-seeded ({e}); Poki downloads it itself."));
-        }
-    }
-    let handoff = if let (true, Some(record)) = (opts.hand_off || !handed, record) {
-        let server = ops.serve_handoff(record.to_vec()).await?;
-        reporter.waiting("pairing_file", format!("Scan the code with the iPhone's Camera, or open {} on the iPhone", server.handoff.link));
-        Some(server)
-    } else {
-        None
-    };
-    Ok((handed, handoff))
-}
-
-#[cfg(all(test, feature = "device"))]
-mod finish_tests {
-    use super::*;
-
-    struct FakePostInstall {
-        seeded: usize,
-        mounted: usize,
-    }
-
-    impl PostInstallOps for FakePostInstall {
-        async fn place_pairing(&mut self, _record: &[u8]) -> Result<bool> {
-            Ok(true)
-        }
-        async fn hand_identity(&mut self, _reporter: &Reporter) {}
-        async fn seed_ddi(&mut self, _reporter: &Reporter) -> Result<()> {
-            self.seeded += 1;
-            Ok(())
-        }
-        async fn mount_ddi(&mut self, _reporter: &Reporter) -> Result<()> {
-            self.mounted += 1;
-            Ok(())
-        }
-        async fn serve_handoff(&mut self, _record: Vec<u8>) -> Result<pairshare::Server> {
-            Err(Error::msg("unexpected handoff"))
-        }
-    }
-
-    #[tokio::test]
-    async fn setup_mounts_ddi_by_default() {
-        let mut fake = FakePostInstall { seeded: 0, mounted: 0 };
-        let opts = Options::default();
-        let (handed, handoff) = finish_device_install(&mut fake, Some(b"<plist/>"), &opts, &Reporter::noop())
-            .await
-            .unwrap();
-        assert!(handed);
-        assert!(handoff.is_none());
-        assert_eq!(fake.mounted, 1, "setup::run must mount DDI over USB by default");
-    }
 }

@@ -14,12 +14,13 @@ pub struct State {
     pub handoff: Mutex<Option<poki_setup_core::pairshare::Server>>,
     pub logs: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub busy: Mutex<bool>,
+    pub wizard: poki_setup_core::wizard::Attempts,
 }
 
 pub type Shared = Arc<State>;
 
 pub fn run() {
-    let state: Shared = Arc::new(State { signer: Mutex::new(None), pending: Mutex::new(None), handoff: Mutex::new(None), logs: Mutex::new(None), busy: Mutex::new(false) });
+    let state: Shared = Arc::new(State { signer: Mutex::new(None), pending: Mutex::new(None), handoff: Mutex::new(None), logs: Mutex::new(None), busy: Mutex::new(false), wizard: Default::default() });
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -64,6 +65,13 @@ pub fn run() {
             commands::approve_certificate_replacement,
             commands::devmode,
             commands::account,
+            commands::wizard_state,
+            commands::wizard_pair,
+            commands::wizard_reveal,
+            commands::wizard_mount,
+            commands::clear_wizard_failure,
+            commands::cancel_sign_in,
+            commands::resend_code,
             commands::sign_in,
             commands::finish_sign_in,
             commands::sign_out,
@@ -97,6 +105,20 @@ pub fn run() {
             commands::channels,
             commands::set_channel,
             commands::qr_svg,
+            commands::poki_running,
+            commands::dev_state,
+            commands::dev_set_prefs,
+            commands::github_sign_in_start,
+            commands::github_sign_in_finish,
+            commands::github_sign_in_cancel,
+            commands::github_use_cli,
+            commands::github_use_token,
+            commands::github_sign_out,
+            commands::test_builds,
+            commands::test_build_download,
+            commands::test_build_next,
+            commands::test_build_synced,
+            commands::test_builds_delete_downloads,
         ])
         .run(tauri::generate_context!())
         .expect("Poki Setup could not start");

@@ -156,7 +156,7 @@ impl Prepared {
             })?;
         device::install::install_profiles(&self.phone, &built.profiles, reporter).await?;
         device::install::install_ipa(&self.phone, &built.ipa, true, reporter).await?;
-        let record = keeper::Record { version: built.version, build: built.build, release_tag: self.release.tag, signed_at: keeper::now(), profile_expires_at: built.profile_expires_at, last_checked_at: Some(keeper::now()), last_error: None, ..self.record };
+        let record = keeper::Record { version: built.version, build: built.build, release_tag: self.release.tag, signed_at: keeper::now(), profile_expires_at: built.profile_expires_at, last_checked_at: Some(keeper::now()), last_error: None, test_build: None, ..self.record };
         keeper::put(record.clone())?;
         Ok(record)
     }
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn installed_facts_must_match_phone_and_original_record() {
         let installed = installed();
-        let app = device::install::InstalledApp { bundle_id: installed.bundle_id.clone(), name: "Poki".into(), version: "0.4.0".into(), build: "100".into(), team: Some("TESTTEAM".into()), path: None };
+        let app = device::install::InstalledApp { bundle_id: installed.bundle_id.clone(), name: "Poki".into(), version: "0.4.0".into(), build: "100".into(), team: Some("TESTTEAM".into()), path: None, profile_validated: None };
         let record: keeper::Record = serde_json::from_value(serde_json::json!({
             "udid": "fake-phone", "phone_name": "Fixture", "ios": "27.0", "apple_id": "fixture@example.invalid",
             "team_id": "TESTTEAM", "team_name": "Fixture", "team_is_free": true,

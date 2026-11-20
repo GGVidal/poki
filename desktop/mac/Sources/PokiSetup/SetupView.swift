@@ -3,45 +3,58 @@ import UniformTypeIdentifiers
 
 struct SetupView: View {
     @EnvironmentObject var model: AppModel
-    @State private var ipa: URL?
-    @State private var choosingIPA = false
     @State private var handOff = false
+    @State private var wizard: USBSetupSnapshot?
+    @State private var wizardSelection: String?
+    @State private var probeError: String?
+    @State private var wizardError: String?
+    @State private var wizardAction: String?
+    @State private var automaticActions: Set<String> = []
+    @State private var showInstallOptions = false
     @State private var result: InstallAnswer?
     @State private var failed: String?
     /// Set when the Apple Account is at its certificate limit: the question to put to the person.
     @State private var certificateQuestion: String?
     @State private var checking = false
     @State private var channelError: String?
-    @State private var modelKey = ""
-    @State private var sendingModelKey = false
-    @State private var modelKeyStatus: String?
 
     private var installing: Bool { model.busyJobs.contains("install") }
 
     var body: some View {
         Form {
             HeroSection {
-                PageHero(symbol: nil, title: "Set Up Poki", subtitle: "Plug in your iPhone with a USB cable and follow the next step below. No command line, VPN or AI agent is needed.")
+                PageHero(symbol: nil, title: localized("Set Up Poki"), subtitle: localized("Poki Setup signs Poki with your Apple Account, installs it on your iPhone or iPad and keeps it signed."))
             }
-            if let snap = model.wizard {
-                wizardSection(snap)
+            if showInstallOptions {
+                phoneSection
+                accountSection
+                appSection
+                if let result { resultSection(result) }
+            } else {
+                wizardSection
+                if wizard?.state == .accountSignedOut { AccountView(embedded: true) }
+                if let s = model.steps["install"], !s.isEmpty, installing {
+                    Section { JobProgress(steps: s, running: true, weights: JobProgress.install) }
+                }
             }
-            phoneSection
-            accountSection
-            appSection
-            modelKeySection
-            if let steps = model.steps["install"], !steps.isEmpty {
-                Section(L10n.tr("Progress")) { StepsView(steps: steps) }
+            Section {
+                Button(showInstallOptions ? localized("Back to USB Setup") : localized("More Install Options")) {
+                    showInstallOptions.toggle()
+                }
             }
-            if let result { resultSection(result) }
         }
         .pokiPage()
-        .task {
-            await model.refreshChannels()
-            await model.refreshWizard()
+        .task { await model.refreshChannels() }
+        .task(id: wizardSelection) {
+            while !Task.isCancelled {
+                if !showInstallOptions, !installing {
+                    await refreshWizard()
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
-        .alert(L10n.tr("Replace the Certificate?"), isPresented: Binding(get: { certificateQuestion != nil }, set: { if !$0 { certificateQuestion = nil } })) {
-            Button(L10n.tr("Replace Certificate"), role: .destructive) {
+        .alert(localized("Replace the Certificate?"), isPresented: Binding(get: { certificateQuestion != nil }, set: { if !$0 { certificateQuestion = nil } })) {
+            Button(localized("Replace Certificate"), role: .destructive) {
                 Task {
                     do {
                         try await model.approveCertificateReplacement()
@@ -49,186 +62,134 @@ struct SetupView: View {
                     } catch { model.report(error) }
                 }
             }
-            Button(L10n.tr("Cancel"), role: .cancel) {}
+            Button(localized("Cancel"), role: .cancel) {}
         } message: {
             Text(certificateQuestion ?? "")
         }
-        .fileImporter(isPresented: $choosingIPA, allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data]) { r in
-            if case .success(let url) = r { ipa = url }
-        }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            if showInstallOptions { ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await install() }
                 } label: {
-                    Label(L10n.tr("Install Poki"), systemImage: "arrow.down.app")
+                    Label(localized("Install Poki"), systemImage: "arrow.down.app")
                 }
                 .disabled(!canInstall)
-                .help(L10n.tr("Sign Poki with your Apple Account and install it on the iPhone"))
-            }
+                .help(localized("Sign Poki with your Apple Account and install it on the device"))
+            } }
         }
     }
 
-    // MARK: Next Step Wizard
-
-    @ViewBuilder private func wizardSection(_ snap: WizardSnapshot) -> some View {
-        Section(L10n.tr("Next Step")) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: wizardSymbol(snap.state))
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(wizardColor(snap.state))
-                    .frame(width: 34, height: 34)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(wizardTitle(snap)).font(.headline)
-                    Text(wizardInstruction(snap))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let failure = snap.failure, snap.state == .signingFailed || snap.state == .installFailed {
-                        Text(failure.message)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    wizardActions(snap)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.vertical, 4)
-            if let s = model.steps["ddi"], !s.isEmpty, model.busyJobs.contains("ddi") {
-                StepsView(steps: s)
-            }
-        }
-    }
-
-    private func wizardSymbol(_ state: WizardStateId) -> String {
-        switch state {
-        case .deviceDisconnected: "cable.connector"
-        case .deviceUntrusted: "hand.tap.fill"
-        case .developerModeOff: "hammer.fill"
-        case .accountSignedOut: "person.crop.circle.badge.exclamationmark"
-        case .readyToInstall: "arrow.down.app.fill"
-        case .signingFailed, .installFailed: "exclamationmark.triangle.fill"
-        case .ddiUnmounted: "externaldrive.badge.plus"
-        case .appUntrusted: "checkmark.shield"
-        case .pokiNotStarted: "iphone.and.arrow.forward"
-        case .completed: "checkmark.seal.fill"
-        }
-    }
-
-    private func wizardColor(_ state: WizardStateId) -> Color {
-        switch state {
-        case .completed: .green
-        case .signingFailed, .installFailed: .red
-        case .deviceUntrusted, .developerModeOff, .ddiUnmounted, .appUntrusted: .orange
-        default: .pokiBlue
-        }
-    }
-
-    private func wizardTitle(_ snap: WizardSnapshot) -> String {
-        switch snap.state {
-        case .deviceDisconnected: L10n.tr("1. Connect your iPhone over USB")
-        case .deviceUntrusted: L10n.tr("2. Trust this Mac on your iPhone")
-        case .developerModeOff: L10n.tr("3. Turn on Developer Mode on your iPhone")
-        case .accountSignedOut: L10n.tr("4. Sign in with your Apple Account")
-        case .readyToInstall: L10n.tr("4. Ready to install Poki")
-        case .signingFailed: L10n.tr("Signing Poki did not finish")
-        case .installFailed: L10n.tr("Installing Poki did not finish")
-        case .ddiUnmounted: L10n.tr("Restore the Developer Disk Image")
-        case .appUntrusted: L10n.tr("5. Trust your Developer App certificate on iPhone")
-        case .pokiNotStarted: L10n.tr("5. Open Poki on your iPhone")
-        case .completed: L10n.tr("Poki is ready on your iPhone")
-        }
-    }
-
-    private func wizardInstruction(_ snap: WizardSnapshot) -> String {
-        switch snap.state {
-        case .deviceDisconnected:
-            return L10n.tr("Plug your iPhone into this Mac with a USB cable and unlock the screen. This page advances automatically.")
-        case .deviceUntrusted:
-            return L10n.tr("Unlock your iPhone, tap Trust in the “Trust This Computer?” alert, and enter your iPhone passcode. This page advances automatically.")
-        case .developerModeOff:
-            return L10n.tr("On your iPhone, open Settings > Privacy & Security > Developer Mode, turn it on, restart the iPhone, and tap Turn On after it restarts.")
-        case .accountSignedOut:
-            return L10n.tr("Sign in with any Apple Account (a free account works). Poki Setup signs Poki, installs it, and mounts the Developer Disk Image automatically.")
-        case .readyToInstall:
-            return L10n.tr("Click Install Poki. Poki Setup signs the app, installs it over USB, and mounts the Developer Disk Image in one step.")
-        case .signingFailed:
-            return L10n.tr("Check the message below, then retry signing and installing.")
-        case .installFailed:
-            return L10n.tr("Keep the iPhone unlocked and connected over USB, then retry installing.")
-        case .ddiUnmounted:
-            return L10n.tr("Your iPhone restarted or has not mounted the Developer Disk Image yet. Click Restore Developer Disk Image while connected over USB.")
-        case .appUntrusted:
-            let account = snap.accountAppleId ?? L10n.tr("your Apple Account")
-            return L10n.fmt("On your iPhone, open Settings > General > VPN & Device Management, tap %@, and tap Trust. Then open Poki.", account)
-        case .pokiNotStarted:
-            return L10n.tr("Tap Poki on your iPhone Home Screen while still connected over USB. If you have not trusted your developer certificate yet, open Settings > General > VPN & Device Management first.")
-        case .completed:
-            return L10n.tr("Poki is installed, the Developer Disk Image is mounted, and Poki has started on your iPhone.")
-        }
-    }
-
-    @ViewBuilder private func wizardActions(_ snap: WizardSnapshot) -> some View {
-        switch snap.state {
-        case .deviceUntrusted:
-            if let udid = snap.selectedUdid {
-                Button(L10n.tr("Ask iPhone to Trust Again")) {
-                    Task { await run { try await model.pair(udid: udid) } }
-                }
-                .disabled(model.busyJobs.contains("pair"))
-                .padding(.top, 4)
-            }
-        case .developerModeOff:
-            if let udid = snap.selectedUdid {
-                Button(L10n.tr("Reveal Developer Mode in Settings")) {
-                    Task { await run { try await model.enableDeveloperMode(udid: udid) } }
-                }
-                .disabled(model.busyJobs.contains("devmode"))
-                .padding(.top, 4)
-            }
-        case .accountSignedOut:
-            Button(L10n.tr("Sign In…")) { model.page = .account }
-                .pokiProminentButton()
-                .padding(.top, 4)
-        case .readyToInstall:
-            Button(L10n.tr(installing ? "Installing…" : "Install Poki")) {
-                Task { await install() }
-            }
-            .pokiProminentButton()
-            .disabled(!canInstall)
-            .padding(.top, 4)
-        case .signingFailed, .installFailed:
-            HStack(spacing: 8) {
-                Button(L10n.tr("Retry Install")) {
-                    Task {
-                        await model.clearWizardFailure()
-                        await install()
+    @ViewBuilder private var wizardSection: some View {
+        Section {
+            if let wizard, wizard.usbPhones.count > 1 {
+                Picker(localized("Device"), selection: Binding(
+                    get: { wizard.selectedUdid },
+                    set: { wizardSelection = $0; wizardError = nil }
+                )) {
+                    ForEach(wizard.usbPhones) { phone in
+                        Text(phone.name.isEmpty ? localized("iPhone or iPad") : phone.name).tag(Optional(phone.udid))
                     }
                 }
-                .pokiProminentButton()
-                .disabled(!canInstall)
-                if snap.failure?.kind == "auth" || snap.failure?.kind == "needs_code" {
-                    Button(L10n.tr("Open Apple Account")) { model.page = .account }
-                }
-                Button(L10n.tr("Dismiss")) {
-                    Task { await model.clearWizardFailure() }
-                }
             }
-            .padding(.top, 4)
-        case .ddiUnmounted:
-            if let udid = snap.selectedUdid {
-                Button(L10n.tr("Restore Developer Disk Image")) {
-                    Task { await run { try await model.mountDDI(udid: udid) } }
+            if let probeError {
+                Label(probeError, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+            } else if let wizard {
+                Text(wizardTitle(wizard.state)).font(.headline)
+                Text(wizardInstruction(wizard.state)).foregroundStyle(.secondary)
+                if let failure = wizard.failure, wizard.state == .signingFailed || wizard.state == .installFailed {
+                    Text(failure.message).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                .pokiProminentButton()
-                .disabled(model.busyJobs.contains("ddi"))
-                .padding(.top, 4)
+                if let wizardError { Text(wizardError).foregroundStyle(.red).textSelection(.enabled) }
+                wizardButtons(wizard)
+                if wizardAction != nil { ProgressView().controlSize(.small) }
+            } else {
+                ProgressView().controlSize(.small)
             }
-        default:
-            EmptyView()
         }
+    }
+
+    private func wizardTitle(_ step: USBSetupStep) -> String {
+        switch step {
+        case .deviceDisconnected: localized("Connect your iPhone or iPad")
+        case .deviceUntrusted: localized("Trust This Computer")
+        case .developerModeOff: localized("Turn on Developer Mode")
+        case .accountSignedOut: localized("Sign in with your Apple Account")
+        case .readyToInstall: localized("Ready to install")
+        case .signingFailed: localized("Poki could not be signed")
+        case .installFailed: localized("Poki could not be installed")
+        case .ddiUnmounted: localized("Restore the developer disk image")
+        case .appUntrusted: localized("Trust the app developer")
+        case .pokiNotStarted: localized("Open Poki on your iPhone")
+        case .automationPending: localized("Enable UI Automation")
+        case .completed: localized("Poki is ready")
+        }
+    }
+
+    private func wizardInstruction(_ step: USBSetupStep) -> String {
+        switch step {
+        case .deviceDisconnected: localized("Use a USB data cable and unlock the device.")
+        case .deviceUntrusted: localized("On the unlocked iPhone, tap Trust and enter its passcode.")
+        case .developerModeOff: localized("Developer Mode lets iOS run Poki. On your iPhone, open Settings › Privacy & Security › Developer Mode. Turn it on and restart. After the restart, unlock the iPhone, tap Turn On and enter its passcode.")
+        case .accountSignedOut: localized("A free Apple Account can sign Poki for this device.")
+        case .readyToInstall: localized("Keep the iPhone connected and unlocked while Poki Setup signs and installs Poki.")
+        case .signingFailed: localized("Check your Apple Account and try again.")
+        case .installFailed: localized("Reconnect and unlock the iPhone, then try again.")
+        case .ddiUnmounted: localized("Keep the iPhone connected and unlocked. Poki Setup can restore the image without reinstalling Poki.")
+        case .appUntrusted: localized("On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki.")
+        case .pokiNotStarted: localized("Tap Poki on the iPhone Home Screen.")
+        case .automationPending: localized("On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks.")
+        case .completed: localized("You can unplug the USB cable and use Poki on your iPhone.")
+        }
+    }
+
+    @ViewBuilder private func wizardButtons(_ snapshot: USBSetupSnapshot) -> some View {
+        if let udid = snapshot.selectedUdid {
+            switch snapshot.state {
+            case .deviceUntrusted:
+                Button(localized("Request Trust Again")) { Task { await runWizard("wizard_pair", udid: udid) } }.disabled(wizardAction != nil)
+            case .developerModeOff:
+                Button(localized("Show Developer Mode in Settings")) { Task { await runWizard("wizard_reveal", udid: udid) } }.disabled(wizardAction != nil)
+            case .ddiUnmounted:
+                Button(localized("Restore the developer disk image")) { Task { await runWizard("wizard_mount", udid: udid) } }.disabled(wizardAction != nil)
+            case .readyToInstall, .signingFailed, .installFailed:
+                Button(localized(snapshot.state == .readyToInstall ? "Install Poki" : "Try Again")) {
+                    Task { await install() }
+                }.pokiProminentButton().disabled(installing)
+            default: EmptyView()
+            }
+        }
+    }
+
+    private func refreshWizard() async {
+        do {
+            let snapshot: USBSetupSnapshot = try await model.bridge.call("wizard_state", ["udid": wizardSelection])
+            guard !Task.isCancelled else { return }
+            if wizard?.state != snapshot.state || wizard?.selectedUdid != snapshot.selectedUdid { wizardError = nil }
+            wizard = snapshot
+            probeError = nil
+            guard let udid = snapshot.selectedUdid else { automaticActions.removeAll(); return }
+            let action: String
+            switch snapshot.state {
+            case .deviceUntrusted: action = "wizard_pair"
+            case .developerModeOff: action = "wizard_reveal"
+            case .ddiUnmounted: action = "wizard_mount"
+            default: return
+            }
+            if automaticActions.insert("\(udid)-\(action)").inserted {
+                Task { await runWizard(action, udid: udid) }
+            }
+        } catch {
+            if !Task.isCancelled { probeError = error.localizedDescription }
+        }
+    }
+
+    private func runWizard(_ action: String, udid: String) async {
+        guard wizardAction == nil else { return }
+        wizardAction = action
+        wizardError = nil
+        defer { wizardAction = nil }
+        do { try await model.bridge.run(action, ["udid": udid]) }
+        catch { wizardError = error.localizedDescription }
     }
 
     // MARK: iPhone
@@ -238,7 +199,7 @@ struct SetupView: View {
             if let err = model.phonesError {
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n.tr("Poki Setup can't see iPhones right now"))
+                        Text(localized("Poki Setup can't see devices right now"))
                         Text(err.message).font(.callout).foregroundStyle(.secondary)
                     }
                 } icon: {
@@ -251,8 +212,8 @@ struct SetupView: View {
                         .foregroundStyle(Color.pokiBlue)
                         .frame(width: 40)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(L10n.tr("Connect your iPhone")).font(.headline)
-                        Text(L10n.tr("Use a cable, unlock the iPhone and tap Trust when it asks."))
+                        Text(localized("Connect your iPhone or iPad")).font(.headline)
+                        Text(localized("Use a cable, unlock the device and tap Trust when it asks."))
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -261,30 +222,27 @@ struct SetupView: View {
                 .padding(.vertical, 4)
             } else {
                 if model.phones.count > 1 {
-                    Picker("iPhone", selection: Binding(get: { model.selectedPhone?.id ?? "" }, set: { id in
-                        model.selectedUDID = id
-                        Task { await model.refreshWizard() }
-                    })) {
+                    Picker(localized("Device"), selection: Binding(get: { model.selectedPhone?.id ?? "" }, set: { model.selectedUDID = $0 })) {
                         ForEach(model.phones) { Text($0.title).tag($0.id) }
                     }
                 }
                 if let row = model.selectedPhone { phoneRows(row) }
             }
         } header: {
-            Text("iPhone")
+            Text(localized("Device"))
         }
     }
 
     @ViewBuilder private func phoneRows(_ row: PhoneRow) -> some View {
         HStack(spacing: 14) {
-            Image(systemName: "iphone.gen3")
+            Image(systemName: deviceSymbol(row.facts?.productType, name: row.title))
                 .font(.system(size: 30, weight: .light))
                 .foregroundStyle(Color.pokiBlue)
                 .frame(width: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title).font(.headline)
                 if let f = row.facts {
-                    Text("iOS \(f.ios), \(f.productType)").font(.callout).foregroundStyle(.secondary)
+                    Text("iOS \(f.ios) · \(f.productType)").font(.callout).foregroundStyle(.secondary)
                 } else if let e = row.error {
                     Text(e).font(.callout).foregroundStyle(.secondary)
                 }
@@ -292,40 +250,28 @@ struct SetupView: View {
         }
         .padding(.vertical, 4)
         if let f = row.facts {
-            LabeledContent(L10n.tr("Trusts This Mac")) {
+            LabeledContent(localized("Trusts This Mac")) {
                 if f.pairedWithThisComputer {
-                    statusText(L10n.tr("Yes"), .green)
+                    statusText(localized("Yes"), .green)
                 } else {
-                    Button(L10n.tr("Pair")) { Task { await run { try await model.pair(udid: f.udid) } } }
+                    Button(localized("Pair")) { Task { await run { try await model.pair(udid: f.udid) } } }
                         .disabled(model.busyJobs.contains("pair"))
                 }
             }
-            LabeledContent(L10n.tr("Developer Mode")) {
+            LabeledContent(localized("Developer Mode")) {
                 switch f.developerMode {
-                case .some(true): statusText(L10n.tr("On"), .green)
+                case .some(true): statusText(localized("On"), .green)
                 case .some(false):
-                    Button(L10n.tr("Turn On…")) { Task { await run { try await model.enableDeveloperMode(udid: f.udid) } } }
+                    Button(localized("Turn On…")) { Task { await run { try await model.enableDeveloperMode(udid: f.udid) } } }
                         .disabled(model.busyJobs.contains("devmode"))
-                case .none: Text(L10n.tr("Checked during setup")).foregroundStyle(.secondary)
-                }
-            }
-            if let snap = model.wizard, snap.installed != nil {
-                LabeledContent(L10n.tr("Developer Disk Image")) {
-                    if snap.ddiMounted {
-                        statusText(L10n.tr("Mounted"), .green)
-                    } else {
-                        Button(L10n.tr("Restore Developer Disk Image")) {
-                            Task { await run { try await model.mountDDI(udid: f.udid) } }
-                        }
-                        .disabled(model.busyJobs.contains("ddi"))
-                    }
+                case .none: Text(localized("Checked during setup")).foregroundStyle(.secondary)
                 }
             }
             if let s = model.steps["devmode"], !s.isEmpty, model.busyJobs.contains("devmode") { StepsView(steps: s) }
             if let s = model.steps["pair"], !s.isEmpty, model.busyJobs.contains("pair") { StepsView(steps: s) }
             if let r = row.record {
                 LabeledContent("Poki") {
-                    statusText("\(r.version), \(relativeDays(r))", r.daysLeft <= 2 ? .orange : .green)
+                    statusText("\(r.version) · \(relativeDays(r))", r.daysLeft <= 2 ? .orange : .green)
                 }
             }
         }
@@ -341,27 +287,27 @@ struct SetupView: View {
     // MARK: Account
 
     @ViewBuilder private var accountSection: some View {
-        Section(L10n.tr("Apple Account")) {
+        Section(localized("Apple Account")) {
             if let a = model.account, a.signedIn {
-                LabeledContent(L10n.tr("Signed In As")) { Text(a.name ?? a.appleId ?? "").foregroundStyle(.secondary) }
+                LabeledContent(localized("Signed In As")) { Text(a.name ?? a.appleId ?? "").foregroundStyle(.secondary) }
                 if model.teams.count > 1 {
-                    Picker(L10n.tr("Team"), selection: Binding(get: { a.teamId ?? model.teams.first?.teamId ?? "" }, set: { id in
+                    Picker(localized("Team"), selection: Binding(get: { a.teamId ?? model.teams.first?.teamId ?? "" }, set: { id in
                         if let t = model.teams.first(where: { $0.teamId == id }) { Task { await model.chooseTeam(t) } }
                     })) {
-                        ForEach(model.teams) { t in Text(t.isFree ? L10n.fmt("%@ (free)", t.name) : t.name).tag(t.teamId) }
+                        ForEach(model.teams) { t in Text(t.isFree ? localized("\(t.name) (free)") : t.name).tag(t.teamId) }
                     }
                 } else if let t = model.teams.first {
-                    LabeledContent(L10n.tr("Team")) { Text(t.isFree ? L10n.fmt("%@, free (7-day apps)", t.name) : t.name).foregroundStyle(.secondary) }
+                    LabeledContent(localized("Team")) { Text(t.isFree ? localized("\(t.name), free (7-day apps)") : t.name).foregroundStyle(.secondary) }
                 }
                 if model.account?.pendingFactor != nil {
-                    Button(L10n.tr("Enter 6-Digit Verification Code…")) { model.needsCode = true }
+                    Button(localized("Enter 6-Digit Verification Code…")) { model.needsCode = true }
                 }
             } else if let err = model.accountError {
                 VStack(alignment: .leading, spacing: 8) {
                     Label {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(L10n.tr("Could not read your saved Apple Account"))
-                            Text(L10n.tr("When macOS asks for keychain access, enter your Mac login password and choose “Always Allow”, then retry."))
+                            Text(localized("Could not read your saved Apple Account"))
+                            Text(localized("When macOS asks for keychain access, enter your Mac login password and choose “Always Allow”, then retry."))
                                 .font(.callout).foregroundStyle(.secondary)
                             Text(err.message)
                                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -371,63 +317,14 @@ struct SetupView: View {
                     }
                     HStack {
                         Spacer()
-                        Button(L10n.tr("Retry")) { Task { await model.refreshAccount() } }
+                        Button(localized("Retry")) { Task { await model.refreshAccount() } }
                     }
                 }
             } else {
-                LabeledContent(L10n.tr("Sign in with the Apple Account Poki is signed for")) {
-                    Button(L10n.tr("Sign In…")) { model.page = .account }
+                LabeledContent(localized("Sign in with the Apple Account Poki is signed for")) {
+                    Button(localized("Sign In…")) { model.page = .account }
                 }
             }
-        }
-    }
-
-    // MARK: Optional Model API Key
-
-    @ViewBuilder private var modelKeySection: some View {
-        Section {
-            HStack(spacing: 8) {
-                SecureField(L10n.tr("API Key"), text: $modelKey, prompt: Text(L10n.tr("Optional: paste your OpenAI, Anthropic or Gemini API key")))
-                if sendingModelKey { ProgressView().controlSize(.small) }
-                Button(L10n.tr("Send to Poki")) {
-                    Task { await submitModelKey() }
-                }
-                .disabled(sendingModelKey || modelKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            if let provider = model.wizard?.modelKeyImportedProvider {
-                Label(L10n.fmt("Imported on iPhone (%@)", provider), systemImage: "checkmark.circle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.green)
-            } else if model.wizard?.modelKeyQueued == true {
-                Label(L10n.tr("Queued in memory. Open Poki on your iPhone while connected over USB to import it."), systemImage: "clock.fill")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else if let modelKeyStatus {
-                Text(modelKeyStatus).font(.callout).foregroundStyle(.secondary)
-            }
-        } header: {
-            Text(L10n.tr("Model Key (Optional)"))
-        } footer: {
-            Text(L10n.tr("Saves typing on the iPhone keyboard. Poki Setup encrypts the key to Poki's public key and never stores it on this Mac."))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func submitModelKey() async {
-        let trimmed = modelKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        sendingModelKey = true
-        modelKeyStatus = nil
-        defer { sendingModelKey = false }
-        do {
-            let delivery = try await model.sendModelKey(udid: model.selectedPhone?.id, apiKey: trimmed)
-            modelKey = ""
-            modelKeyStatus = delivery.sent
-                ? L10n.tr("Sent encrypted key to Poki on your iPhone.")
-                : L10n.tr("Queued in memory. Open Poki on your iPhone while connected over USB to import it.")
-        } catch {
-            model.report(error)
         }
     }
 
@@ -448,6 +345,7 @@ struct SetupView: View {
         )
     }
 
+    /// Downloads the newer Poki Setup, puts it in place of this one and restarts.
     private func installUpdate() async {
         do { try await model.installUpdate() } catch { channelError = error.localizedDescription }
     }
@@ -467,19 +365,21 @@ struct SetupView: View {
 
     @ViewBuilder private var appSection: some View {
         Section {
+            // What gets installed: the channel, with the release under it. Test builds and IPA
+            // files are under Developer.
             Picker(selection: channelChoice) {
-                ForEach(model.channels) { c in Text(L10n.tr(c.title)).tag(c.id) }
+                ForEach(model.channels) { c in Text(c.displayTitle).tag(c.id) }
             } label: {
                 Text("Poki")
                 Text(installLine)
             }
-            .disabled(ipa != nil)
+            // Poki Setup itself.
             LabeledContent {
                 if let u = model.update, u.newer {
-                    Button(L10n.tr(model.installingUpdate ? "Updating…" : "Restart to Update")) { Task { await installUpdate() } }
+                    Button(model.installingUpdate ? localized("Updating…") : localized("Restart to Update")) { Task { await installUpdate() } }
                         .disabled(model.installingUpdate)
                 } else {
-                    Button(L10n.tr(checking ? "Checking…" : "Check for Updates")) { Task { await checkForUpdates() } }
+                    Button(checking ? localized("Checking…") : localized("Check for Updates")) { Task { await checkForUpdates() } }
                         .disabled(checking)
                 }
             } label: {
@@ -488,29 +388,30 @@ struct SetupView: View {
             }
             HStack {
                 Menu {
-                    Button(L10n.tr(ipa == nil ? "Install from an IPA File…" : "Choose Another IPA File…")) { choosingIPA = true }
-                    if ipa != nil { Button(L10n.tr("Use the Release Instead")) { ipa = nil } }
-                    Divider()
-                    Toggle(L10n.tr("Also Show a QR Code for Wi-Fi Pairing"), isOn: $handOff)
+                    Toggle(localized("Also Show a QR Code for Wi-Fi Pairing"), isOn: $handOff)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help(L10n.tr("More install options"))
+                .help(localized("More install options"))
                 Spacer()
                 Button {
                     Task { await install() }
                 } label: {
-                    Text(L10n.tr(installing ? "Installing…" : "Install Poki")).frame(minWidth: 140)
+                    Text(installing ? localized("Installing…") : localized("Install Poki")).frame(minWidth: 140)
                 }
                 .pokiProminentButton()
                 .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canInstall)
             }
-            if let message = failed ?? channelError {
+            if let steps = model.steps["install"], !steps.isEmpty {
+                JobProgress(steps: steps, running: installing, weights: JobProgress.install, doneTitle: localized("Poki is installed"))
+            }
+            // A failure shows on the bar; one from before the first step shows here.
+            if let message = (model.steps["install"]?.isEmpty ?? true) ? (failed ?? channelError) : channelError {
                 Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
             }
         } header: {
@@ -520,57 +421,60 @@ struct SetupView: View {
         }
     }
 
+    /// The line under "Poki": what Install will put on the device.
     private var installLine: String {
-        if let ipa { return L10n.fmt("From %@", ipa.lastPathComponent) }
         if let latest = model.latest { return buildLine(latest) }
-        return L10n.tr("No release published yet")
+        return localized("No release published yet")
     }
 
+    /// The line under "Poki Setup": its version, or what the last check found.
     private var setupLine: String {
         let version = displayVersion(model.info?.version ?? "")
         guard let update = model.update else { return version }
-        return update.newer
-            ? L10n.fmt("%@, %@ is available", version, displayVersion(update.latest ?? ""))
-            : L10n.fmt("%@, up to date", version)
+        return update.newer ? localized("\(version), \(displayVersion(update.latest ?? "")) is available") : localized("\(version), up to date")
     }
 
+    /// The release Install will use; says so when the chosen channel has none and a less stable one stands in.
     private func buildLine(_ r: Release) -> String {
         let id = r.channel ?? model.channel?.id ?? ""
-        let title = L10n.tr(model.channels.first(where: { $0.id == id })?.title ?? id.capitalized)
+        let title = model.channels.first(where: { $0.id == id })?.displayTitle ?? id.capitalized
         if let chosen = model.channel, !id.isEmpty, chosen.id != id {
-            return L10n.fmt("%@ %@ (%@), no %@ release yet", title, r.version, r.build, L10n.tr(chosen.title))
+            return localized("\(title) \(r.version) (\(r.build)), no \(chosen.displayTitle) release yet")
         }
         return "\(r.version) (\(r.build))"
     }
 
+    /// Why Install is not available yet, if it is not.
     private var footer: String? {
-        if model.accountError != nil { return L10n.tr("Unlock your keychain and choose “Always Allow”, then tap Retry above.") }
-        if model.account?.signedIn != true { return L10n.tr("Sign in first. Your Apple Account password goes to Apple only.") }
-        if ipa == nil && model.latest == nil { return L10n.tr("No Poki release is published yet. Use ⋯ to install from the Poki IPA you downloaded (the “external” one).") }
+        if model.accountError != nil { return localized("Unlock your keychain and choose “Always Allow”, then tap Retry above.") }
+        if model.account?.signedIn != true { return localized("Sign in first. Your Apple Account password goes to Apple only.") }
+        if model.latest == nil { return localized("No Poki release is published yet. To install an IPA file, use Developer › Test Builds.") }
         return nil
     }
 
     private var canInstall: Bool {
-        !installing && model.selectedPhone?.facts != nil && model.account?.signedIn == true && (ipa != nil || model.latest != nil)
+        !installing && model.selectedPhone?.facts != nil && model.account?.signedIn == true && model.latest != nil
     }
 
     @ViewBuilder private func resultSection(_ r: InstallAnswer) -> some View {
-        Section(L10n.tr("Done")) {
-            Label(L10n.fmt("Poki %@ is on %@. It stays signed until %@.", r.record.version, r.record.phoneName, r.record.expires.formatted(date: .abbreviated, time: .shortened)), systemImage: "checkmark.seal.fill")
+        let style = Date.FormatStyle(date: .abbreviated, time: .shortened).locale(SetupLocalization.shared.locale)
+        let expiry = r.record.expires.formatted(style)
+        Section(localized("Done")) {
+            Label(localized("Poki \(r.record.version) is on \(r.record.phoneName). It stays signed until \(expiry)."), systemImage: "checkmark.seal.fill")
                 .foregroundStyle(.primary)
             ForEach(Array(r.notes.enumerated()), id: \.offset) { _, n in
                 Text(n).font(.callout).foregroundStyle(.secondary)
             }
-            Text(L10n.tr("On the iPhone: open Settings › General › VPN & Device Management, trust your Apple Account, then open Poki."))
+            Text(localized("On the device, open Settings › General › VPN & Device Management, trust your Apple Account, then open Poki."))
                 .font(.callout)
             if let h = r.handoff {
                 HStack(alignment: .top, spacing: 16) {
                     QRCode(text: h.link, size: 150)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(L10n.tr("Scan with the iPhone's Camera")).font(.headline)
-                        Text(L10n.tr("Keep the iPhone on the same Wi-Fi as this Mac. Poki opens and saves its pairing file."))
+                        Text(localized("Scan with the device's Camera")).font(.headline)
+                        Text(localized("Keep the device on the same Wi-Fi as this Mac. Poki opens and saves its pairing file."))
                             .font(.callout).foregroundStyle(.secondary)
-                        Button(L10n.tr("Copy Link")) { copyToPasteboard(h.link) }
+                        Button(localized("Copy Link")) { copyToPasteboard(h.link) }
                     }
                 }
             }
@@ -578,16 +482,19 @@ struct SetupView: View {
     }
 
     private func install() async {
-        guard let phone = model.selectedPhone else { return }
+        guard let udid = showInstallOptions ? model.selectedPhone?.id : wizard?.selectedUdid else { return }
         failed = nil
+        wizardError = nil
         result = nil
         do {
-            result = try await model.install(udid: phone.id, ipa: ipa, handOff: handOff)
+            result = try await model.install(udid: udid, ipa: nil, handOff: showInstallOptions && handOff, usbOnly: !showInstallOptions)
+            if !showInstallOptions { await refreshWizard() }
         } catch let e as CoreError where e.kind == "certificate_limit" {
             failed = e.message
             certificateQuestion = e.message
         } catch {
             failed = error.localizedDescription
+            if !showInstallOptions { wizardError = error.localizedDescription }
         }
     }
 

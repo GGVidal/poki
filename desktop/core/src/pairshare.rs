@@ -56,10 +56,23 @@ pub fn lan_address() -> Result<IpAddr> {
     lan_address_from(&ifaces)
 }
 
-pub fn lan_address_from(ifaces: &[(String, IpAddr)]) -> Result<IpAddr> {
+fn lan_address_from(ifaces: &[(String, IpAddr)]) -> Result<IpAddr> {
     ifaces
         .iter()
-        .find(|(_, ip)| !ip.is_loopback())
+        .filter(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            !["utun", "tun", "tap", "singbox", "wintun", "clash", "vethernet", "ipsec", "ppp"]
+                .iter().any(|prefix| name.starts_with(prefix))
+        })
+        .find(|(_, ip)| match ip {
+            IpAddr::V4(ip) => {
+                let [a, b, ..] = ip.octets();
+                !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() && !ip.is_multicast()
+                    && !(a == 198 && (18..=19).contains(&b))
+                    && !(a == 100 && (64..=127).contains(&b))
+            }
+            IpAddr::V6(_) => false,
+        })
         .map(|(_, ip)| *ip)
         .ok_or_else(|| Error::msg("This computer has no local network address. Join the same Wi-Fi as the iPhone."))
 }
