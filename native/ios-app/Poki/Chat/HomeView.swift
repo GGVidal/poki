@@ -69,7 +69,6 @@ struct PokiPortrait: View {
     var side: CGFloat = HomeMotion.avatar
     /// Counts the taps on the picture.
     var pokes = 0
-    var outfitPreview = false
 
     var body: some View {
         #if DEBUG
@@ -97,7 +96,7 @@ struct PokiPortrait: View {
             Circle().fill(Tint.portrait)
             // The board's bear is 50 points in the 56-point circle, 6 points down, so the circle
             // cuts it at the chest.
-            ModelBear(act: mood.act, side: side * 50 / 56, pokes: pokes, outfitPreview: outfitPreview) {
+            ModelBear(act: mood.act, side: side * 50 / 56, pokes: pokes) {
                 BlinkingFace(mood: mood, side: side * 50 / 56)
             }
             .frame(width: side * 50 / 56, height: side * 50 / 56)

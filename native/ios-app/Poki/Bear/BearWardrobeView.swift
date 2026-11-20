@@ -266,7 +266,7 @@ private struct BearMixView: View {
                     .buttonStyle(.plain)
                 }
 
-                PokiPortrait(mood: .ready, side: 196, outfitPreview: true)
+                PokiPortrait(mood: .ready, side: 196)
                     .shadow(color: WardrobeTheme.blue.opacity(0.18), radius: 6, y: 4)
                     .accessibilityIdentifier("wardrobe.preview")
                 HStack(spacing: 8) {

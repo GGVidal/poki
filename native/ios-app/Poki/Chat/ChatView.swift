@@ -120,6 +120,7 @@ struct ChatView: View {
             chatContent.accessibilityHidden(wardrobeOpen)
             BearWardrobeOverlay(isPresented: $wardrobeOpen)
         }
+        .environment(\.bearOutfitPreview, wardrobeOpen)
     }
 
     @ViewBuilder private var chatContent: some View {

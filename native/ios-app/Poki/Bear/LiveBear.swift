@@ -383,6 +383,7 @@ private struct BearExpressionOverlay {
 /// Where the chat is covered (the conversations drawer, Poki's profile over it): the bear holds still.
 extension EnvironmentValues {
     @Entry var bearCovered = false
+    @Entry var bearOutfitPreview = false
 }
 
 struct ModelBear<Flat: View>: View {
@@ -395,12 +396,12 @@ struct ModelBear<Flat: View>: View {
     var side: CGFloat
     var live = true
     var pokes = 0
-    var outfitPreview = false
     @ViewBuilder var flat: () -> Flat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @Environment(\.bearCovered) private var covered
+    @Environment(\.bearOutfitPreview) private var outfitPreview
     @State private var shown = false
     @State private var drawn = false
     @State private var waited = false
