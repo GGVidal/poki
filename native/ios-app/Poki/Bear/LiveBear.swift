@@ -233,8 +233,6 @@ private struct EyePads {
     private let shown: PhysicallyBasedMaterial
     private let hidden: PhysicallyBasedMaterial
     private var drawnOpen: Float = 1
-    /// Set while a face draws its own lights in the eyes: the model's catchlights are then hidden.
-    private var drawnHidden = false
 
     init?(bear: ModelEntity) {
         guard let model = bear.model, let skeleton = model.mesh.contents.skeletons.first else { return nil }
@@ -275,9 +273,8 @@ private struct EyePads {
             let x = min(max((transforms[eye].scale.y - Self.shutting) / (1 - Self.shutting), 0), 1)
             open = min(open, x * x * (3 - 2 * x))
         }
-        guard open != drawnOpen || hideHighlights != drawnHidden, var model = bear.model else { return }
+        guard open != drawnOpen, var model = bear.model else { return }
         drawnOpen = open
-        drawnHidden = hideHighlights
         var pads = white
         if case .transparent(let opacity) = white.blending {
             pads.blending = .transparent(opacity: .init(scale: opacity.scale * open, texture: opacity.texture))
