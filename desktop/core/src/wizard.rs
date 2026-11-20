@@ -225,7 +225,9 @@ pub async fn reveal_developer_mode(udid: &str) -> Result<()> {
 }
 
 pub async fn mount(udid: &str, reporter: &Reporter) -> Result<()> {
-    device::ddi::mount(&usb_phone(udid).await?, reporter).await
+    let phone = usb_phone(udid).await?;
+    device::pairing::pair(&phone, reporter, Duration::from_secs(90)).await?;
+    device::ddi::mount(&phone, reporter).await
 }
 
 #[cfg(test)]
