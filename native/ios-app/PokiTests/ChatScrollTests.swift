@@ -51,6 +51,52 @@ final class ChatScrollTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(actual.minX, 84, "The folded home must keep the composer inside the safe area")
     }
 
+    func testDuoHomeRestoresItsLeadingSafeAreaWhenFoldedDuringACompanionTask() throws {
+        try XCTSkipUnless(PKInProcess.canUseDuoSplitView(), "Run on the iPhone Duo simulator.")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let appWindow = try XCTUnwrap(scene.keyWindow)
+        let root = try XCTUnwrap(appWindow.rootViewController)
+        let fullFrame = appWindow.frame
+        let savedInsets = root.additionalSafeAreaInsets
+        let native = PKInProcess.shared()
+        defer {
+            native.endDuoCompanionTask()
+            root.additionalSafeAreaInsets = savedInsets
+            appWindow.frame = fullFrame
+        }
+
+        func composerFrame() -> CGRect? {
+            guard let field = Self.find(CapsuleTextView.self, in: root.view), field.bounds.width > 100 else { return nil }
+            return field.convert(field.bounds, to: root.view)
+        }
+
+        let leadingInset: CGFloat = 84
+        // Simulate the system resizing the app window while its scene stays visible.
+        appWindow.frame.size.width = (fullFrame.width * 0.75).rounded(.down)
+        root.additionalSafeAreaInsets.left = leadingInset
+        settle {
+            Self.find(LaunchCurtain.Stage.self, in: root.view) == nil &&
+                (composerFrame()?.minX ?? leadingInset) < leadingInset
+        }
+        XCTAssertLessThan(try XCTUnwrap(composerFrame()).minX, leadingInset, "Split View must reclaim the leading inset")
+        guard native.beginDuoCompanionTask() else { return XCTFail("The task must start in Split View") }
+
+        appWindow.frame = fullFrame
+        settle { (composerFrame()?.minX ?? 0) >= leadingInset }
+        XCTAssertEqual(root.view.bounds.width, fullFrame.width, accuracy: 1)
+        XCTAssertEqual(native.duoPlacement(), "fullscreen")
+        XCTAssertTrue(native.hasDuoCompanionTask)
+        let foldedHome = UIGraphicsImageRenderer(bounds: root.view.bounds).image { _ in
+            root.view.drawHierarchy(in: root.view.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: foldedHome)
+        attachment.name = "Folded Duo home during a companion task"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(composerFrame()).minX, leadingInset,
+                                   "The folded home must keep the composer inside the safe area during the task")
+    }
+
     private func duoHomeComposerFrames(size: CGSize? = nil, inDuoSplitView: Bool = false) throws -> (CGRect, CGRect) {
         try XCTSkipUnless(PKInProcess.canUseDuoSplitView(), "Run on the iPhone Duo simulator.")
         let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
