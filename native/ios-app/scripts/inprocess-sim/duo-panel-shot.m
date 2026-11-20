@@ -94,15 +94,17 @@ static long long capturedDisplayID;
 @property(nonatomic, strong) AXNode *snapshot;
 @property(nonatomic) BOOL missTarget;
 @property(nonatomic) BOOL ownOnRight;
+@property(nonatomic) BOOL pokiHidden;
 @end
 @implementation CompanionFixture
 - (PKDisplayGeometry)sceneDisplayGeometry { return self.scene; }
-- (BOOL)isPokiSceneVisible { return YES; }
+- (BOOL)isPokiSceneVisible { return !self.pokiHidden; }
 - (NSData *)daemonJPEGForScreen:(id)screen { return nil; }
 - (id)current:(uint64_t *)generation outcome:(PKOutcome **)outcome { *generation = 1; return [self valueForKey:@"sessions"]; }
 - (id)accessibilityFor:(uint64_t)generation { return self; }
 - (NSString *)bundleForPID:(int)pid session:(id)session {
-    return pid == self.target.processIdentifier ? @"com.apple.calculator" : @"local.poki";
+    if (pid == self.target.processIdentifier) return @"com.apple.calculator";
+    return pid == getpid() ? @"local.poki" : @"com.apple.mobiletimer";
 }
 - (NSArray *)activeApplications { return @[self.own, self.target]; }
 - (id)elementAtPoint:(CGPoint)point error:(NSError **)error {
@@ -112,6 +114,10 @@ static long long capturedDisplayID;
 - (id)requestSnapshotForElement:(id)element attributes:(NSArray *)attributes parameters:(NSDictionary *)parameters error:(NSError **)error {
     return self.snapshot;
 }
+@end
+
+@interface PKInProcess (CompanionTask)
+- (BOOL)beginDuoCompanionTask;
 @end
 
 static XCUIScreen *panel(long long displayID, CGSize grid, CGSize picture, UIColor *color) {
@@ -284,6 +290,48 @@ static BOOL checkRecoveredCompanionEdge(PKDisplayGeometry scene, CGSize crop) {
         CGPointEqualToPoint(session.gesture.path.start, CGPointMake(100, 531));
 }
 
+static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop) {
+    CompanionFixture *runner = companion(scene);
+    AXNode *button = [AXNode new];
+    button.elementType = 9;
+    button.label = @"Calculator";
+    button.frame = CGRectMake(506, 80, 40, 40);
+    AXNode *root = [AXNode new];
+    root.elementType = 2;
+    root.frame = scene.peer;
+    root.children = @[button];
+    runner.snapshot = root;
+    if ([runner respondsToSelector:@selector(beginDuoCompanionTask)] && ![runner beginDuoCompanionTask]) return NO;
+    if (!checkShot(runner, 2, crop, 255, @"before replacing Poki", YES)) return NO;
+
+    runner.pokiHidden = YES;
+    runner.own.processIdentifier = getpid() + 2;
+    scene.peer = CGRectNull;
+    scene.panePlacementKnown = NO;
+    runner.scene = scene;
+    if (!checkShot(runner, 2, crop, 255, @"same target after Clock replaces Poki", YES)) return NO;
+    NSString *xml = [runner sourceXML:NULL code:NULL];
+    if (![xml containsString:@"label=\"Calculator\" x=\"24\" y=\"80\""]) return NO;
+    CGRect viewport = runner.viewport;
+    CGPoint target = CGPointMake(526, 100);
+    NSArray *tap = @[@[[PKTouchPoint at:target offset:0], [PKTouchPoint at:target offset:0.05]]];
+    ReadySession *session = [runner valueForKey:@"sessions"];
+    PKOutcome *sent = [runner touch:tap timeout:1 geometry:runner.displayGeometry];
+    if (!CGRectEqualToRect(viewport, CGRectMake(482, 0, 469, 669)) ||
+        sent.delivery != PKDeliverySent || session.gesture.displayID != 2 ||
+        !CGPointEqualToPoint(session.gesture.path.start, CGPointMake(100, 425))) return NO;
+
+    session.gesture = nil;
+    runner.ownOnRight = YES;
+    PKOutcome *refused = [runner touch:tap timeout:1 geometry:runner.displayGeometry];
+    if (refused.delivery != PKDeliveryNotSent || session.gesture ||
+        [runner screenshot:NULL refreshViewport:YES]) {
+        NSLog(@"the target moved to the other pane and its old location was still read or tapped");
+        return NO;
+    }
+    return YES;
+}
+
 int main(void) {
     @autoreleasepool {
         CGSize cover = CGSizeMake(1398, 2034), inner = CGSizeMake(2852, 2006);
@@ -339,6 +387,7 @@ int main(void) {
         geometry.panePlacementKnown = YES;
         BOOL inset = checkInsetWindow(geometry, crop);
         BOOL activation = checkCompanionActivation(geometry);
-        return launchPlacement && recoveredEdge && picture && inset && activation ? 0 : 1;
+        BOOL afterSwitch = checkCompanionAfterSwitch(geometry, crop);
+        return launchPlacement && recoveredEdge && picture && inset && activation && afterSwitch ? 0 : 1;
     }
 }
