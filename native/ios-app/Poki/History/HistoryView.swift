@@ -63,6 +63,8 @@ enum HistoryNames {
         case "leftOut": return "Left Out an App"
         case "cleared": return "History Cleared"
         case "dropped": return "Reading Dropped"
+        case "shared": return "Answer Shared With Poki's Model"
+        case "notShared": return "Answer Not Shared"
         default: return kind
         }
     }
@@ -332,6 +334,7 @@ struct BacktapeSettingsPage: View {
             } footer: {
                 Text("Whichever limit is reached first starts erasing the oldest history in layers. Screen structure goes first, then screen text, and the summaries last.")
             }
+            SensesUseSection()
             Section {
                 NavigationLink { HistoryGate { HistoryLockSettings().settingsPage() } } label: { Text("Screen History Lock") }
                 NavigationLink { HistoryGate { HistoryRecordPage().settingsPage() } } label: { Text("Observing Record") }
@@ -449,6 +452,7 @@ private struct HistoryRecordPage: View {
     private func detail(_ record: HistoryRecord) -> String {
         switch record.kind {
         case "leftOut": HistoryNames.app(record.detail)
+        case "shared", "notShared": record.detail
         default: ""
         }
     }

@@ -32,6 +32,8 @@ struct MemoryView: View {
                 Text("An agent saves a routine after a task that worked; the next time it repeats the task in one step and stops where the screen differs. Swipe a routine to forget it.")
             }
 
+            SensesMemorySection(saved: reload)
+
             Section {
                 ForEach(notes, id: \.id) { n in
                     LabeledContent(n.text, value: n.by)
