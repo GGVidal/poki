@@ -19,12 +19,17 @@ final class LaunchScreenTests: XCTestCase {
 
     /// The design's iPhone 16 Pro board: the bear 418 points wide from 4 points left of the edge to 2 below it,
     /// its picture 45 points wider on each side and taller above for the shadow; the word's line centred
-    /// 302.5 points down. On other screens the bear keeps to the bottom under the word.
+    /// 302.5 points down. On other screens the bear stays in the bottom-left corner under the word.
     func testLaunchScreenPutsTheWordOverTheBearAlongTheBottomEdge() throws {
         XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "UILaunchStoryboardName") as? String, "LaunchScreen")
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "UILaunchScreen"))
         let (controller, view) = try launchView()
-        for size in [CGSize(width: 402, height: 874), CGSize(width: 320, height: 568), CGSize(width: 440, height: 956), CGSize(width: 1024, height: 768)] {
+        let sizes = [
+            CGSize(width: 402, height: 874), CGSize(width: 320, height: 568), CGSize(width: 440, height: 956),
+            CGSize(width: 466, height: 678), CGSize(width: 669, height: 951), CGSize(width: 951, height: 669),
+            CGSize(width: 1024, height: 768)
+        ]
+        for size in sizes {
             view.frame = CGRect(origin: .zero, size: size)
             view.layoutIfNeeded()
             let backdrop = try XCTUnwrap(view.viewWithTag(LaunchCurtain.Part.backdrop.rawValue) as? UIImageView)
@@ -33,6 +38,8 @@ final class LaunchScreenTests: XCTestCase {
             for picture in [backdrop, word, bear] { XCTAssertNotNil(picture.image) }
             XCTAssertEqual(backdrop.frame, view.bounds)
             XCTAssertEqual(bear.frame.maxY, size.height + 2, accuracy: 0.5)
+            let bearLeft = bear.frame.minX + bear.frame.width * 45 / 508
+            XCTAssertEqual(bearLeft, -4, accuracy: 4, "the bear hugs the left edge at \(size)")
             let bearTop = bear.frame.minY + bear.frame.height * 45 / (418 * 714 / 1024 + 45)
             XCTAssertLessThan(word.frame.maxY, bearTop, "the word clears the bear at \(size)")
             XCTAssertLessThanOrEqual(bear.frame.height, size.height * 0.485 + 0.5)
