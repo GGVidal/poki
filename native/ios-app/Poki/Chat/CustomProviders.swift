@@ -85,6 +85,7 @@ enum CustomProviders {
     static let selectedKey = "chat.customProvider"
     static let piPrefix = "poki-custom:"
     private static let choicePrefix = "custom:"
+    private static let legacyProviderID = UUID(uuidString: "998487A3-20B9-4A56-AE79-A71F3A5291CB")!
 
     // MARK: Store
 
@@ -222,25 +223,38 @@ enum CustomProviders {
     /// its model list, its switched-on models and the chat's choice carried over.
     private static func migrateIfNeeded() {
         let defaults = UserDefaults.standard
-        guard defaults.data(forKey: storeKey) == nil else { return }
+        let stored = defaults.data(forKey: storeKey)
         let url = defaults.string(forKey: "chat.customURL") ?? ""
         let model = defaults.string(forKey: "chat.customModel") ?? ""
-        let legacyKey = (try? Keychain.read("model-key.custom")).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        guard !url.isEmpty || !model.isEmpty || !legacyKey.isEmpty else { return }
-        let provider = CustomProvider(endpoints: url.isEmpty ? [] : [CustomEndpoint(url: url)], model: model)
-        if let data = try? JSONEncoder().encode([provider]) { defaults.set(data, forKey: storeKey) }
-        if !legacyKey.isEmpty, (try? Keychain.write(Data(legacyKey.utf8), account: keyAccount(provider.id))) != nil {
-            Keychain.delete("model-key.custom")
+        guard stored == nil || !url.isEmpty || !model.isEmpty else { return }
+        let legacyAccount = "model-key.custom"
+        let id = legacyProviderID
+        do {
+            let providers = try stored.map { try JSONDecoder().decode([CustomProvider].self, from: $0) } ?? []
+            // Reuse the same ID if the app exits before cleaning up the old settings.
+            if !providers.contains(where: { $0.id == id }) {
+                let key = try Keychain.read(legacyAccount)
+                if let key, String(data: key, encoding: .utf8) == nil { return }
+                guard !url.isEmpty || !model.isEmpty || key?.isEmpty == false else { return }
+                let provider = CustomProvider(id: id, endpoints: url.isEmpty ? [] : [CustomEndpoint(url: url)], model: model)
+                let data = try JSONEncoder().encode([provider] + providers)
+                if let key, !key.isEmpty { try Keychain.write(key, account: keyAccount(id)) }
+
+                let wrap = { (model: String) in parse(model) == nil ? choiceID(id, model) : model }
+                if let listed = defaults.stringArray(forKey: "models.listed.custom") {
+                    defaults.set(listed, forKey: "models.listed.custom.\(id.uuidString)")
+                }
+                if let enabled = defaults.stringArray(forKey: "models.enabled.custom") {
+                    defaults.set(enabled.map(wrap), forKey: "models.enabled.custom")
+                }
+                if let chosen = defaults.string(forKey: "chat.model.custom") { defaults.set(wrap(chosen), forKey: "chat.model.custom") }
+                if defaults.string(forKey: selectedKey) == nil { defaults.set(id.uuidString, forKey: selectedKey) }
+                defaults.set(data, forKey: storeKey)
+            }
+        } catch {
+            return
         }
-        let wrap = { (id: String) in id.hasPrefix(choicePrefix) ? id : choiceID(provider.id, id) }
-        if let listed = defaults.stringArray(forKey: "models.listed.custom") {
-            defaults.set(listed, forKey: "models.listed.custom.\(provider.id.uuidString)")
-        }
-        if let enabled = defaults.stringArray(forKey: "models.enabled.custom") {
-            defaults.set(enabled.map(wrap), forKey: "models.enabled.custom")
-        }
-        if let chosen = defaults.string(forKey: "chat.model.custom") { defaults.set(wrap(chosen), forKey: "chat.model.custom") }
-        defaults.set(provider.id.uuidString, forKey: selectedKey)
+        Keychain.delete(legacyAccount)
         for old in ["chat.customURL", "chat.customModel", "models.listed.custom", "models.revision.custom"] {
             defaults.removeObject(forKey: old)
         }

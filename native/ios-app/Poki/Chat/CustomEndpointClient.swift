@@ -52,7 +52,7 @@ final class CustomEndpointClient: ProviderHTTPClient, @unchecked Sendable {
     private var last: Seen?
     /// The address requests are made for, and the ones to move them to, in order.
     private let primary: String?
-    private let backups: [String]
+    let backups: [String]
 
     init(inner: any ProviderHTTPClient = DefaultProviderHTTPClient(), primary: String? = nil, backups: [String] = []) {
         self.inner = inner
@@ -63,8 +63,11 @@ final class CustomEndpointClient: ProviderHTTPClient, @unchecked Sendable {
     /// The client for one custom provider's model: its first address and the backups that speak the
     /// same API.
     convenience init(for model: Model) {
-        let provider = CustomProviders.provider(piProvider: model.provider)
-        self.init(primary: model.baseUrl, backups: provider?.backups.map(\.normalized) ?? [])
+        self.init(primary: model.baseUrl, backups: Self.backupAddresses(for: model))
+    }
+
+    static func backupAddresses(for model: Model) -> [String] {
+        CustomProviders.provider(piProvider: model.provider)?.backups.map(\.normalized) ?? []
     }
 
     /// The request's address moved from the first base address to `other`, keeping the path pi added

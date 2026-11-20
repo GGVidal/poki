@@ -25,8 +25,9 @@ enum ModelCatalog {
     }
 
     static func available(_ provider: ModelProvider) -> [ChatModelChoice] {
+        let choices = all(provider)
         let on = enabled(provider)
-        return all(provider).filter { on.contains($0.id) }
+        return choices.filter { on.contains($0.id) }
     }
 
     static func enabled(_ provider: ModelProvider) -> Set<String> {

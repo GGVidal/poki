@@ -32,6 +32,10 @@ final class PiLoop {
 
     var signature: String { "pi:\(provider.rawValue)/\(model.id)" }
     var messages: [AgentMessage] { agent.state.messages }
+    var hasCurrentCustomBackups: Bool {
+        guard let endpoint else { return true }
+        return endpoint.backups == CustomEndpointClient.backupAddresses(for: model)
+    }
 
     init(provider: ModelProvider, model: Model, tools: [ToolSpec], inSplitView: Bool = false, carrying messages: [AgentMessage] = [],
          perform: @escaping @MainActor (ToolCall) async -> PokiCore.ToolAnswer) {

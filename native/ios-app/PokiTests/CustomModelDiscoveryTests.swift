@@ -271,12 +271,26 @@ final class CustomModelDiscoveryTests: XCTestCase {
         XCTAssertFalse(VoiceDirect.isOn(.custom(provider.id)))
     }
 
-    func testTheSingleOldEndpointBecomesTheFirstProvider() throws {
+    func testTheSingleOldEndpointMigratesAfterItsKeyBecomesReadable() throws {
+        let legacyAccount = "model-key.custom"
+        let backup = try Keychain.read(legacyAccount)
+        defer {
+            if let backup { try? Keychain.write(backup, account: legacyAccount) }
+            else { Keychain.delete(legacyAccount) }
+        }
+        try Keychain.write(Data([0xFF]), account: legacyAccount)
         UserDefaults.standard.set(address, forKey: "chat.customURL")
         UserDefaults.standard.set("old-model", forKey: "chat.customModel")
         UserDefaults.standard.set(["old-model", "listed-model"], forKey: "models.enabled.custom")
         UserDefaults.standard.set(["listed-model"], forKey: "models.listed.custom")
-        UserDefaults.standard.set("old-model", forKey: "chat.model.custom")
+        UserDefaults.standard.set("listed-model", forKey: "chat.model.custom")
+        ModelKeys.selectedProvider = .custom
+        XCTAssertFalse(ModelKeys.hasUsableKey, "The old service must wait for its key before becoming usable")
+
+        let credential = "fixture-legacy-key"
+        try Keychain.write(Data(credential.utf8), account: legacyAccount)
+        XCTAssertTrue(ModelKeys.hasUsableKey)
+        XCTAssertTrue(ModelKeys.key(.custom) == credential, "The migrated service must use the legacy key")
         let providers = CustomProviders.all
         XCTAssertEqual(providers.count, 1)
         let provider = try XCTUnwrap(providers.first)
@@ -285,8 +299,7 @@ final class CustomModelDiscoveryTests: XCTestCase {
         XCTAssertEqual(provider.model, "old-model")
         XCTAssertEqual(ModelCatalog.listedCustom(provider.id), ["listed-model"])
         XCTAssertTrue(ModelCatalog.enabled(.custom).contains(CustomProviders.choiceID(provider.id, "listed-model")))
-        ModelKeys.selectedProvider = .custom
-        XCTAssertEqual(ModelKeys.selectedModel, CustomProviders.choiceID(provider.id, "old-model"))
+        XCTAssertEqual(ModelKeys.selectedModel, CustomProviders.choiceID(provider.id, "listed-model"))
         XCTAssertNil(UserDefaults.standard.string(forKey: "chat.customURL"))
     }
 

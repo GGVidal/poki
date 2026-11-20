@@ -346,8 +346,8 @@ enum ModelKeys {
 
     /// Each provider's model: its first (Claude Sonnet 5.5, GPT-6.1 Terra) unless the owner picks another.
     static func model(for provider: ModelProvider) -> String {
-        let saved = UserDefaults.standard.string(forKey: "chat.model.\(provider.rawValue)")
         let available = ModelCatalog.available(provider)
+        let saved = UserDefaults.standard.string(forKey: "chat.model.\(provider.rawValue)")
         return saved.flatMap { id in available.contains { $0.id == id } ? id : nil } ?? available.first?.id ?? provider.models.first?.id ?? ""
     }
 
