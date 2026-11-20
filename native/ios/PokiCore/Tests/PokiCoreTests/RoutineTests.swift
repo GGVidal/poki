@@ -102,6 +102,7 @@ final class RoutineTests: XCTestCase {
         let saved = await core.call("routines", ["action": "save", "name": "Search a topic", "description": "search a topic in Little Red Book"])
         XCTAssertTrue(saved.text.contains("saved \"Search a topic\""), saved.text)
         XCTAssertEqual(store.routine(named: "Search a topic")?.app, TwoApps.redbook)
+        XCTAssertEqual(store.routine(named: "Search a topic")?.otherApps, [TwoApps.wechat])
         XCTAssertEqual(store.skills.filter { $0.app == TwoApps.wechat }.map(\.name), [], "it must not be listed under WeChat")
 
         // Run from WeChat again: the run still starts where its first step is, not in the app it ends in.
