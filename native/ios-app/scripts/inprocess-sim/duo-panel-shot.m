@@ -93,6 +93,7 @@ static long long capturedDisplayID;
 @property(nonatomic, strong) AXNode *target;
 @property(nonatomic, strong) AXNode *snapshot;
 @property(nonatomic) BOOL missTarget;
+@property(nonatomic) BOOL ownOnRight;
 @end
 @implementation CompanionFixture
 - (PKDisplayGeometry)sceneDisplayGeometry { return self.scene; }
@@ -105,7 +106,8 @@ static long long capturedDisplayID;
 }
 - (NSArray *)activeApplications { return @[self.own, self.target]; }
 - (id)elementAtPoint:(CGPoint)point error:(NSError **)error {
-    return point.y >= 475.5 ? self.own : self.missTarget ? nil : self.target;
+    BOOL left = point.y >= 475.5;
+    return left != self.ownOnRight ? self.own : self.missTarget ? nil : self.target;
 }
 - (id)requestSnapshotForElement:(id)element attributes:(NSArray *)attributes parameters:(NSDictionary *)parameters error:(NSError **)error {
     return self.snapshot;
@@ -175,7 +177,18 @@ static BOOL checkPictureWithoutWindow(PKDisplayGeometry scene) {
         return NO;
     }
     if (![runner screenshot:&reason refreshViewport:YES]) { NSLog(@"missing companion picture: %@", reason); return NO; }
-    if (![runner screenshot:&reason refreshViewport:NO]) { NSLog(@"missing held-read companion picture: %@", reason); return NO; }
+    NSDictionary *observation = nil;
+    if (![runner screenshot:&reason refreshViewport:NO observation:&observation] ||
+        ![observation[@"identity"] isEqual:pane[@"identity"]] ||
+        ![observation[@"bundleId"] isEqual:pane[@"bundleId"]]) {
+        NSLog(@"missing held-read companion picture or confirmation: %@", reason);
+        return NO;
+    }
+    [runner selectPane:@"auto" code:NULL];
+    if ([runner screenshot:&reason refreshViewport:NO observation:NULL]) {
+        NSLog(@"a held read reused confirmation after the selection changed");
+        return NO;
+    }
     runner = companion(scene);
     if ([runner sourceXML:NULL code:&reason]) return NO;
     if (![runner screenshot:&reason refreshViewport:NO]) { NSLog(@"missing automatic picture for a confirmed companion: %@", reason); return NO; }
@@ -230,6 +243,47 @@ static BOOL checkCompanionActivation(PKDisplayGeometry scene) {
     return YES;
 }
 
+static BOOL checkLaunchPlacement(PKDisplayGeometry scene) {
+    CompanionFixture *runner = companion(scene);
+    NSString *placement = runner.duoPlacement;
+    if (![placement isEqualToString:@"split-unknown"]) {
+        NSLog(@"task launch called a pane-local scene %@", placement);
+        return NO;
+    }
+    scene.bounds.size.width = 951;
+    scene.nativeSize = CGSizeMake(1878, 2670);
+    runner.scene = scene;
+    return [runner.duoPlacement isEqualToString:@"fullscreen"];
+}
+
+static BOOL checkRecoveredCompanionEdge(PKDisplayGeometry scene, CGSize crop) {
+    CompanionFixture *runner = companion(scene);
+    runner.ownOnRight = YES;
+    AXNode *button = [AXNode new];
+    button.elementType = 9;
+    button.label = @"Edge";
+    button.frame = CGRectMake(400, 80, 40, 40);
+    AXNode *window = [AXNode new];
+    window.elementType = 4;
+    window.frame = CGRectMake(0, 0, 469, 669);
+    window.children = @[button];
+    AXNode *root = [AXNode new];
+    root.elementType = 2;
+    root.frame = CGRectMake(0, 0, 951, 669);
+    root.children = @[window];
+    runner.snapshot = root;
+    NSString *reason = nil;
+    if (!checkShot(runner, 2, crop, 0, @"left companion beside a 389-point UIKit scene", YES)) return NO;
+    NSString *xml = [runner sourceXML:NULL code:&reason];
+    if (![xml containsString:@"label=\"Edge\" x=\"400\" y=\"80\" width=\"40\" height=\"40\""] ||
+        !CGRectContainsPoint(runner.viewport, CGPointMake(420, 100))) return NO;
+    PKOutcome *tap = [runner touch:@[@[[PKTouchPoint at:CGPointMake(420, 100) offset:0], [PKTouchPoint at:CGPointMake(420, 100) offset:0.05]]]
+                           timeout:1 geometry:runner.displayGeometry];
+    ReadySession *session = [runner valueForKey:@"sessions"];
+    return tap.delivery == PKDeliverySent && session.gesture.displayID == 2 &&
+        CGPointEqualToPoint(session.gesture.path.start, CGPointMake(100, 531));
+}
+
 int main(void) {
     @autoreleasepool {
         CGSize cover = CGSizeMake(1398, 2034), inner = CGSizeMake(2852, 2006);
@@ -274,6 +328,8 @@ int main(void) {
         runner.currentGeometry = geometry;
         runner.targetPane = CGRectMake(0, 0, 469, 669);
         if (!checkShot(runner, 2, crop, 0, @"Poki right, target left", YES)) return 1;
+        BOOL launchPlacement = checkLaunchPlacement(geometry);
+        BOOL recoveredEdge = checkRecoveredCompanionEdge(geometry, crop);
         geometry.bounds.size.width = 469;
         geometry.nativeSize = CGSizeMake(2007, 1407);
         BOOL picture = checkPictureWithoutWindow(geometry);
@@ -283,6 +339,6 @@ int main(void) {
         geometry.panePlacementKnown = YES;
         BOOL inset = checkInsetWindow(geometry, crop);
         BOOL activation = checkCompanionActivation(geometry);
-        return picture && inset && activation ? 0 : 1;
+        return launchPlacement && recoveredEdge && picture && inset && activation ? 0 : 1;
     }
 }

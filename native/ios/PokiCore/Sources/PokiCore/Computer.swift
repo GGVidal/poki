@@ -186,12 +186,21 @@ final class Computer: @unchecked Sendable {
         let inWorkspace = selectedPane != nil
         let readTimeout = inWorkspace ? max(config.readTimeout, 6) : config.readTimeout
         let budget = max(0.8, min(readTimeout, until - now() - 0.2))
-        let reading = await runner.read(timeout: budget, extra: max(0, min(4, until - now() - budget - 3)), format: config.treeFormat,
+        var reading = await runner.read(timeout: budget, extra: max(0, min(4, until - now() - budget - 3)), format: config.treeFormat,
                                         callEnds: until, allowHostPicture: !inWorkspace, workspace: inWorkspace)
         if let pane = selectedPane {
             let besidePoki = config.isPoki(Foreground(bundleID: pane.other, name: nil))
-            confirmedPaneRead = reading.foreground?.bundleID == pane.app && reading.png != nil &&
-                (besidePoki || !reading.elements.isEmpty)
+            let front = reading.foreground?.bundleID
+            if let companion = reading.screenshotCompanion {
+                confirmedPaneRead = besidePoki && companion.identity == pane.identity &&
+                    companion.bundleID == pane.app && companion.pokiPane != pane.side && (front == nil || front == pane.app)
+                if confirmedPaneRead, front == nil {
+                    reading.foreground = Foreground(bundleID: companion.bundleID, name: nil, pokiPane: companion.pokiPane)
+                    reading.elements = []
+                }
+            } else {
+                confirmedPaneRead = front == pane.app && reading.png != nil && (besidePoki || !reading.elements.isEmpty)
+            }
             if !confirmedPaneRead {
                 invalidateWorkspaceRead()
                 return ToolResult(text: (["Split View: the \(pane.side) pane could not be confirmed; call look with that pane again"] +

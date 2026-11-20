@@ -332,8 +332,18 @@ final class InProcessWDA: HTTPTransport, @unchecked Sendable {
         do {
             if key == "GET /screenshot" {
                 var code: NSString?
-                guard let png = native.screenshot(&code, refreshViewport: refreshViewport) else { throw Refusal("unable to capture screen", "no screenshot: \(code ?? "unknown")") }
-                return (200, (["value": .string(png.base64EncodedString())] as JSON).data())
+                var observation: NSDictionary?
+                guard let png = native.screenshot(&code, refreshViewport: refreshViewport, observation: &observation) else {
+                    throw Refusal("unable to capture screen", "no screenshot: \(code ?? "unknown")")
+                }
+                let image = JSON.string(png.base64EncodedString())
+                let value: JSON
+                if let companion = observation as? [String: String] {
+                    value = ["image": image, "companion": .object(companion.mapValues(JSON.string))]
+                } else {
+                    value = image
+                }
+                return (200, (["value": value] as JSON).data())
             }
             guard let route else { return refused(404, "unknown command", "not answered in-process: \(key)") }
             return (200, (["value": try route(body, element)] as JSON).data())
