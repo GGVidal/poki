@@ -3,7 +3,7 @@ import simd
 
 /// Both pupils share a gaze displacement from their authored pose. Both eye pads limit that displacement.
 enum BearEyeBounds {
-    enum Side: CaseIterable { case right, left }
+    enum Side { case right, left }
 
     struct EyeGeometry {
         /// Visible EyePad ellipse center and semi-axes (mask >= 0.50, measured from PokiBear.usdz frame 95).
@@ -115,25 +115,5 @@ enum BearEyeBounds {
         let clearance = min(mag / 0.010, 1) * Float(0.0046)
         let dt = (rotated - r) + outward * clearance
         return SphericalTransform(gazeDelta: gazeDelta, translation: dt, rotation: rot)
-    }
-
-    /// Minimum normalized clearance from the pupil perimeter to the visible sclera ellipse (> 0 means
-    /// all 36 sampled points around the pupil rim lie strictly inside the white sclera).
-    static func minNormalizedClearance(
-        side: Side,
-        gazeDelta: SIMD2<Float>
-    ) -> Float {
-        let geo = geometry(for: side)
-        let center = geo.pupilRestCenter + gazeDelta
-        var worst: Float = .greatestFiniteMagnitude
-        for step in 0..<36 {
-            let theta = Float(step) * (2 * .pi / 36)
-            let px = center.x + geo.pupilRadii.x * cos(theta)
-            let py = center.y + geo.pupilRadii.y * sin(theta)
-            let nx = (px - geo.scleraCenter.x) / geo.scleraRadii.x
-            let ny = (py - geo.scleraCenter.y) / geo.scleraRadii.y
-            worst = min(worst, 1 - hypot(nx, ny))
-        }
-        return worst
     }
 }

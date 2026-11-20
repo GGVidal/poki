@@ -58,7 +58,10 @@ final class BearIdleTests: XCTestCase {
         }
     }
 
-    func testPupilsNeverLeaveWhiteScleraAcrossHeadAngles() {
+    func testPupilsNeverLeaveWhiteScleraAcrossHeadAngles() throws {
+        let rig = try XCTUnwrap(BearIdleJoints(names: ["Body", "Head", "Eye_R", "Eye_L"]))
+        let fixtures = [EyeFixture.right, .left]
+        let rest = [Transform(), Transform()] + fixtures.map { Transform(translation: $0.bone) }
         let gazes: [SIMD2<Float>] = [
             SIMD2(0.011, 0.012), SIMD2(-0.011, 0.012),
             SIMD2(0.06, 0.06), SIMD2(-0.06, 0.06), SIMD2(0.06, -0.06), SIMD2(-0.06, -0.06),
@@ -70,15 +73,57 @@ final class BearIdleTests: XCTestCase {
         for yaw in yaws {
             for pitch in pitches {
                 for gaze in gazes {
-                    let eyes = BearEyeBounds.transforms(desiredGaze: gaze, headYaw: yaw, headPitch: pitch)
-                    XCTAssertEqual(eyes.right.gazeDelta, eyes.left.gazeDelta)
-                    XCTAssertGreaterThan(simd_dot(eyes.right.gazeDelta, gaze), 0)
-                    for side in BearEyeBounds.Side.allCases {
-                        let clearance = BearEyeBounds.minNormalizedClearance(side: side, gazeDelta: eyes.right.gazeDelta)
-                        XCTAssertGreaterThan(clearance, 0, "\(side) clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch)")
+                    var pose = BearIdle.Pose()
+                    pose.gaze = gaze
+                    pose.headYaw = yaw
+                    pose.headPitch = pitch
+                    var joints = rest
+                    rig.apply(pose, to: &joints)
+                    let context = "gaze=\(gaze) yaw=\(yaw) pitch=\(pitch)"
+                    let movements = zip(fixtures, joints.dropFirst(2)).map { eye, joint in
+                        let worst = eye.rim.map { point in
+                            let projected = eye.project(point, through: joint)
+                            return simd_length((projected - eye.pad) / eye.padRadii)
+                        }.max() ?? .infinity
+                        XCTAssertLessThan(worst, 1, "pupil clips the white pad at \(context)")
+                        let normal = joint.rotation.act(simd_normalize(eye.bone - EyeFixture.head))
+                        let outward = simd_normalize(joint.translation - EyeFixture.head)
+                        XCTAssertLessThan(simd_length(normal - outward), 0.001, "pupil tilts off the face at \(context)")
+                        let movement = eye.project(eye.pupil, through: joint) - eye.pupil
+                        XCTAssertGreaterThan(simd_dot(movement, gaze), 0, "pupil does not follow the gaze at \(context)")
+                        return movement
                     }
+                    XCTAssertLessThan(simd_distance(movements[0], movements[1]), 0.005, "eyes diverge at \(context)")
                 }
             }
+        }
+    }
+
+    // Eye silhouettes and bone origins measured from the authored idle frame of PokiBear.usdz.
+    private struct EyeFixture {
+        static let head = SIMD3<Float>(-0.015, 0.895, 0.010)
+        static let right = Self(pad: [-0.18083, 0.90705], padRadii: [0.13107, 0.14747],
+                                pupil: [-0.13633, 0.91185], pupilRadii: [0.08486, 0.08862], bone: [-0.1833, 0.9107, 0.4224])
+        static let left = Self(pad: [0.17619, 0.90072], padRadii: [0.13008, 0.14743],
+                               pupil: [0.13239, 0.90876], pupilRadii: [0.08494, 0.08923], bone: [0.1787, 0.9054, 0.4075])
+
+        let pad: SIMD2<Float>, padRadii: SIMD2<Float>
+        let pupil: SIMD2<Float>, pupilRadii: SIMD2<Float>
+        let bone: SIMD3<Float>
+
+        var rim: [SIMD2<Float>] {
+            (0..<72).map { sample in
+                let angle = Float(sample) * .pi / 36
+                return pupil + pupilRadii * SIMD2(cos(angle), sin(angle))
+            }
+        }
+
+        func project(_ point: SIMD2<Float>, through joint: Transform) -> SIMD2<Float> {
+            let radiusSquared = simd_length_squared(bone - Self.head)
+            let xy = point - SIMD2(Self.head.x, Self.head.y)
+            let z = Self.head.z + sqrt(radiusSquared - simd_length_squared(xy))
+            let transformed = joint.translation + joint.rotation.act(SIMD3(point.x, point.y, z) - bone)
+            return SIMD2(transformed.x, transformed.y)
         }
     }
 

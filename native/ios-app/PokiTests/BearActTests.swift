@@ -33,11 +33,17 @@ final class BearActTests: XCTestCase {
         let rig = try XCTUnwrap(BearIdleJoints(names: ["Body", "Head", "Eye_R", "Eye_L", "SmileEye_R", "SmileEye_L"]))
         let done = try XCTUnwrap(BearReaction(.done, at: 0)).pose(at: BearReaction.rise + 0.2)
         let asleep = BearStance.pose(.paused)
-        for pose in [done, asleep] {
-            var eyes = Array(repeating: Transform(), count: 6)
+        let padDepth: Float = 0.31
+        let pupil = Transform(translation: [0, 0, 0.42])
+        let hiddenArc = Transform(scale: [1, 0, 1], translation: [0, 0, 0.20])
+        for (state, pose) in [("done", done), ("asleep", asleep)] {
+            var eyes = [Transform(), Transform(), pupil, pupil, hiddenArc, hiddenArc]
             rig.apply(pose, to: &eyes)
-            XCTAssertGreaterThan(eyes[4].scale.y, 0)
-            XCTAssertGreaterThan(eyes[5].scale.y, 0)
+            for (pupil, arc) in zip(eyes[2...3], eyes[4...5]) {
+                XCTAssertLessThan(pupil.translation.z, padDepth, "\(state) must hide the pupil behind the eye pad")
+                XCTAssertGreaterThan(arc.translation.z, padDepth, "\(state) must bring the arc in front of the eye pad")
+                XCTAssertGreaterThan(arc.scale.y, 0.1, "\(state) must open up the arc")
+            }
         }
     }
 

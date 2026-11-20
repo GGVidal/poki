@@ -395,6 +395,7 @@ struct ModelBear<Flat: View>: View {
     var side: CGFloat
     var live = true
     var pokes = 0
+    var outfitPreview = false
     @ViewBuilder var flat: () -> Flat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -413,9 +414,13 @@ struct ModelBear<Flat: View>: View {
     private var store: BearModel { BearModel.shared }
     private var wardrobe: BearWardrobe { BearWardrobe.shared }
     private var modelled: Bool { act != nil }
+    private var resting: Bool { DeviceStrain.shared.resting }
+    private var outfitMotion: BearDressing.Motion { resting ? .immediate : (reduceMotion ? .fade : .animated) }
 
     private var usable: Bool {
-        (!reduceMotion || outfit.selection != .bare || fadingToBare) && !DeviceStrain.shared.resting && !store.failed
+        guard !store.failed else { return false }
+        if resting { return outfitPreview }
+        return !reduceMotion || outfit.selection != .bare || fadingToBare
     }
     private var showsModel: Bool { modelled && usable && drawn }
 
@@ -425,7 +430,7 @@ struct ModelBear<Flat: View>: View {
             if usable, let loaded = store.loaded {
                 LiveBear(loaded: loaded, pixels: Int((side * displayScale).rounded()), handle: handle, act: act ?? .ready,
                          live: live && modelled && shown && !covered && scenePhase == .active,
-                         animated: !reduceMotion, outfit: outfit,
+                         outfitMotion: outfitMotion, outfit: outfit,
                          colorOverride: outfit.selection == wardrobe.selection ? wardrobe.colors : nil) {
                     withAnimation(waited ? .easeOut(duration: 0.3) : nil) { drawn = true }
                 }
@@ -472,8 +477,8 @@ struct ModelBear<Flat: View>: View {
             async let clothes = wardrobe.load(selection.clothes, for: .clothes)
             let models = await BearOutfitModels(selection: selection, headwear: headwear, clothes: clothes)
             guard !Task.isCancelled else { return }
-            fadingToBare = reduceMotion && selection == .bare && outfit.selection != .bare && showsModel
-            if showsModel, !reduceMotion, selection != outfit.selection {
+            fadingToBare = outfitMotion == .fade && selection == .bare && outfit.selection != .bare && showsModel
+            if showsModel, outfitMotion == .animated, selection != outfit.selection {
                 let changing = BearOutfitSlot.allCases.filter { selection[$0] != outfit.selection[$0] }
                 dressDelay = changing.enumerated().compactMap { index, slot in
                     selection[slot].map { _ in
@@ -500,7 +505,7 @@ private struct LiveBear: UIViewRepresentable {
     let handle: BearHandle
     let act: BearAct
     let live: Bool
-    let animated: Bool
+    let outfitMotion: BearDressing.Motion
     let outfit: BearOutfitModels
     let colorOverride: BearOutfitColors?
     let drawn: () -> Void
@@ -512,10 +517,10 @@ private struct LiveBear: UIViewRepresentable {
     }
 
     func updateUIView(_ canvas: BearCanvas, context: Context) {
-        canvas.animated = animated
+        canvas.animated = outfitMotion == .animated
         canvas.act = act
         canvas.live = live
-        if let colorOverride { canvas.wear(outfit, colors: colorOverride) }
+        if let colorOverride { canvas.wear(outfit, colors: colorOverride, motion: outfitMotion) }
     }
 
     static func dismantleUIView(_ canvas: BearCanvas, coordinator: ()) { canvas.live = false }
@@ -606,9 +611,8 @@ private final class BearCanvas: UIView {
         }
     }
 
-    func wear(_ outfit: BearOutfitModels, colors: BearOutfitColors) {
-        let motion: BearDressing.Motion = !presented ? .immediate : (animated ? .animated : .fade)
-        if dressing?.wear(outfit, colors: colors, motion: motion, now: CACurrentMediaTime()) == true, live {
+    func wear(_ outfit: BearOutfitModels, colors: BearOutfitColors, motion: BearDressing.Motion) {
+        if dressing?.wear(outfit, colors: colors, motion: presented ? motion : .immediate, now: CACurrentMediaTime()) == true, live {
             resume()
         }
     }
