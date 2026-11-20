@@ -79,11 +79,14 @@ jobs:
           brew install xcodegen
           xcodegen generate --spec native/ios-app/project.yml
           mkdir -p build
-          xcodebuild build \
+          if ! xcodebuild build \
             -project native/ios-app/Poki.xcodeproj -scheme Poki -configuration Debug \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build/sim \
-            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 2>&1 | tee build/sim.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/sim/Build/Products/Debug-iphonesimulator/Poki.app || { grep -B2 -A6 "error:" build/sim.log | head -80; exit 1; }
+            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 > build/sim.log 2>&1; then
+            grep -E "error:|BUILD FAILED" build/sim.log || tail -80 build/sim.log
+            exit 1
+          fi
+          /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' build/sim/Build/Products/Debug-iphonesimulator/Poki.app/Info.plist
       - name: Boot a simulator
         run: |
           UDID=$(xcrun simctl list devices available -j | python3 -c "
@@ -168,6 +171,7 @@ jobs:
         with:
           name: agent-chat
           path: |
+            build/sim.log
             build/inprocess-probe.json
             build/model-requests.jsonl
             build/agent-chat.log

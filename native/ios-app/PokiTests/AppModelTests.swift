@@ -2034,28 +2034,29 @@ final class FrontendSubtractionTests: XCTestCase {
         display.add(to: .main, forMode: .common)
         await fulfillment(of: [drawn], timeout: 5)
         display.invalidate()
-        return Self.collectLabels(in: window)
+        return renderedAccessibilityLabels(in: window)
     }
+}
 
-    private static func collectLabels(in root: NSObject) -> [String] {
-        var labels: [String] = []
-        var pending = [root]
-        var visited = Set<ObjectIdentifier>()
-        while let item = pending.popLast() {
-            guard visited.insert(ObjectIdentifier(item)).inserted else { continue }
-            if let label = item.accessibilityLabel, !label.isEmpty { labels.append(label) }
-            if let value = item.accessibilityValue, !value.isEmpty { labels.append(value) }
-            if let view = item as? UIView { pending.append(contentsOf: view.subviews) }
-            if let children = item.accessibilityElements { pending.append(contentsOf: children.compactMap { $0 as? NSObject }) }
-            let count = item.accessibilityElementCount()
-            if count > 0 && count < 1000 {
-                for index in 0..<count {
-                    if let child = item.accessibilityElement(at: index) as? NSObject { pending.append(child) }
-                }
+@MainActor
+func renderedAccessibilityLabels(in root: NSObject) -> [String] {
+    var labels: [String] = []
+    var pending = [root]
+    var visited = Set<ObjectIdentifier>()
+    while let item = pending.popLast() {
+        guard visited.insert(ObjectIdentifier(item)).inserted else { continue }
+        if let label = item.accessibilityLabel, !label.isEmpty { labels.append(label) }
+        if let value = item.accessibilityValue, !value.isEmpty { labels.append(value) }
+        if let view = item as? UIView { pending.append(contentsOf: view.subviews) }
+        if let children = item.accessibilityElements { pending.append(contentsOf: children.compactMap { $0 as? NSObject }) }
+        let count = item.accessibilityElementCount()
+        if count > 0 && count < 1000 {
+            for index in 0..<count {
+                if let child = item.accessibilityElement(at: index) as? NSObject { pending.append(child) }
             }
         }
-        return labels
     }
+    return labels
 }
 
 @MainActor
