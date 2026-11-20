@@ -3,11 +3,11 @@ import simd
 
 /// What the three-dimensional bear plays for Poki's state, with its own joints and the faces the model
 /// has (the closed eyes' arcs, the open mouth, the sparkles, the raised paw of its wave, plus
-/// expression overlays), on top of what it does by itself (`BearIdle`).
+/// mouth expressions), on top of what it does by itself (`BearIdle`).
 enum BearAct: Equatable {
     /// Standing by itself, looking about and doing its small things.
     case ready
-    /// A paw up by its chin, its head tilted, squinted left lid, wavy thinking mouth, looking thoughtfully.
+    /// A paw by its chin, a tilted head, and a wavy mouth.
     case thinking
     /// Its head down over its paws, which tap away under its chin.
     case working
@@ -64,8 +64,6 @@ enum BearStance {
             break
         case .thinking:
             p.headPitch = -0.065; p.headRoll = 0.085; p.headYaw = 0.04
-            // Synchronized thoughtful gaze to the upper-right: both pupils move identically and stay
-            // strictly inside their white sclera below the squinting left eyelid.
             p.gaze = [0.017, -0.002]
             // Left paw lifted snugly to chin side in the thinking posture.
             p.raise = 0.54; p.bend = 0.45; p.reach = 0.68
