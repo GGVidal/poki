@@ -37994,6 +37994,796 @@
           }
         }
       }
+    },
+    "Add Backup Address" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加备用地址"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新增備用位址"
+          }
+        }
+      }
+    },
+    "Add Provider" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加提供商"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新增供應商"
+          }
+        }
+      }
+    },
+    "Apple Intelligence is downloading its model. It can be chosen once it is ready." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 智能正在下载模型，准备好后即可选择。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple Intelligence 正在下載模型，準備好後即可選擇。"
+          }
+        }
+      }
+    },
+    "Apple Intelligence is still getting ready on this iPhone. Until then, a downloaded model can make decisions and write Senses’ notes on the phone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 上的 Apple 智能仍在准备中。在此之前，下载的模型可以在手机上做决定并撰写感知的记录。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 iPhone 上的 Apple Intelligence 仍在準備中。在此之前，下載的模型可以在手機上做決定並撰寫感知的紀錄。"
+          }
+        }
+      }
+    },
+    "Apple Intelligence is turned off on this iPhone. Turn it on in Settings, or download a model to make decisions and write Senses’ notes on the phone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 已关闭 Apple 智能。请在设置中打开，或下载一个模型，在手机上做决定并撰写感知的记录。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 iPhone 已關閉 Apple Intelligence。請在設定中開啟，或下載一個模型，在手機上做決定並撰寫感知的紀錄。"
+          }
+        }
+      }
+    },
+    "Automatic reasoning is on for models Poki knows as reasoning models, such as GPT-6.1 Sol." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动推理会为 Poki 认识的推理模型打开，例如 GPT-6.1 Sol。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自動推理會為 Poki 認得的推理模型開啟，例如 GPT-6.1 Sol。"
+          }
+        }
+      }
+    },
+    "Automatic tries the Responses API first and uses chat completions where the address has none." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动会先尝试 Responses API，地址不支持时改用 Chat Completions。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自動會先嘗試 Responses API，位址不支援時改用 Chat Completions。"
+          }
+        }
+      }
+    },
+    "Backup Addresses" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "备用地址"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "備用位址"
+          }
+        }
+      }
+    },
+    "Chat and decisions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天和决定"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天和決定"
+          }
+        }
+      }
+    },
+    "Chat and decisions work with every provider. Voice needs an OpenAI API key or a custom endpoint with the Realtime API. Add as many custom endpoints as you like. Local is always there." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个提供商都可用于聊天和决定。语音需要 OpenAI API 密钥，或支持 Realtime API 的自定端点。自定端点可以添加任意多个。本地始终都在。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每個供應商都可用於聊天和決定。語音需要 OpenAI API 金鑰，或支援 Realtime API 的自訂端點。自訂端點可以新增任意多個。本機始終都在。"
+          }
+        }
+      }
+    },
+    "Chat, voice and decisions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天、语音和决定"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天、語音和決定"
+          }
+        }
+      }
+    },
+    "Choose it under Decisions or Senses on the Models page." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可在模型页面的决定或感知中选择它。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可在模型頁面的決定或感知中選擇它。"
+          }
+        }
+      }
+    },
+    "Coming in an update" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将在更新中推出"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "將在更新中推出"
+          }
+        }
+      }
+    },
+    "Delete Provider" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除提供商"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刪除供應商"
+          }
+        }
+      }
+    },
+    "Download %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载 %@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下載 %@"
+          }
+        }
+      }
+    },
+    "Each list offers the models ticked under the providers below. Senses only runs on local models. Dictation in the message field needs no model." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个列表提供下方各提供商中勾选的模型。感知只在本地模型上运行。消息栏中的听写不需要模型。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每個列表提供下方各供應商中勾選的模型。感知只在本機模型上執行。訊息欄中的聽寫不需要模型。"
+          }
+        }
+      }
+    },
+    "Enter the model’s ID as the service names it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按服务的命名输入模型 ID。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "依服務的命名輸入模型 ID。"
+          }
+        }
+      }
+    },
+    "Getting Ready" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在準備"
+          }
+        }
+      }
+    },
+    "Live voice runs on a Realtime API, which an OpenAI API key or a custom endpoint can open." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时语音运行在 Realtime API 上，OpenAI API 密钥或自定端点可以使用它。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "即時語音執行於 Realtime API，OpenAI API 金鑰或自訂端點可以使用它。"
+          }
+        }
+      }
+    },
+    "Local" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本機"
+          }
+        }
+      }
+    },
+    "Local models can be used for decisions and for Senses. Senses only runs on local models." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地模型可用于决定和感知。感知只在本地模型上运行。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本機模型可用於決定和感知。感知只在本機模型上執行。"
+          }
+        }
+      }
+    },
+    "Model ID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型 ID"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型 ID"
+          }
+        }
+      }
+    },
+    "No Model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无模型"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無模型"
+          }
+        }
+      }
+    },
+    "No model is on this iPhone yet. Download one under Models." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 上还没有模型。请在模型中下载一个。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 iPhone 上還沒有模型。請在模型中下載一個。"
+          }
+        }
+      }
+    },
+    "No models yet." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有模型。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "還沒有模型。"
+          }
+        }
+      }
+    },
+    "Not on This iPhone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 不支持"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 iPhone 不支援"
+          }
+        }
+      }
+    },
+    "Only one downloaded model is kept, and downloading this one removes the one before. Keep Poki open while it downloads." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只保留一个下载的模型，下载这个会移除之前的。下载时请保持 Poki 打开。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只保留一個下載的模型，下載這個會移除之前的。下載時請保持 Poki 開啟。"
+          }
+        }
+      }
+    },
+    "Only one downloaded model is kept. What a local model is asked never leaves the phone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只保留一个下载的模型。向本地模型提出的内容不会离开手机。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只保留一個下載的模型。向本機模型提出的內容不會離開手機。"
+          }
+        }
+      }
+    },
+    "Poki uses the first address. When it can’t be reached, Poki tries the next ones that speak the same API, in order. Automatic reasoning is on for models Poki knows as reasoning models." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 使用第一个地址。无法连接时，Poki 会按顺序尝试使用相同 API 的下一个地址。自动推理会为 Poki 认识的推理模型打开。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 使用第一個位址。無法連線時，Poki 會依序嘗試使用相同 API 的下一個位址。自動推理會為 Poki 認得的推理模型開啟。"
+          }
+        }
+      }
+    },
+    "Providers" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提供商"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "供應商"
+          }
+        }
+      }
+    },
+    "Senses" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "感知"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "感知"
+          }
+        }
+      }
+    },
+    "The address listed no model. Add one under Chat once it is saved." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该地址没有列出模型。保存后请在聊天中添加一个。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "該位址沒有列出模型。儲存後請在聊天中新增一個。"
+          }
+        }
+      }
+    },
+    "This iPhone does not have the memory to run a downloaded model." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 的内存不足以运行下载的模型。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 iPhone 的記憶體不足以執行下載的模型。"
+          }
+        }
+      }
+    },
+    "This iPhone has no Apple Intelligence. A downloaded model can make decisions and write Senses’ notes instead." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 没有 Apple 智能。下载的模型可以代为做决定并撰写感知的记录。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 iPhone 沒有 Apple Intelligence。下載的模型可以代為做決定並撰寫感知的紀錄。"
+          }
+        }
+      }
+    },
+    "This iPhone has no Apple Intelligence. Download a model to make decisions and write Senses’ notes on the phone. It is used for decisions once it is downloaded." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 没有 Apple 智能。下载一个模型，在手机上做决定并撰写感知的记录。下载完成后它会用于决定。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 iPhone 沒有 Apple Intelligence。下載一個模型，在手機上做決定並撰寫感知的紀錄。下載完成後它會用於決定。"
+          }
+        }
+      }
+    },
+    "This model is on this iPhone and runs here. Choose it under Decisions or Senses on the Models page." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个模型在这台 iPhone 上并在本机运行。可在模型页面的决定或感知中选择它。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這個模型在這部 iPhone 上並在本機執行。可在模型頁面的決定或感知中選擇它。"
+          }
+        }
+      }
+    },
+    "Ticked models are offered under Chat on the Models page and on Poki’s card. Fast models without long thinking answer quickest on the phone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾选的模型会出现在模型页面的聊天和 Poki 卡片中。不长时间思考的快速模型在手机上回答最快。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾選的模型會出現在模型頁面的聊天和 Poki 卡片中。不長時間思考的快速模型在手機上回答最快。"
+          }
+        }
+      }
+    },
+    "Ticked models are offered under Decisions on the Models page. A small, fast model works best." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾选的模型会出现在模型页面的决定中。小而快的模型效果最好。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾選的模型會出現在模型頁面的決定中。小而快的模型效果最好。"
+          }
+        }
+      }
+    },
+    "Ticked models are offered under Senses on the Models page. Senses only runs on this iPhone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾选的模型会出现在模型页面的感知中。感知只在这台 iPhone 上运行。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾選的模型會出現在模型頁面的感知中。感知只在這部 iPhone 上執行。"
+          }
+        }
+      }
+    },
+    "Ticked models are offered under Voice on the Models page. Live voice needs the Realtime API." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾选的模型会出现在模型页面的语音中。实时语音需要 Realtime API。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勾選的模型會出現在模型頁面的語音中。即時語音需要 Realtime API。"
+          }
+        }
+      }
+    },
+    "Turn on Apple Intelligence in the Settings app to use it here." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“设置”App 中打开 Apple 智能后在此使用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請在「設定」App 中開啟 Apple Intelligence 後在此使用。"
+          }
+        }
+      }
+    },
+    "Turned Off" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已关闭"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已關閉"
+          }
+        }
+      }
+    },
+    "Use This Provider For" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将此提供商用于"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "將此供應商用於"
+          }
+        }
+      }
+    },
+    "Voice needs the Realtime API at the first address." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音需要第一个地址支持 Realtime API。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "語音需要第一個位址支援 Realtime API。"
+          }
+        }
+      }
+    },
+    "When the address can’t be reached, Poki tries these in order." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "地址无法连接时，Poki 会按顺序尝试这些地址。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "位址無法連線時，Poki 會依序嘗試這些位址。"
+          }
+        }
+      }
+    },
+    "%lld Models" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld Model" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld Models" } }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个模型"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 個模型"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

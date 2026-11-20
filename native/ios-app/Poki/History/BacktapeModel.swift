@@ -123,6 +123,7 @@ final class BacktapeModel {
             guard self.choice == picked else { return }
             self.state = failed ? (Task.isCancelled ? .missing : .failed) : .ready
             self.job = nil
+            if !failed { LocalModels.downloadFinished() }
         }
     }
 
