@@ -670,7 +670,7 @@ public final class SkillStore: @unchecked Sendable {
             case (MemoryChangeRecord.forgot, nil, var routine?):
                 guard routineIndex(routine.name) == nil else { return false }
                 if let locks { routine.locked = locks }
-                f.skills.append(routine)
+                f.skills.append(routine.migrated())
             case (MemoryChangeRecord.added, let note?, _):
                 guard let i = f.notes.firstIndex(where: { $0.id == note.id }) else { return false }
                 f.notes.remove(at: i)
@@ -691,7 +691,7 @@ public final class SkillStore: @unchecked Sendable {
             case (MemoryChangeRecord.edited, nil, var routine?):
                 guard let i = routineIndex(change.routineName) else { return false }
                 routine.locked = locks ?? f.skills[i].locked
-                f.skills[i] = routine
+                f.skills[i] = routine.migrated()
             default:
                 return false
             }
