@@ -77,7 +77,8 @@ struct PokiApp: App {
     }
 
     private func updateDuoSplitView() {
-        inDuoSplitView = PKInProcess.shared().hasDuoCompanion
+        let placement = PKInProcess.shared().duoPlacement()
+        inDuoSplitView = placement != nil && placement != "fullscreen"
     }
 }
 
