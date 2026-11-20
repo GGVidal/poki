@@ -638,13 +638,13 @@ final class ChatModel {
                 self.add(.poki(text))
             }
             if let splitSession {
-                await app.finishSplitViewTask(localSession: splitSession) {
-                    self.runToken != token || Task.isCancelled || outcome == .stopped
+                await app.finishSplitViewTask(localSession: splitSession, pairConfirmed: outcome != .authorizationDeclined) {
+                    self.runToken != token || Task.isCancelled || outcome == .stopped || outcome == .authorizationDeclined
                 }
             }
             let current = runToken == token
             if current { ended(outcome, delivered: prepared.you.id) } else if splitSession == nil { app.finishTask() }
-            logEnd("pi", outcome: outcome, session: prepared.runSession, text: prepared.text, stopped: !current)
+            logEnd("pi", outcome: outcome, session: prepared.runSession, text: prepared.text, stopped: !current || outcome == .authorizationDeclined)
             guard current else { return }
             running = false
             awaitingModel = false
@@ -859,7 +859,7 @@ final class ChatModel {
         case .done:
             markDelivered(youID)
             reply = entries.reversed().lazy.compactMap { entry -> String? in if case .poki(let text) = entry.kind { return text }; return nil }.first
-        case .stopped: add(.poki(AppLocalization.text(LocalizedStringResource("Stopped."))))
+        case .stopped, .authorizationDeclined: add(.poki(AppLocalization.text(LocalizedStringResource("Stopped."))))
         case .overTurns:
             reply = AppLocalization.text(LocalizedStringResource("I stopped after \(Self.maxTurns) steps. Tell me how to go on."))
             add(.poki(reply ?? ""))
@@ -870,8 +870,8 @@ final class ChatModel {
             reply = words
             add(.note(.problem(words)))
         }
-        if case .stopped = outcome {
-            if !usesSplitView { app.finishTask() }
+        if outcome == .stopped || outcome == .authorizationDeclined {
+            if !usesSplitView { app.finishTask(switching: outcome != .authorizationDeclined) }
         } else {
             // A finished run on the Live Activity says what it came to: finish_task's summary when the
             // task succeeded, else the task itself. A failure's summary under Done would read as success.
@@ -948,8 +948,9 @@ final class ChatModel {
             for text in turn.texts { add(.poki(text)) }
             switch turn.ending {
             case .tools:
+                var authorizationDeclined = false
                 for call in turn.calls {
-                    if stopped {
+                    if stopped || authorizationDeclined {
                         client.answer(call, PokiCore.ToolAnswer(text: "Task stopped. Action not executed.", jpeg: nil, isError: true))
                         continue
                     }
@@ -957,8 +958,14 @@ final class ChatModel {
                     let answer = await perform(call)
                     client.answer(call, call.name == "screen_history"
                         ? HistoryCapture.validateAgentAnswer(answer, revision: revision) : answer)
+                    authorizationDeclined = answer.automationAuthorizationDeclined
                 }
                 if stopped { return }
+                if authorizationDeclined {
+                    stopAsked = true
+                    ended(.authorizationDeclined, delivered: youID)
+                    return
+                }
             case .again:
                 continue
             case .refused:
@@ -1068,7 +1075,7 @@ final class ChatModel {
             phoneStepUnderWay = true
             defer { phoneStepUnderWay = false }
             let taskToken = runToken
-            let response = await app.runTool(call.name, arguments: call.arguments, localSession: splitViewSession, expectedApps: expectedSplitViewApps)
+            let response = await app.runTool(call.name, arguments: call.arguments, localSession: splitViewSession, expectedApps: expectedSplitViewApps, localTask: "\(sessionID)#\(taskToken)")
             guard taskToken == runToken, usesSplitView else { return response }
             let changedLayout = call.name == "look" && lastSplitViewLayout != nil &&
                 response.splitView.map { $0.layout != lastSplitViewLayout } == true
@@ -1120,7 +1127,8 @@ final class ChatModel {
             // the same side as the fresh screenshot it receives here.
             let pane = otherRead == nil ? otherSide : side
             let read = await app.runTool("look", arguments: #"{"pane":"\#(pane)","full":true}"#,
-                                         localSession: session, expectedApps: expected)
+                                         localSession: session, expectedApps: expected, localTask: "\(sessionID)#\(token)")
+            if read.automationAuthorizationDeclined { return read }
             guard runToken == token, !Task.isCancelled else { break }
             guard !read.isError, read.jpeg != nil, let observed = read.splitView, observed.side == pane else {
                 otherRead = nil

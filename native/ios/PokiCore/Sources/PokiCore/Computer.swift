@@ -13,6 +13,7 @@ public struct ToolResult: Sendable {
     /// that goes nowhere can be told from a task that moves. Nil when no tree was read.
     var screen: String?
     var waitingForOwner = false
+    var automationAuthorizationDeclined = false
 }
 
 /// A sent action failed: whether it may have reached the phone.
@@ -511,16 +512,19 @@ final class Computer: @unchecked Sendable {
         handoff.apply(.endTask)
     }
 
-    func look(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil) async -> ToolResult {
+    private var authorizationRead: (revision: UInt64, task: String?)?
+
+    func look(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil, localTask: String? = nil) async -> ToolResult {
         let started = now()
         defer { lastCallTook = now() - started }
-        return await lookNow(full: full, pane: pane, session: session, local: local, expectedApps: expectedApps)
+        return await lookNow(full: full, pane: pane, session: session, local: local, expectedApps: expectedApps, localTask: localTask)
     }
 
-    func lookNow(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil) async -> ToolResult {
+    func lookNow(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil, localTask: String? = nil) async -> ToolResult {
         let until: Double
+        let revision: UInt64?
         switch await waitForRunner(until: now() + config.toolDeadline, authorization: local ? .read : .none) {
-        case .ready(let deadline): until = deadline
+        case .ready(let deadline, let readyRevision): (until, revision) = (deadline, readyRevision)
         case .blocked(let result): return result
         }
         if let selectedPane, selectedPane.session != session, (hasLocalWorkspace || !beginsTask() || pane == nil) { return workspaceInUse() }
@@ -573,7 +577,13 @@ final class Computer: @unchecked Sendable {
         }
         if begins, let app = lastForeground { origin = (app, session, now()) } else if origin?.session == session { origin?.lastCall = now() }
         if begins, let line = skillsLine() { result.text += "\n" + line }
-        guard await locked else { return result }
+        guard await locked else {
+            if local, let revision, !Task.isCancelled, !result.isError, result.screen != nil, result.jpeg != nil,
+               host.currentRunner.automationRevision == revision {
+                authorizationRead = (revision, localTask)
+            }
+            return result
+        }
         var lines = result.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         lines.insert("screen: locked (the owner has to unlock the phone before anything can be done)", at: min(1, lines.count))
         result.text = lines.joined(separator: "\n")
@@ -783,7 +793,7 @@ final class Computer: @unchecked Sendable {
     private enum AuthorizationWait { case none, read, action }
 
     private enum RunnerReadiness {
-        case ready(deadline: Double)
+        case ready(deadline: Double, revision: UInt64?)
         case blocked(ToolResult)
     }
 
@@ -792,9 +802,13 @@ final class Computer: @unchecked Sendable {
         let wasStarting = state.isStarting
         let startupDeadline = min(now() + config.runnerWait, until - config.readTimeout - 1)
         var authorizationDeadline: Double?
+        var waitedForOwner = false
         while state.isStarting, !Task.isCancelled {
-            if authorization != .none, case .awaitingAutomationAuthorization = state, authorizationDeadline == nil {
-                authorizationDeadline = now() + Self.authorizationWait
+            if authorization != .none {
+                if state.isOpeningInProcessAutomation, authorizationDeadline == nil {
+                    authorizationDeadline = now() + Self.authorizationWait
+                }
+                if case .awaitingAutomationAuthorization = state { waitedForOwner = true }
             }
             guard now() < (authorizationDeadline ?? startupDeadline) else { break }
             await sleep(seconds: 0.25)
@@ -805,23 +819,39 @@ final class Computer: @unchecked Sendable {
         }
         if wasStarting { runner.forgetRunner() }
         if let authorizationDeadline, now() >= authorizationDeadline {
-            return .blocked(ToolResult(text: "Poki stopped waiting for automation authorization. Nothing was sent.", jpeg: nil, isError: true))
+            return .blocked(ToolResult(text: "Poki stopped waiting for automation to be ready. Nothing was sent.", jpeg: nil, isError: true))
         }
         if state.isRunning {
             if authorizationDeadline != nil {
                 // The owner may have left the phone on a different screen while approving automation.
-                if authorization == .action {
-                    return .blocked(ToolResult(text: "Automation is ready. Nothing was sent. Call look to read the current screen before choosing the next action.", jpeg: nil))
-                }
-                return .ready(deadline: now() + config.toolDeadline)
+                if authorization == .action, waitedForOwner { return .blocked(readRequiredAfterAuthorization()) }
+                return .ready(deadline: now() + config.toolDeadline, revision: state.automationRevision)
             }
-            return .ready(deadline: until)
+            return .ready(deadline: until, revision: state.automationRevision)
+        }
+        if case .automationAuthorizationDeclined = state {
+            let recovery = authorization == .none ? " Fix it on the phone, then call look again." : ""
+            return .blocked(ToolResult(text: "runner: \(state.describe)\nNothing was sent.\(recovery)", jpeg: nil, isError: true,
+                                       automationAuthorizationDeclined: authorization != .none))
         }
         let why = runner.lastRestart.value.map { "runner: \($0)\n" } ?? ""
         if case .failed = state {
             return .blocked(ToolResult(text: "runner: \(state.describe)\nNothing was sent. Fix it on the phone, then call look again.", jpeg: nil, isError: true))
         }
         return .blocked(ToolResult(text: "\(why)runner: \(state.describe)\nNothing was sent. It is still starting (the first start after a restart can wait for the owner to enter their password on the phone, which the phone asks them for); call look or status again every few seconds, and go on with the task when it answers with the screen.", jpeg: nil, isError: false, waitingForOwner: true))
+    }
+
+    private func readRequiredAfterAuthorization() -> ToolResult {
+        ToolResult(text: "Automation is ready. Nothing was sent. Call look to read the current screen before choosing the next action.",
+                   jpeg: nil, isError: true)
+    }
+
+    private func requiresAuthorizationRead(_ action: JSON) -> Bool {
+        switch ActionKind(action) {
+        case .launch, .handoff, .wait, .waitUntil, nil: return false
+        case .button: return action["button"]?.text?.lowercased() != "home"
+        default: return true
+        }
     }
 
     // MARK: do
@@ -858,7 +888,7 @@ final class Computer: @unchecked Sendable {
 
     /// `byOwnersVoice`: the Voice tab's model acting for the owner, not the agent: it is not held back
     /// by a step handed to the owner, and it leaves the agent's unused approval in place.
-    func act(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, app: JSON? = nil, byOwnersVoice: Bool = false, local: Bool = false) async -> ToolResult {
+    func act(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, app: JSON? = nil, byOwnersVoice: Bool = false, local: Bool = false, localTask: String? = nil) async -> ToolResult {
         var actions = actions
         var bound: String?
         if config.appNames() {
@@ -880,7 +910,7 @@ final class Computer: @unchecked Sendable {
             }
             if let kept = sessionApp, kept.session == session { bound = kept.bundle }
         }
-        var result = restartNote(await actNow(actions: actions, full: full, finish: finish, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice, local: local))
+        var result = restartNote(await actNow(actions: actions, full: full, finish: finish, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice, local: local, localTask: localTask))
         if finish { sessionApp = nil }
         else if let bound, let kept = sessionApp, let front = lastForeground?.bundleID, front != bound, !config.isPoki(lastForeground) {
             result.text += "\nthe session's app \(kept.name) (\(bound)) is not in front; \(lastForeground?.describe ?? front) is. app: \"\(kept.name)\" brings it back; app: false lets go of it"
@@ -921,16 +951,21 @@ final class Computer: @unchecked Sendable {
         return action
     }
 
-    func actNow(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, byOwnersVoice: Bool = false, local: Bool = false) async -> ToolResult {
+    func actNow(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, byOwnersVoice: Bool = false, local: Bool = false, localTask: String? = nil) async -> ToolResult {
         scrollFound = nil
         typedInto = nil
         var started = now()
         let callStarted = started
         var approvalWaited = 0.0
         var until: Double
+        let revision: UInt64?
         switch await waitForRunner(until: started + config.toolDeadline, authorization: local ? .action : .none) {
-        case .ready(let deadline): until = deadline
+        case .ready(let deadline, let readyRevision): (until, revision) = (deadline, readyRevision)
         case .blocked(let result): return result
+        }
+        if local, let revision, actions.contains(where: requiresAuthorizationRead),
+           authorizationRead?.revision != revision || authorizationRead?.task != localTask {
+            return readRequiredAfterAuthorization()
         }
         if let selectedPane, selectedPane.session != session { return workspaceInUse() }
         // The app the owner is in before anything is sent: the read before may be another task's.

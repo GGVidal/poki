@@ -95,6 +95,47 @@ final class AutomationAuthorizationTests: XCTestCase {
         XCTAssertTrue(wda.sent.isEmpty)
     }
 
+    func testNewAutomationSessionRequiresAFreshLookBeforeAnyCoordinateCanBeSent() async {
+        for initial in [RunnerState.starting("opening automation"), .awaitingAutomationAuthorization("waiting for the owner")] {
+            let (core, wda, host) = makeCore()
+            host.state.value = .automationReady(revision: 1)
+            let oldScreen = await core.callTool("look", arguments: "{}")
+            XCTAssertTrue(oldScreen.text.contains("General"), oldScreen.text)
+
+            host.state.value = initial
+            host.readRunnerState.value = { .automationReady(revision: 2) }
+            wda.source([("Button", "New content")])
+            let press = #"{"actions":[{"tap":[20,100]}]}"#
+            let first = await core.callTool("do", arguments: press)
+            host.state.value = .automationReady(revision: 2)
+            let second = await core.callTool("do", arguments: press)
+
+            XCTAssertTrue(first.text.contains("Nothing was sent"), first.text)
+            XCTAssertTrue(second.text.contains("Nothing was sent"), second.text)
+            XCTAssertFalse(wda.sent.contains { $0.hasSuffix("/wda/tap") })
+
+            let freshScreen = await core.callTool("look", arguments: "{}")
+            XCTAssertTrue(freshScreen.text.contains("New content"), freshScreen.text)
+            let third = await core.callTool("do", arguments: press)
+            XCTAssertTrue(third.text.contains("did: tap"), third.text)
+            XCTAssertEqual(wda.sent.filter { $0.hasSuffix("/wda/tap") }.count, 1)
+        }
+    }
+
+    func testOriginalLookSurvivesSlowOpeningBeforeTheAuthorizationPrompt() async {
+        let (core, wda, host) = makeCore { $0.runnerWait = 0 }
+        let opening = RunnerState.openingAutomationSession("opening the in-process automation session")
+        let states = LockedBox([opening, .awaitingAutomationAuthorization("waiting for the owner"), .automationReady(revision: 1)])
+        host.state.value = opening
+        host.readRunnerState.value = { states.update { $0.isEmpty ? .automationReady(revision: 1) : $0.removeFirst() } }
+        wda.source([("Button", "Page after approval")])
+
+        let result = await core.callTool("look", arguments: "{}")
+
+        XCTAssertTrue(result.text.contains("Page after approval"), result.text)
+        XCTAssertNotNil(result.jpeg)
+    }
+
 }
 
 final class ToolTests: XCTestCase {
