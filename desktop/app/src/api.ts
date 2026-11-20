@@ -18,7 +18,7 @@ export type PhoneRow = { phone: { udid: string; link: Link }; facts: Facts | nul
 export type Anisette = { kind: "system" } | { kind: "remote"; url: string };
 export type Account = { signed_in: boolean; needs_reauth?: boolean; apple_id: string | null; name: string | null; team_id: string | null; password_kept: boolean; anisette: Anisette; pending_factor: "trusted_device" | "sms" | null };
 export type USBSetupStep =
-  | "device_disconnected" | "device_untrusted" | "developer_mode_off" | "account_signed_out"
+  | "device_disconnected" | "choose_device" | "device_untrusted" | "developer_mode_off" | "account_signed_out"
   | "ready_to_install" | "signing_failed" | "install_failed" | "ddi_unmounted"
   | "app_untrusted" | "poki_not_started" | "automation_pending" | "completed";
 export type USBSetupSnapshot = {

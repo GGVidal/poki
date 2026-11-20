@@ -81,13 +81,14 @@ struct SetupView: View {
 
     @ViewBuilder private var wizardSection: some View {
         Section {
-            if let wizard, wizard.usbPhones.count > 1 {
+            if let wizard, wizard.usbPhones.count > 1 || wizard.state == .chooseDevice {
                 Picker(localized("Device"), selection: Binding(
                     get: { wizard.selectedUdid },
                     set: { wizardSelection = $0; wizardError = nil }
                 )) {
-                    ForEach(wizard.usbPhones) { phone in
-                        Text(phone.name.isEmpty ? localized("iPhone or iPad") : phone.name).tag(Optional(phone.udid))
+                    Text(localized("Choose a device")).tag(String?.none)
+                    ForEach(Array(wizard.usbPhones.enumerated()), id: \.element.udid) { index, phone in
+                        Text(phone.name.isEmpty ? localized("Device") + " " + String(index + 1) : phone.name).tag(Optional(phone.udid))
                     }
                 }
             }
@@ -111,6 +112,7 @@ struct SetupView: View {
     private func wizardTitle(_ step: USBSetupStep) -> String {
         switch step {
         case .deviceDisconnected: localized("Connect your iPhone or iPad")
+        case .chooseDevice: localized("Choose a device")
         case .deviceUntrusted: localized("Trust This Computer")
         case .developerModeOff: localized("Turn on Developer Mode")
         case .accountSignedOut: localized("Sign in with your Apple Account")
@@ -128,6 +130,7 @@ struct SetupView: View {
     private func wizardInstruction(_ step: USBSetupStep) -> String {
         switch step {
         case .deviceDisconnected: localized("Use a USB data cable and unlock the device.")
+        case .chooseDevice: localized("Select the iPhone or iPad you want to set up. You can also unplug the other devices.")
         case .deviceUntrusted: localized("On the unlocked iPhone, tap Trust and enter its passcode.")
         case .developerModeOff: localized("Developer Mode lets iOS run Poki. On your iPhone, open Settings › Privacy & Security › Developer Mode. Turn it on and restart. After the restart, unlock the iPhone, tap Turn On and enter its passcode.")
         case .accountSignedOut: localized("A free Apple Account can sign Poki for this device.")

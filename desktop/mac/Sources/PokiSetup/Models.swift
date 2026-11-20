@@ -374,6 +374,7 @@ struct BuildRef: Decodable, Equatable {
 
 enum USBSetupStep: String, Decodable {
     case deviceDisconnected = "device_disconnected"
+    case chooseDevice = "choose_device"
     case deviceUntrusted = "device_untrusted"
     case developerModeOff = "developer_mode_off"
     case accountSignedOut = "account_signed_out"

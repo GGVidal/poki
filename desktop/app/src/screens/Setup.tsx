@@ -13,6 +13,7 @@ const STEPS = [
 
 const COPY: Record<USBSetupStep, [string, string]> = {
   device_disconnected: ["Connect your iPhone or iPad", "Use a USB data cable and unlock the device."],
+  choose_device: ["Choose a device", "Select the iPhone or iPad you want to set up. You can also unplug the other devices."],
   device_untrusted: ["Trust This Computer", "On the unlocked iPhone, tap Trust and enter its passcode."],
   developer_mode_off: ["Turn on Developer Mode", "Developer Mode lets iOS run Poki. On your iPhone, open Settings › Privacy & Security › Developer Mode. Turn it on and restart. After the restart, unlock the iPhone, tap Turn On and enter its passcode."],
   account_signed_out: ["Sign in with your Apple Account", "A free Apple Account can sign Poki for this device."],
@@ -114,11 +115,12 @@ export default function Setup() {
           probeError.kind === "usbmuxd" ? <DeviceServiceCard text={probeError.text} /> : <ErrorBox error={probeError.text} />
         ) : snapshot ? (
           <>
-            {snapshot.usb_phones.length > 1 && (
+            {(snapshot.usb_phones.length > 1 || state === "choose_device") && (
               <label className="row">
                 {t("Device")}
                 <select value={udid ?? ""} onChange={(e) => setSelected(e.target.value)}>
-                  {snapshot.usb_phones.map((phone) => <option value={phone.udid} key={phone.udid}>{phone.name || t("iPhone or iPad")}</option>)}
+                  <option value="" disabled>{t("Choose a device")}</option>
+                  {snapshot.usb_phones.map((phone, index) => <option value={phone.udid} key={phone.udid}>{phone.name || t("Device") + " " + (index + 1)}</option>)}
                 </select>
               </label>
             )}

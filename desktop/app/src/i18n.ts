@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 
 export type Lang = "en" | "zh-Hans";
 const zh: Record<string, string> = {
+  "Select the iPhone or iPad you want to set up. You can also unplug the other devices.": "请选择要安装的 iPhone 或 iPad，也可以拔下其他设备的连接线。",
   "Use a USB data cable and unlock the device.": "使用 USB 数据线连接设备并解锁。",
   "Trust This Computer": "信任此电脑",
   "On the unlocked iPhone, tap Trust and enter its passcode.": "解锁 iPhone，轻点「信任」并输入锁屏密码。",

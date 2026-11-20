@@ -8,6 +8,7 @@ use std::time::Duration;
 #[serde(rename_all = "snake_case")]
 pub enum WizardState {
     DeviceDisconnected,
+    ChooseDevice,
     DeviceUntrusted,
     DeveloperModeOff,
     AccountSignedOut,
@@ -156,13 +157,21 @@ impl Hello {
 /// Read the device's state anew. A saved signing record is metadata for an app that still exists.
 async fn inspect(udid: Option<&str>, account_signed_in: bool, failure: Option<(String, WizardFailure)>) -> Result<Snapshot> {
     let phones: Vec<_> = device::Phone::list().await?.into_iter().filter(device::Phone::is_usb).collect();
-    let selected = udid.and_then(|udid| phones.iter().find(|phone| phone.udid == udid))
-        .or_else(|| phones.first());
+    let selected = match (udid, phones.as_slice()) {
+        (Some(udid), _) => phones.iter().find(|phone| phone.udid == udid),
+        (None, [phone]) => Some(phone),
+        _ => None,
+    };
     let failure = failure.filter(|(udid, _)| selected.is_some_and(|p| p.udid == *udid)).map(|(_, failure)| failure);
     let mut probe = WizardProbe { account_signed_in, failure, ..Default::default() };
     let mut usb_phones = Vec::with_capacity(phones.len());
     for phone in &phones {
-        let facts = tokio::time::timeout(Duration::from_secs(3), device::info::read(phone)).await.ok().and_then(Result::ok);
+        let is_selected = selected.is_some_and(|selected| selected.udid == phone.udid);
+        let facts = if is_selected {
+            tokio::time::timeout(Duration::from_secs(3), device::info::read(phone)).await.ok().and_then(Result::ok)
+        } else {
+            None
+        };
         let view = UsbPhoneView {
             udid: phone.udid.clone(),
             name: facts.as_ref().map(|f| f.name.clone()).unwrap_or_default(),
@@ -171,7 +180,7 @@ async fn inspect(udid: Option<&str>, account_signed_in: bool, failure: Option<(S
             paired: facts.as_ref().is_some_and(|f| f.paired_with_this_computer),
             developer_mode: facts.and_then(|f| f.developer_mode),
         };
-        if selected.is_some_and(|selected| selected.udid == phone.udid) {
+        if is_selected {
             probe.phone = Some(view.clone());
         }
         usb_phones.push(view);
@@ -208,7 +217,7 @@ async fn inspect(udid: Option<&str>, account_signed_in: bool, failure: Option<(S
         }
     }
     Ok(Snapshot {
-        state: evaluate(&probe),
+        state: if selected.is_none() && !phones.is_empty() { WizardState::ChooseDevice } else { evaluate(&probe) },
         usb_phones,
         selected_udid: selected.map(|phone| phone.udid.clone()),
         installed: probe.installed,
