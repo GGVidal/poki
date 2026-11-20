@@ -226,12 +226,10 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertEqual(server.requests.count, 2, "A cancelled read must never return to the model")
         XCTAssertTrue(transport.restoredSides.isEmpty, "Stop must cancel the recovery polls")
         XCTAssertEqual(transport.taps, 0)
-        while Activity<PokiActivityAttributes>.activities.contains(where: { $0.id == activity.id }),
-              ContinuousClock.now < stoppedBy {
+        while activity.content.state.phase != .stopped, ContinuousClock.now < stoppedBy {
             try await Task.sleep(for: .milliseconds(50))
         }
-        XCTAssertFalse(Activity<PokiActivityAttributes>.activities.contains { $0.id == activity.id },
-                       "Stop must end the Live Activity started by this session")
+        XCTAssertEqual(activity.content.state.phase, .stopped, "Stop must replace the active Split View task with its outcome")
     }
 
     func testSplitViewPreparationStopsWhenActivationReportsAuthorizationCancellation() async throws {
