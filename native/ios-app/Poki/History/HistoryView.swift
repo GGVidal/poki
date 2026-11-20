@@ -43,6 +43,11 @@ struct HistorySpan: Identifiable, Hashable {
 enum HistoryNames {
     static func app(_ id: String) -> String { AppIconStore.name(id) ?? id }
 
+    static func recordingStatus(_ status: HistoryCapture.Status, enabled: Bool) -> LocalizedStringKey {
+        if !enabled { return "Off" }
+        return status == .reading ? "Recording" : "Paused, Waiting to Resume"
+    }
+
     static func status(_ status: HistoryCapture.Status) -> String {
         switch status {
         case .off: "Off"
@@ -131,11 +136,6 @@ struct ScreenHistorySettingsView: View {
         return count > 0 ? "\(count)" : nil
     }
 
-    private var recordingStatus: LocalizedStringKey {
-        if !capture.enabled { return "Off" }
-        return capture.status == .reading ? "Recording" : "Paused, Waiting to Resume"
-    }
-
     var body: some View {
         List {
             Section {
@@ -143,7 +143,11 @@ struct ScreenHistorySettingsView: View {
                     SettingsRow(title: "Screen History", symbol: "rectangle.stack")
                 }
                 .accessibilityIdentifier("screenHistory.enabled")
-                SettingsRow(title: "Status", caption: recordingStatus, symbol: "dot.radiowaves.left.and.right")
+                SettingsRow(
+                    title: "Status",
+                    caption: HistoryNames.recordingStatus(capture.status, enabled: capture.enabled),
+                    symbol: "dot.radiowaves.left.and.right"
+                )
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("screenHistory.status")
             } footer: {
