@@ -33,7 +33,7 @@ struct BearIdle {
         var shut: Float = 0
         /// How far the mouth is open (from a quarter on), and the sparkles out, from 0 to 1.
         var mouth: Float = 0, sparkles: Float = 0
-        /// Thinking facial overlay weight: 0 = default smile, 1 = squinted left lid + wavy mouth.
+        /// How far the thinking mouth has replaced the resting smile.
         var thinkExpression: Float = 0
 
         static func + (a: Pose, b: Pose) -> Pose {
@@ -490,13 +490,11 @@ struct BearIdleJoints {
             joints[left].rotation *= simd_quatf(angle: pose.shoulders, axis: [0, 0, 1])
         }
 
-        // Per-eye spherical gaze clamped strictly inside each eye's white sclera ellipse (and below
-        // any active thinking eyelid), eliminating clipping and parallax pop-out at every head angle.
+        // Keep the shared gaze inside both eyes as the pupils move over the curved face.
         let eyeTransforms = BearEyeBounds.transforms(
             desiredGaze: pose.gaze,
             headYaw: pose.headYaw,
-            headPitch: pose.headPitch,
-            thinkingLid: pose.thinkExpression
+            headPitch: pose.headPitch
         )
         if let idx = pupilR, idx < joints.count {
             joints[idx].translation += eyeTransforms.right.translation
@@ -507,8 +505,8 @@ struct BearIdleJoints {
             joints[idx].rotation = eyeTransforms.left.rotation * joints[idx].rotation
         }
         // Closed-eye/smile arcs stay centered in the sockets, following only gently with the shared gaze.
-        let arcRTransform = BearEyeBounds.spherical(side: .right, gazeDelta: eyeTransforms.right.gazeDelta * 0.25, includeBaseline: false)
-        let arcLTransform = BearEyeBounds.spherical(side: .left, gazeDelta: eyeTransforms.left.gazeDelta * 0.25, includeBaseline: false)
+        let arcRTransform = BearEyeBounds.spherical(side: .right, gazeDelta: eyeTransforms.right.gazeDelta * 0.25)
+        let arcLTransform = BearEyeBounds.spherical(side: .left, gazeDelta: eyeTransforms.left.gazeDelta * 0.25)
         if let idx = arcR, idx < joints.count {
             joints[idx].translation += arcRTransform.translation
             joints[idx].rotation = arcRTransform.rotation * joints[idx].rotation

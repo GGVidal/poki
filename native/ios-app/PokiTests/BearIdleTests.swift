@@ -49,48 +49,37 @@ final class BearIdleTests: XCTestCase {
         }
     }
 
-    /// Pupils always move in exact unison by the same gaze vector, never oppose each other, and
-    /// remain strictly inside their white sclera across extreme gazes, head angles, blinks, and thinking.
-    func testPupilsNeverLeaveWhiteScleraAcrossAnglesAndExpressions() {
+    func testNeutralGazePreservesTheAuthoredPupils() {
+        let eyes = BearEyeBounds.transforms(desiredGaze: .zero, headYaw: 0, headPitch: 0)
+        let identity = simd_quatf(angle: 0, axis: [0, 1, 0])
+        for eye in [eyes.right, eyes.left] {
+            XCTAssertEqual(eye.translation, .zero)
+            XCTAssertEqual(eye.rotation, identity)
+        }
+    }
+
+    func testPupilsNeverLeaveWhiteScleraAcrossHeadAngles() {
         let gazes: [SIMD2<Float>] = [
-            SIMD2(0.011, 0.012), SIMD2(-0.011, 0.012), // thinking gaze that previously clipped
+            SIMD2(0.011, 0.012), SIMD2(-0.011, 0.012),
             SIMD2(0.06, 0.06), SIMD2(-0.06, 0.06), SIMD2(0.06, -0.06), SIMD2(-0.06, -0.06),
             SIMD2(0.03, 0), SIMD2(-0.03, 0), SIMD2(0, 0.04), SIMD2(0, -0.04),
             BearStance.pose(.thinking).gaze,
         ]
         let yaws: [Float] = [-0.35, -0.20, 0, 0.20, 0.35]
         let pitches: [Float] = [-0.20, 0, 0.20]
-        for thinking in [Float(0), 1] {
-            let leftLid: Float? = thinking > 0.5 ? BearEyeBounds.thinkingLidBottomY : nil
-            for yaw in yaws {
-                for pitch in pitches {
-                    for gaze in gazes {
-                        let tr = BearEyeBounds.transforms(
-                            desiredGaze: gaze,
-                            headYaw: yaw,
-                            headPitch: pitch,
-                            thinkingLid: thinking
-                        )
-                        XCTAssertEqual(tr.right.gazeDelta, tr.left.gazeDelta, "eyes must move identically in sync")
-                        if gaze.x > 0 { XCTAssertGreaterThanOrEqual(tr.right.gazeDelta.x, 0, "right gaze must not push eye left") }
-                        if gaze.x < 0 { XCTAssertLessThanOrEqual(tr.right.gazeDelta.x, 0, "left gaze must not push eye right") }
-                        let clearR = BearEyeBounds.minNormalizedClearance(side: .right, totalDelta: tr.right.totalDelta)
-                        let clearL = BearEyeBounds.minNormalizedClearance(side: .left, totalDelta: tr.left.totalDelta, lidTopLimit: leftLid)
-                        XCTAssertGreaterThan(clearR, 0, "Eye_R clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
-                        XCTAssertGreaterThan(clearL, 0, "Eye_L clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch) think=\(thinking)")
+        for yaw in yaws {
+            for pitch in pitches {
+                for gaze in gazes {
+                    let eyes = BearEyeBounds.transforms(desiredGaze: gaze, headYaw: yaw, headPitch: pitch)
+                    XCTAssertEqual(eyes.right.gazeDelta, eyes.left.gazeDelta)
+                    XCTAssertGreaterThan(simd_dot(eyes.right.gazeDelta, gaze), 0)
+                    for side in BearEyeBounds.Side.allCases {
+                        let clearance = BearEyeBounds.minNormalizedClearance(side: side, gazeDelta: eyes.right.gazeDelta)
+                        XCTAssertGreaterThan(clearance, 0, "\(side) clipped at gaze=\(gaze) yaw=\(yaw) pitch=\(pitch)")
                     }
                 }
             }
         }
-        // Verify thinking gaze visibly shifts both eyes together in the same direction.
-        let thinkTr = BearEyeBounds.transforms(
-            desiredGaze: BearStance.pose(.thinking).gaze,
-            headYaw: BearStance.pose(.thinking).headYaw,
-            headPitch: BearStance.pose(.thinking).headPitch,
-            thinkingLid: 1
-        )
-        XCTAssertEqual(thinkTr.right.gazeDelta, thinkTr.left.gazeDelta)
-        XCTAssertGreaterThan(thinkTr.right.gazeDelta.x, 0.010, "both eyes should look right together while thinking")
     }
 
     /// The pupils glide: standing at the home screen for ten minutes, neither pupil ever moves faster than
@@ -106,7 +95,7 @@ final class BearIdleTests: XCTestCase {
             for frame in 0..<Int(600 * rate) {
                 let now = Double(frame) / rate
                 let pose = filter.filter(idle.pose(at: now), at: now)
-                let eyes = BearEyeBounds.transforms(desiredGaze: pose.gaze, headYaw: pose.headYaw, headPitch: pose.headPitch, thinkingLid: pose.thinkExpression)
+                let eyes = BearEyeBounds.transforms(desiredGaze: pose.gaze, headYaw: pose.headYaw, headPitch: pose.headPitch)
                 if let before = previous {
                     let moved = max(simd_length(eyes.right.translation - before.right), simd_length(eyes.left.translation - before.left))
                     fastest = max(fastest, moved * Float(rate))

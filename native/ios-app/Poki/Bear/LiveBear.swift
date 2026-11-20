@@ -4,15 +4,13 @@ import RealityKit
 import SwiftUI
 import UIKit
 
-// The three-dimensional bear, drawn live by RealityKit with studio toy lighting (warm key light
-// with soft shadows + crisp rim light over softened ambient IBL), second-order spring dynamics,
-// spherical clamped eye gaze, natural double-blinking, and standalone facial expression overlays.
+// RealityKit draws the bear under its authored environment light.
 
 /// The model's files in Bear/Model:
 /// - PokiBear.usdz: the bear, unchanged, with one timeline that holds every base gesture;
-/// - PokiBear-expressions.usdz: optional standalone facial expression overlays aligned to Head;
+/// - PokiBear-expressions.usdz: optional mouth expressions aligned to Head;
 /// - PokiBear-clips.json: where on that timeline each gesture is, in frames;
-/// - PokiBear-light.png: soft ambient IBL base.
+/// - PokiBear-light.png: the environment light used to colour the bear.
 @MainActor
 @Observable
 final class BearModel {
@@ -140,21 +138,19 @@ enum BearBlink {
         var frame: Double
         var pupils: Float?
         var arcs: Float?
-        /// 0 when fully open, 1 while shut; used to hide upper expression lids and center gaze softly.
-        var closedAmount: Float = 0
     }
 
     static func at(_ elapsed: TimeInterval) -> Moment {
         let x = min(max(elapsed, 0), length)
         if x < closing {
             let down = BearIdle.ease(Float(x / closing))
-            return Moment(frame: 2 * Double(down), pupils: 1 - (1 - thin) * down, arcs: nil, closedAmount: down)
+            return Moment(frame: 2 * Double(down), pupils: 1 - (1 - thin) * down, arcs: nil)
         }
         if x < closing + shut {
-            return Moment(frame: (x - closing) / shut < 0.5 ? 3 : 4, pupils: nil, arcs: flat, closedAmount: 1)
+            return Moment(frame: (x - closing) / shut < 0.5 ? 3 : 4, pupils: nil, arcs: flat)
         }
         let up = BearIdle.ease(Float((x - closing - shut) / opening))
-        return Moment(frame: 5 + 2 * Double(up), pupils: thin + (1 - thin) * up, arcs: nil, closedAmount: 1 - up)
+        return Moment(frame: 5 + 2 * Double(up), pupils: thin + (1 - thin) * up, arcs: nil)
     }
 }
 
@@ -289,13 +285,10 @@ private struct EyePads {
     }
 }
 
-/// Manages standalone facial expression meshes (`PokiBear-expressions.usdz`) tracked rigidly to the
-/// Head joint chain so the base `PokiBear.usdz` stays untouched while expressions follow every turn.
+/// Keeps the mouth expressions aligned with the bear's skinned head.
 @MainActor
 private struct BearExpressionOverlay {
     let root: Entity
-    private let thinkLid: Entity?
-    private let thinkRim: Entity?
     private let thinkMouth: Entity?
     private let headChain: [Int]
     private let headBindInverse: simd_float4x4
@@ -303,8 +296,7 @@ private struct BearExpressionOverlay {
     init?(
         template: Entity,
         skin: ModelEntity,
-        bindJoints: [Transform],
-        skinMaterial: PhysicallyBasedMaterial?
+        bindJoints: [Transform]
     ) {
         let names = skin.jointNames
         guard let headIndex = names.firstIndex(where: { $0 == "Head" || $0.hasSuffix("/Head") }) else { return nil }
@@ -327,36 +319,20 @@ private struct BearExpressionOverlay {
         let content = template.clone(recursive: true)
         root.addChild(content)
 
-        func find(_ token: String, in entity: Entity) -> Entity? {
-            if entity.name == token || entity.name.contains(token) { return entity }
-            for child in entity.children {
-                if let hit = find(token, in: child) { return hit }
+        var mouth: ModelEntity?
+        func collect(_ entity: Entity) {
+            if let model = entity as? ModelEntity, model.model != nil {
+                model.isEnabled = false
+                if model.name.hasPrefix("Expr_ThinkMouth") { mouth = model }
             }
-            return nil
+            for child in entity.children { collect(child) }
         }
-
-        func applyMaterial(_ material: PhysicallyBasedMaterial, to entity: Entity) {
-            if let model = entity as? ModelEntity, var comp = model.model {
-                comp.materials = Array(repeating: material, count: max(comp.materials.count, 1))
-                model.model = comp
-            }
-            for child in entity.children { applyMaterial(material, to: child) }
-        }
-
-        let lid = find("Expr_ThinkLid_L", in: content)
-        let rim = find("Expr_ThinkRim_L", in: content)
-        let mouth = find("Expr_ThinkMouth", in: content)
-        if let lid, let skinMaterial { applyMaterial(skinMaterial, to: lid) }
-        lid?.isEnabled = false
-        rim?.isEnabled = false
-        mouth?.isEnabled = false
+        collect(content)
 
         let skinWorld = skin.transformMatrix(relativeTo: nil)
         let bindHeadWorld = skinWorld * Self.chainMatrix(chain, in: bindJoints)
 
         self.root = root
-        self.thinkLid = lid
-        self.thinkRim = rim
         self.thinkMouth = mouth
         self.headChain = chain
         self.headBindInverse = bindHeadWorld.inverse
@@ -374,17 +350,12 @@ private struct BearExpressionOverlay {
         skin: ModelEntity,
         joints: [Transform],
         thinkWeight: Float,
-        mouthOpen: Float,
-        blinkClosed: Float,
-        eyesClosed: Bool
+        mouthOpen: Float
     ) {
         let skinWorld = skin.transformMatrix(relativeTo: nil)
         let headWorld = skinWorld * Self.chainMatrix(headChain, in: joints)
         root.transform = Transform(matrix: headWorld * headBindInverse)
 
-        let showLid = thinkWeight > 0.35 && blinkClosed < 0.25 && !eyesClosed
-        thinkLid?.isEnabled = showLid
-        thinkRim?.isEnabled = showLid
         thinkMouth?.isEnabled = thinkWeight > 0.35 && mouthOpen < 0.25
     }
 }
@@ -481,8 +452,7 @@ final class BearHandle {
     func sayHi() -> Bool { canvas?.sayHi() ?? false }
 }
 
-/// Transparent Metal layer rendering the bear with warm toy lighting, second-order elastic spring
-/// motion at 30–60 fps, spherical eye clamping, and Head-tracked facial expression overlays.
+/// Draws the skinned bear into a transparent Metal layer.
 private final class BearCanvas: UIView {
     override class var layerClass: AnyClass { CAMetalLayer.self }
 
@@ -574,7 +544,6 @@ private final class BearCanvas: UIView {
             return e.children.lazy.compactMap(skin).first
         }
         let primarySkin = skin(entity)
-        let tunedSkinMaterial = primarySkin.flatMap(Self.tuneToySkinMaterial)
         pads = primarySkin.flatMap(EyePads.init)
         renderer.entities.append(entity)
 
@@ -587,36 +556,11 @@ private final class BearCanvas: UIView {
         renderer.entities.append(camera)
         renderer.activeCamera = camera
 
-        // Studio toy lighting: bright softened IBL + warm key light with soft shadows + crisp back
-        // rim light + subtle cool-lavender fill so shadows keep Poki's signature periwinkle hue and
-        // never go grey.
         renderer.lighting.resource = loaded.light
-        renderer.lighting.intensityExponent = -0.52
+        renderer.lighting.intensityExponent = 0
         renderer.cameraSettings.isToneMappingEnabled = false
         renderer.cameraSettings.antialiasing = .multisample4X
         renderer.cameraSettings.colorBackground = .color(CGColor(gray: 0, alpha: 0))
-
-        let keyLight = DirectionalLight()
-        keyLight.light.color = UIColor(red: 1.0, green: 0.94, blue: 0.85, alpha: 1.0)
-        keyLight.light.intensity = 1180
-        var keyShadow = DirectionalLightComponent.Shadow()
-        keyShadow.maximumDistance = 6.0
-        keyShadow.depthBias = 0.8
-        keyLight.shadow = keyShadow
-        keyLight.look(at: SIMD3(0, 0.86, 0), from: SIMD3(-1.6, 2.0, 2.2), relativeTo: nil)
-        renderer.entities.append(keyLight)
-
-        let rimLight = DirectionalLight()
-        rimLight.light.color = UIColor(red: 0.94, green: 0.97, blue: 1.0, alpha: 1.0)
-        rimLight.light.intensity = 1850
-        rimLight.look(at: SIMD3(0, 0.92, 0), from: SIMD3(2.0, 1.5, -1.7), relativeTo: nil)
-        renderer.entities.append(rimLight)
-
-        let lavenderFill = DirectionalLight()
-        lavenderFill.light.color = UIColor(red: 0.72, green: 0.80, blue: 1.0, alpha: 1.0)
-        lavenderFill.light.intensity = 680
-        lavenderFill.look(at: SIMD3(0, 0.85, 0), from: SIMD3(1.5, -0.7, 1.6), relativeTo: nil)
-        renderer.entities.append(lavenderFill)
 
         var controllers: [AnimationPlaybackController] = []
         func walk(_ e: Entity) {
@@ -653,35 +597,12 @@ private final class BearCanvas: UIView {
             if let overlay = BearExpressionOverlay(
                 template: exprTemplate,
                 skin: skins[idx],
-                bindJoints: bindSet[idx],
-                skinMaterial: tunedSkinMaterial
+                bindJoints: bindSet[idx]
             ) {
                 renderer.entities.append(overlay.root)
                 expressionOverlay = overlay
             }
         }
-    }
-
-    /// Replaces the flat 1.0 chalk roughness on `PokiSkin` with a soft matte vinyl toy sheen while
-    /// keeping the authored `r13_color.png` base color untouched.
-    private static func tuneToySkinMaterial(on bear: ModelEntity) -> PhysicallyBasedMaterial? {
-        guard var model = bear.model else { return nil }
-        let skinIndices = Set(
-            model.mesh.contents.models
-                .filter { $0.id.hasPrefix("Head") || $0.id.hasPrefix("Torso") || $0.id.hasPrefix("Arm") }
-                .flatMap { $0.parts.map(\.materialIndex) }
-        )
-        var tuned: PhysicallyBasedMaterial?
-        for idx in skinIndices where idx < model.materials.count {
-            if var mat = model.materials[idx] as? PhysicallyBasedMaterial {
-                mat.roughness = .init(floatLiteral: 0.62)
-                mat.specular = .init(floatLiteral: 0.28)
-                model.materials[idx] = mat
-                tuned = mat
-            }
-        }
-        if tuned != nil { bear.model = model }
-        return tuned
     }
 
     private var moving: Bool {
@@ -770,9 +691,7 @@ private final class BearCanvas: UIView {
                 skin: skins[index],
                 joints: standing[index],
                 thinkWeight: finalMove.thinkExpression,
-                mouthOpen: finalMove.mouth,
-                blinkClosed: blinkMoment?.closedAmount ?? 0,
-                eyesClosed: eyesBusy
+                mouthOpen: finalMove.mouth
             )
         }
 
