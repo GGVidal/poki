@@ -114,6 +114,27 @@ final class AppModel {
     var idleStopSeconds: Int = UserDefaults.standard.object(forKey: "idleStopSeconds.v4") as? Int ?? 60 {
         didSet { UserDefaults.standard.set(idleStopSeconds, forKey: "idleStopSeconds.v4"); log.add("runner", "idle stop set to \(idleStopSeconds) s") }
     }
+    /// Settings › Connection › Keep Automation On, for an iPhone kept for Poki that nobody watches.
+    /// The automation session (and with it iOS's banner) stays open between tasks and opens again by
+    /// itself when it ends, so an agent that comes hours later finds automation on instead of iOS's
+    /// passcode screen with nobody there to answer it. Off by default. The owner's Stop, Turn Off and
+    /// an update still close it; the next task or agent request opens it again and it stays.
+    var keepsAutomationOn: Bool = UserDefaults.standard.bool(forKey: AppModel.keepsAutomationOnKey) {
+        didSet {
+            guard keepsAutomationOn != oldValue else { return }
+            UserDefaults.standard.set(keepsAutomationOn, forKey: Self.keepsAutomationOnKey)
+            log.add("runner", "keep automation on: \(keepsAutomationOn ? "on" : "off")")
+            if keepsAutomationOn { keepAutomationOnIfWanted("turned on in Settings", now: true) }
+            else { closeAfterTask("keep automation on was turned off") }
+        }
+    }
+    nonisolated static let keepsAutomationOnKey = "automation.keepOn"
+    /// The idle time Keep Automation On already ended the agent's task for, so it is ended once.
+    private var idleEndedWhileKeptOn: Date?
+    /// When Keep Automation On last asked for a session that then did not open: it asks again after
+    /// `keepOnRetry`, not at every idle check.
+    private var keepOnLastTry = Date.distantPast
+    private static let keepOnRetry: TimeInterval = 60
     /// Poki was on when it last ran; it turns itself on again at launch. Poki Setup's install turns it
     /// on the first time (see `init`).
     private(set) var wantsOn: Bool {
@@ -711,6 +732,12 @@ final class AppModel {
                 if ok {
                     self.log.add("session-timing", String(format: "session_ready uptime=%.6f", ProcessInfo.processInfo.systemUptime))
                     self.automationStarted()
+                    // An open no step waits on (Keep Automation On, with the launcher already running):
+                    // the Live Activity goes back to waiting instead of saying it is starting.
+                    if self.stepUnderWay == nil, self.activity.state.approval == nil, self.activity.state.handoff == nil,
+                       self.activity.state.headline == "Starting the runner" {
+                        self.activity.update { $0.phase = .idle; $0.headline = "Waiting for agent" }
+                    }
                     // An open session proves both, also when the launcher only found the image mounted.
                     if !self.setup.developerMode || !self.setup.uiAutomation {
                         var confirmed = self.setup
@@ -798,6 +825,7 @@ final class AppModel {
         warmInProcess("Poki came to the front")
         openWhileInFront("Poki came to the front")
         closeBecausePokiOpened()
+        keepAutomationOnIfWanted("Poki came to the front", now: true)
         loopback.resume()
         // Swiped away, ended by iOS, or Poki turned on from the background (where iOS starts none):
         // the Live Activity comes back while Poki is on, so the next thing that needs the owner pops up.
@@ -1157,6 +1185,7 @@ final class AppModel {
         if let relay { core.start(relay: relay) }
         idleTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in Task { @MainActor in self?.checkIdle() } }
         openWhileInFront("turned on with Poki in front")
+        keepAutomationOnIfWanted("Poki turned on", now: true)
     }
 
     /// The separate Runner path keeps its existing foreground startup behavior.
@@ -1455,6 +1484,7 @@ final class AppModel {
     private var endingTasks = 0
 
     private func closeBecausePokiOpened() {
+        guard !keepsAutomationOn else { return }
         guard automationPath == .inProcess, sessionOn, !runnerPaused, inProcessSession == .open, !inProcessWarming,
               stepUnderWay == nil, approvals.isEmpty, !probeDriven, endingTasks == 0 else { return }
         log.add("runner", "Poki is in front: closing the automation session at once; the banner goes with it")
@@ -1490,13 +1520,41 @@ final class AppModel {
     /// the session and the banner go once the step that handed over is through. The agent's next
     /// look or step opens a new one.
     private func closeForHandoff() {
+        guard !keepsAutomationOn else { return }
         guard automationPath == .inProcess, sessionOn, !runnerPaused, inProcessSession == .open, approvals.isEmpty, !probeDriven else { return }
         log.add("runner", "the owner's turn: closing the automation session; the banner goes with it")
         closeInProcess("the owner's turn", keepingSession: idleSessionPolicy == .pauseAutomation)
         standBy(reason: nil, keepingDone: true)
     }
 
+    /// Keep Automation On: opens the session, as an agent's request would, whenever Poki is on and it is
+    /// not open, also when testmanagerd ended it by itself. Not after the owner's Stop (the next task
+    /// or request opens it again), not once iOS's passcode screen was cancelled or missed (it would
+    /// put that screen up again), and not while an open or a close is under way. `now` is for the
+    /// owner's own moves (the switch, turning Poki on, Poki in front); the idle check retries a session
+    /// that did not open once a minute.
+    private func keepAutomationOnIfWanted(_ why: String, now: Bool = false) {
+        guard keepsAutomationOn, automationPath == .inProcess, sessionOn, !ownerPaused, !probeDriven,
+              !passcodeConfirmationPending, !InProcessWDA.automationDeclined else { return }
+        switch inProcessSession {
+        case .open:
+            guard !automation.sessionIsOpen() else { return }
+            log.add("runner", "keep automation on: the session ended by itself; opening it again")
+            inProcessSession = .idle
+        case .failed("open_poki_first", _) where !now:
+            // Past iOS's allowance an open waits for Poki in front, where coming forward asks again.
+            return
+        case .idle, .failed:
+            guard now || Date().timeIntervalSince(keepOnLastTry) >= Self.keepOnRetry else { return }
+        case .opening, .closing, .waitingForPasscode, .passcodeMissed:
+            return
+        }
+        keepOnLastTry = Date()
+        wakeRunner(asked: "keep automation on (\(why))")
+    }
+
     private func closeAfterTask(_ why: String) {
+        guard !keepsAutomationOn else { return }
         guard automationPath == .inProcess, sessionOn, !runnerPaused, !chatTaskActive, approvals.isEmpty,
               handoffText == nil, activityText == "Idle" else { return }
         log.add("runner", "\(why): closing the automation session at once; the banner goes with it")
@@ -1551,8 +1609,24 @@ final class AppModel {
             if waited > Self.passcodeEvidence { beginPasscodeWait(waited: waited) }
         }
         passcodeHint = inProcessPasscode || runner.state == "launching" && launchingSince.map { now.timeIntervalSince($0) > 10 } == true
+        keepAutomationOnIfWanted("the idle check")
         guard canStandByWhenIdle, now.timeIntervalSince(lastAgentActivity) >= Double(idleStopSeconds) else { return }
         let activityAtIdle = lastAgentActivity
+        if keepsAutomationOn, automationPath == .inProcess {
+            // Kept on: the idle time still ends the agent's task (back where it began, and the owner
+            // told who was here), once; automation stays on.
+            guard idleEndedWhileKeptOn != activityAtIdle else { return }
+            idleEndedWhileKeptOn = activityAtIdle
+            Task { [weak self, core] in
+                guard let self else { return }
+                self.endingTasks += 1
+                let line = await core.finishTask(ifNoLocalWorkspace: true)
+                self.endingTasks -= 1
+                if let line { self.log.add("runner", line) }
+                self.tellOwnerAgentsWereHere()
+            }
+            return
+        }
         let reason = "Stopped after \(idleStopSeconds / 60 > 0 ? "\(idleStopSeconds / 60) min" : "\(idleStopSeconds) s") without agent activity"
         Task { [weak self, core] in
             guard let self, self.canStandByWhenIdle, self.lastAgentActivity == activityAtIdle else { return }
@@ -1734,6 +1808,7 @@ final class AppModel {
         if status.state == "running" {
             diskImage.refreshAvailability()
             warmInProcess("the launcher is ready")
+            keepAutomationOnIfWanted("the launcher is ready", now: true)
         }
         if status.state == "failed" {
             let title = Self.problemText(code: status.code, fix: status.fix ?? status.detail ?? "The runner stopped")

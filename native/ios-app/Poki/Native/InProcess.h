@@ -67,6 +67,9 @@ FOUNDATION_EXPORT CGPoint PKWorkspaceLauncherPoint(NSDictionary<NSString *, NSAr
 /// How long iOS has been asked to allow automation in the open under way (seconds); 0 while no
 /// open is at that point. Opening the session and its first read do not count.
 - (double)authorizationWaitSeconds;
+/// The session is open with Automation Mode on (a lock read, nothing asked of iOS): false once it was
+/// closed or testmanagerd ended it.
+- (BOOL)sessionIsOpen;
 /// Testing only: the next readiness check of a new session fails as if no element tree came back,
 /// so the handling of a session that cannot read can be seen on a phone.
 @property (atomic) BOOL failNextReadinessCheck;

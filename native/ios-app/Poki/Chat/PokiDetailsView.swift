@@ -410,6 +410,18 @@ struct ConnectionView: View {
                 }
             }
 
+            // Keep Automation On, for an iPhone kept for Poki: automation stays on between tasks.
+            if model.automationPath == .inProcess {
+                Section {
+                    Toggle(isOn: Binding(get: { model.keepsAutomationOn }, set: { model.keepsAutomationOn = $0 })) {
+                        SettingsRow(title: "Keep Automation On", symbol: "infinity")
+                    }
+                    .accessibilityIdentifier("automation.keepOn")
+                } footer: {
+                    Text("For an iPhone kept for Poki. Automation stays on between tasks, so an agent can start while nobody is at the phone. iOS shows its automation banner the whole time.")
+                }
+            }
+
             Section {
                 ForEach(SetupStep.shown) { step in
                     let done = model.stepReadyForUse(step)

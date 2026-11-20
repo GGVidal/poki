@@ -2,6 +2,16 @@
 
 What changed in each round, and what still needs the phone. Newest first.
 
+## Keep Automation On for a spare iPhone (Unreleased, 2026-11-20)
+
+Added:
+- Settings › Connection › Keep Automation On (off by default, in-process path only). For an iPhone kept for Poki that nobody watches. The automation session stays open between tasks, after the idle time, with Poki in front and during a hand-off, so iOS's automation banner shows the whole time. A session that testmanagerd ends by itself opens again at the next idle check (every 10 s), and turning Poki on, the launcher becoming ready and Poki coming to the front open it too. The idle time still ends an outside agent's task and tells the owner who was there. The owner's Stop, Turn Off and an update still close it; the next task or agent request opens it again. A cancelled or missed passcode is not asked again by itself.
+- The log says, at each open and each passcode request, how long since automation last started and since the passcode was last entered, and how long iOS held the enable call.
+
+Why: a tester's spare iPhone stopped taking agent tasks each morning. On iOS 27 Poki closed automation after every task, and the first open after a long quiet stretch made iOS ask for the passcode with nobody at the phone.
+
+Needs the phone: leave it on for 9 hours or more with no task and check that an agent's first look opens with no passcode (the log's `no passcode` with the hours since the last passcode). Apple documents no interval, so iOS may still ask on an open session. Also check battery and heat with the banner up all day, and that the session survives a loopback reconnect.
+
 ## Optional Live Activities (Unreleased, 2026-11-15)
 
 - Turning off Live Activities no longer marks background setup as incomplete or displays “Poki can’t stay on in the background yet” when location permission is already granted. Live Activity status and approval buttons remain optional; normal notification and in-app approvals are unchanged.

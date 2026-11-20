@@ -92,6 +92,9 @@ final class FakeAutomation: InProcessAutomation, @unchecked Sendable {
     func setAuthorizationWait(_ seconds: Double) { lock.withLock { authorizationWait = seconds } }
     private var authorizationWait = 0.0
     func authorizationWaitSeconds() -> Double { lock.withLock { authorizationWait } }
+    func sessionIsOpen() -> Bool { lock.withLock { open && !paused } }
+    /// testmanagerd ends the session by itself: the next action or check finds it gone.
+    func endByItself() { lock.withLock { open = false; paused = false } }
 }
 
 final class FakePairing: DevicePairing {
@@ -562,6 +565,7 @@ final class InProcessPasscodeTests: XCTestCase {
         savedAllowance = UserDefaults.standard.object(forKey: AutomationAllowance.key)
         savedPasscode = UserDefaults.standard.object(forKey: AutomationAllowance.passcodeKey)
         UserDefaults.standard.removeObject(forKey: AutomationAllowance.key)
+        UserDefaults.standard.removeObject(forKey: AppModel.keepsAutomationOnKey)
         saved = (UserDefaults.standard.string(forKey: "relayAddress"), UserDefaults.standard.object(forKey: "relayEnabled"), SetupState.load())
         session = FakeAutomation()
         launcher = FakeLauncher()
@@ -585,6 +589,7 @@ final class InProcessPasscodeTests: XCTestCase {
         session?.releasePause()
         UserDefaults.standard.set(savedAllowance, forKey: AutomationAllowance.key)
         UserDefaults.standard.set(savedPasscode, forKey: AutomationAllowance.passcodeKey)
+        UserDefaults.standard.removeObject(forKey: AppModel.keepsAutomationOnKey)
         guard let saved, let model else { return }
         model.stopSession()
         UserDefaults.standard.set(saved.relay, forKey: "relayAddress")
@@ -1342,6 +1347,77 @@ final class InProcessPasscodeTests: XCTestCase {
         XCTAssertFalse(session.isOpen)
         XCTAssertEqual(session.closes, 1)
         XCTAssertEqual(session.pauses, 0)
+    }
+
+    /// Keep Automation On, for an iPhone nobody watches: the switch opens automation without an agent
+    /// asking, and the idle time and the end of a task leave it open (iOS's banner with it), so an
+    /// agent hours later finds automation on and iOS has no new session to ask the passcode for.
+    func testKeepAutomationOnOpensByItselfAndStaysOpenWhenIdle() async {
+        useSystem(27)
+        model.keepsAutomationOn = true
+        await prepareWithoutPhoneTask()
+        await waitFor("automation opens with no agent asking") { self.session.isOpen && self.model.hasOpenInProcessSession }
+
+        model.checkIdle(now: Date().addingTimeInterval(Double(model.idleStopSeconds) + 60))
+        model.chatTaskBegan()
+        model.chatTaskEnded(reply: nil, session: "test", acted: true)
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(session.isOpen, "automation stays on after the idle time and the end of a task")
+        XCTAssertEqual(session.closes, 0)
+        XCTAssertFalse(model.runnerPaused)
+        XCTAssertTrue(model.hasOpenInProcessSession)
+
+        // Off again: automation closes as at the end of a task.
+        model.keepsAutomationOn = false
+        await waitFor("turning it off closes automation") { !self.session.isOpen && self.model.runnerPaused }
+    }
+
+    /// Kept on, a session that testmanagerd ended by itself opens again at the next idle check, with no
+    /// agent asking. A missed passcode is not asked again that way: iOS would put its screen back up.
+    func testKeepAutomationOnReopensASessionThatEndedByItself() async {
+        useSystem(27)
+        model.keepsAutomationOn = true
+        await prepareWithoutPhoneTask()
+        await waitFor("automation is open") { self.session.isOpen && self.model.hasOpenInProcessSession }
+        let opens = session.prepares
+
+        session.endByItself()
+        model.checkIdle()
+        await waitFor("the ended session opens again") { self.session.isOpen && self.session.prepares == opens + 1 && self.model.hasOpenInProcessSession }
+
+        InProcessWDA.gate.withLock { $0.declined = true }
+        defer { InProcessWDA.gate.withLock { $0.declined = false } }
+        session.endByItself()
+        let reopened = expectation(description: "no open after a missed passcode")
+        reopened.isInverted = true
+        session.onPrepare = { reopened.fulfill() }
+        model.checkIdle()
+        await fulfillment(of: [reopened], timeout: 0.5)
+    }
+
+    /// Kept on, the owner's Stop still ends automation and nothing opens it by itself after that. The
+    /// next agent request opens it again, and then it stays open.
+    func testKeepAutomationOnStillStopsForTheOwner() async {
+        useSystem(27)
+        model.keepsAutomationOn = true
+        await prepareWithoutPhoneTask()
+        await waitFor("automation is open") { self.session.isOpen && self.model.hasOpenInProcessSession }
+
+        model.pauseByOwner()
+        await waitFor("the owner's Stop closes automation") { !self.session.isOpen && self.model.ownerPaused }
+        let reopened = expectation(description: "nothing opens automation after the owner's Stop")
+        reopened.isInverted = true
+        session.onPrepare = { reopened.fulfill() }
+        model.checkIdle(now: Date().addingTimeInterval(600))
+        await fulfillment(of: [reopened], timeout: 0.5)
+        session.onPrepare = nil
+
+        model.wakeRunner()
+        await finishPreparing()
+        await waitFor("the next request opens automation") { self.session.isOpen && self.model.hasOpenInProcessSession }
+        model.checkIdle(now: Date().addingTimeInterval(Double(model.idleStopSeconds) + 60))
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(session.isOpen, "and it stays open")
     }
 
     /// The end of a task is the same stand-by as the idle minute: a task a minute is not enough to ask the passcode for.

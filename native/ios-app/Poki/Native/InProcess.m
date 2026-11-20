@@ -1230,6 +1230,7 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
 }
 
 - (double)authorizationWaitSeconds { return [_sessions enablingSeconds]; }
+- (BOOL)sessionIsOpen { return [_sessions isOpen]; }
 
 /// nil once this generation has answered with an element tree (checked once per generation), else
 /// why it has not. A generation that cannot read is closed, so nothing reuses it and the next

@@ -19744,6 +19744,38 @@
         }
       }
     },
+    "Keep Automation On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保持自动化开启"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保持自動化開啟"
+          }
+        }
+      }
+    },
+    "For an iPhone kept for Poki. Automation stays on between tasks, so an agent can start while nobody is at the phone. iOS shows its automation banner the whole time." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "适用于专门留给 Poki 的 iPhone。任务之间自动化保持开启，无人在旁时智能体也能开始工作。iOS 会一直显示自动化横幅。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "適用於專門留給 Poki 的 iPhone。任務之間自動化保持開啟，無人在旁時智慧體也能開始工作。iOS 會一直顯示自動化橫幅。"
+          }
+        }
+      }
+    },
     "Signed Until" : {
       "localizations" : {
         "zh-Hans" : {

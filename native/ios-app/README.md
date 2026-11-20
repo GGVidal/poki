@@ -131,7 +131,10 @@ Poki ships English, Simplified Chinese and Traditional Chinese. Settings › Lan
   turns Automation Mode off and keeps the session for the next phone step. If the pause fails,
   Poki closes the session instead. On iOS 27 and later, standby closes the session as before.
   Stop, Turn Off, and an update close the session on every version, even if a pause is still in
-  progress. An update waits for that close before it continues. A later phone step opens a new
+  progress. With Settings › Connection › Keep Automation On (off by default, for an iPhone kept for
+  Poki), nothing closes the session on its own: it stays open between tasks, with iOS's banner, and
+  opens again by itself when it ends, so an agent that comes hours later does not meet iOS's passcode
+  screen with nobody there. The owner's Stop, Turn Off, and an update still close it. An update waits for that close before it continues. A later phone step opens a new
   session after a close, or resumes a kept session and checks that it can still read. If a resume
   fails, Poki closes the session and tries a new one, except when opening was refused or iOS's
   passcode prompt timed out. Nothing is tapped or typed while Poki itself is in front.

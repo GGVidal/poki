@@ -24,10 +24,14 @@ protocol InProcessAutomation: AnyObject, Sendable {
     func pauseAutomation() -> [String: Any]
     /// Seconds iOS has been asked to allow automation in the open under way; 0 while no open is there.
     func authorizationWaitSeconds() -> Double
+    /// The session is open with Automation Mode on: false once testmanagerd ended it or it was closed.
+    /// A lock read, no call to iOS (Keep Automation On asks at every idle check).
+    func sessionIsOpen() -> Bool
 }
 
 extension InProcessAutomation {
     func authorizationWaitSeconds() -> Double { 0 }
+    func sessionIsOpen() -> Bool { true }
 }
 
 /// Thread-safe: its session state is behind locks, and every call blocks on its own.

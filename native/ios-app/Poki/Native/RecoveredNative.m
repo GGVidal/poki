@@ -210,6 +210,12 @@ static BOOL SRABI(id target, SEL selector, const char *result, NSArray<NSString 
 - (double)lastEnableSeconds {
     [_lifecycleLock lock]; double value = _lastEnableSeconds; [_lifecycleLock unlock]; return value;
 }
+- (BOOL)isOpen {
+    [_lifecycleLock lock];
+    BOOL value = _observed != nil && !_invalidated && _token != nil && _enabled == _observed && _enabledGeneration == _generation;
+    [_lifecycleLock unlock];
+    return value;
+}
 - (BOOL)enableWasReused {
     [_lifecycleLock lock]; BOOL value = _reused; [_lifecycleLock unlock]; return value;
 }

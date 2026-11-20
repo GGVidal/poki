@@ -39,6 +39,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// How long the last prepare's enable of Automation Mode took, in seconds (iOS's passcode screen, when
 /// it asked, included); 0 when that prepare reused an enabled session or failed before enabling.
 - (double)lastEnableSeconds;
+/// The current session is open (not closed, not ended by testmanagerd) and Automation Mode is on for it.
+- (BOOL)isOpen;
 /// Turns Automation Mode (and iOS's banner) off while the session stays open, when this iOS offers a
 /// way; the next prepare turns it on again. Keys: paused, how, selectors (what the session offers).
 - (NSDictionary<NSString *, id> *)pauseAutomation;
