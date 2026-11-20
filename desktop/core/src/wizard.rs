@@ -1,8 +1,11 @@
-//! Stateless USB setup wizard state machine.
+//! USB setup wizard state machine.
 use crate::{Error, Progress, Reporter, Result, device, keeper};
+use idevice::{IdeviceError, afc::{AfcClient, errors::AfcError, opcode::AfcFopenMode}};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +21,7 @@ pub enum WizardState {
     DdiUnmounted,
     AppUntrusted,
     PokiNotStarted,
+    PokiUpdateRequired,
     AutomationPending,
     Completed,
 }
@@ -65,6 +69,7 @@ pub struct WizardProbe {
     pub ddi_mounted: bool,
     pub poki_started: bool,
     pub automation_ready: bool,
+    pub poki_update_required: bool,
     pub failure: Option<WizardFailure>,
 }
 
@@ -74,6 +79,7 @@ pub fn evaluate(probe: &WizardProbe) -> WizardState {
     if phone.developer_mode == Some(false) { return WizardState::DeveloperModeOff; }
     if let Some(app) = probe.installed.as_ref().filter(|app| !app.expired) {
         if !probe.ddi_mounted { return WizardState::DdiUnmounted; }
+        if probe.poki_update_required { return WizardState::PokiUpdateRequired; }
         if probe.poki_started {
             return if probe.automation_ready { WizardState::Completed } else { WizardState::AutomationPending };
         }
@@ -100,18 +106,22 @@ pub struct Snapshot {
 }
 
 #[derive(Default)]
-pub struct Attempts(tokio::sync::Mutex<Option<(String, WizardFailure)>>);
+pub struct Attempts {
+    failure: Mutex<Option<(String, WizardFailure)>>,
+    automation: Mutex<Option<AutomationCheck>>,
+}
 
 impl Attempts {
     pub async fn remember(&self, udid: String, stage: FailureStage, kind: &str, message: &str) {
-        *self.0.lock().await = Some((udid, WizardFailure { stage, kind: kind.to_owned(), message: message.to_owned() }));
+        *self.failure.lock().await = Some((udid, WizardFailure { stage, kind: kind.to_owned(), message: message.to_owned() }));
     }
 
-    pub async fn clear(&self) { *self.0.lock().await = None; }
+    pub async fn clear(&self) { *self.failure.lock().await = None; }
 
     pub async fn inspect(&self, udid: Option<&str>, account_signed_in: bool) -> Result<Snapshot> {
-        let failure = self.0.lock().await.clone();
-        inspect(udid, account_signed_in, failure).await
+        let failure = self.failure.lock().await.clone();
+        let mut automation = self.automation.lock().await;
+        inspect(udid, account_signed_in, failure, &mut automation).await
     }
 }
 
@@ -142,6 +152,7 @@ struct Hello {
     at: String,
     #[serde(default)]
     ui_automation_ready: bool,
+    usb_setup_challenge: Option<String>,
 }
 
 impl Hello {
@@ -152,10 +163,57 @@ impl Hello {
                 OffsetDateTime::parse(&self.at, &Rfc3339).is_ok_and(|at| at.unix_timestamp() >= signed)
             })
     }
+
+    fn apply(&self, probe: &mut WizardProbe, challenge: Uuid) {
+        probe.poki_update_required = self.usb_setup_challenge.is_none();
+        probe.poki_started = self.usb_setup_challenge.as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok()) == Some(challenge);
+        probe.automation_ready = probe.poki_started && self.ui_automation_ready;
+    }
+}
+
+struct AutomationCheck {
+    udid: String,
+    mux_id: Option<u32>,
+    bundle_id: String,
+    challenge: Uuid,
+    afc: AfcClient,
+}
+
+impl AutomationCheck {
+    async fn connect(phone: &device::Phone, bundle_id: &str) -> Result<Self> {
+        let challenge = Uuid::new_v4();
+        let mut afc = device::container::afc_for(phone, bundle_id).await?;
+        device::container::write_setup_challenge(&mut afc, challenge).await?;
+        Ok(Self { udid: phone.udid.clone(), mux_id: phone.mux_id, bundle_id: bundle_id.to_owned(), challenge, afc })
+    }
+
+    fn matches(&self, phone: &device::Phone, bundle_id: &str) -> bool {
+        self.udid == phone.udid && self.mux_id == phone.mux_id && self.bundle_id == bundle_id
+    }
+
+    async fn read(&mut self) -> Result<Option<Hello>> {
+        let path = "Documents/PokiSetup/poki-hello.json";
+        let mut file = match self.afc.open(path, AfcFopenMode::RdOnly).await {
+            Ok(file) => file,
+            Err(IdeviceError::Afc(AfcError::ObjectNotFound)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let data = file.read_entire().await?;
+        file.close().await?;
+        Ok(serde_json::from_slice(&data).ok())
+    }
 }
 
 /// Read the device's state anew. A saved signing record is metadata for an app that still exists.
-async fn inspect(udid: Option<&str>, account_signed_in: bool, failure: Option<(String, WizardFailure)>) -> Result<Snapshot> {
+async fn inspect(
+    udid: Option<&str>,
+    account_signed_in: bool,
+    failure: Option<(String, WizardFailure)>,
+    automation: &mut Option<AutomationCheck>,
+) -> Result<Snapshot> {
+    // A USB connection cannot survive a reboot, even when usbmuxd reuses the attachment ID.
+    let mut check = automation.take();
     let phones: Vec<_> = device::Phone::list().await?.into_iter().filter(device::Phone::is_usb).collect();
     let selected = match (udid, phones.as_slice()) {
         (Some(udid), _) => phones.iter().find(|phone| phone.udid == udid),
@@ -165,16 +223,24 @@ async fn inspect(udid: Option<&str>, account_signed_in: bool, failure: Option<(S
     let failure = failure.filter(|(udid, _)| selected.is_some_and(|p| p.udid == *udid)).map(|(_, failure)| failure);
     let mut probe = WizardProbe { account_signed_in, failure, ..Default::default() };
     let mut usb_phones = Vec::with_capacity(phones.len());
-    for phone in &phones {
+    let names = futures_util::future::join_all(phones.iter().map(|phone| async {
+        if selected.is_some_and(|selected| selected.udid == phone.udid) {
+            return String::new();
+        }
+        tokio::time::timeout(Duration::from_secs(3), device::info::name(phone))
+            .await.ok().and_then(Result::ok).unwrap_or_default()
+    })).await;
+    for (phone, name) in phones.iter().zip(names) {
         let is_selected = selected.is_some_and(|selected| selected.udid == phone.udid);
         let facts = if is_selected {
-            tokio::time::timeout(Duration::from_secs(3), device::info::read(phone)).await.ok().and_then(Result::ok)
+            Some(tokio::time::timeout(Duration::from_secs(3), device::info::read_for_wizard(phone))
+                .await.map_err(|_| Error::device("Unlock the iPhone to check its USB connection."))??)
         } else {
             None
         };
         let view = UsbPhoneView {
             udid: phone.udid.clone(),
-            name: facts.as_ref().map(|f| f.name.clone()).unwrap_or_default(),
+            name: facts.as_ref().map(|f| f.name.clone()).unwrap_or(name),
             product_type: facts.as_ref().map(|f| f.product_type.clone()).unwrap_or_default(),
             ios: facts.as_ref().map(|f| f.ios.clone()).unwrap_or_default(),
             paired: facts.as_ref().is_some_and(|f| f.paired_with_this_computer),
@@ -204,12 +270,19 @@ async fn inspect(udid: Option<&str>, account_signed_in: bool, failure: Option<(S
             if !installed.expired {
                 probe.ddi_mounted = device::ddi::mounted(phone).await?;
                 if probe.ddi_mounted {
-                    let path = "Documents/PokiSetup/poki-hello.json";
-                    let hello = tokio::time::timeout(Duration::from_secs(4), device::container::read_file(phone, &app.bundle_id, path)).await
-                        .ok().and_then(Result::ok).and_then(|data| serde_json::from_slice::<Hello>(&data).ok());
-                    if let Some(hello) = hello.filter(|hello| hello.matches(&installed, record.map(|r| r.signed_at))) {
-                        probe.poki_started = true;
-                        probe.automation_ready = hello.ui_automation_ready;
+                    let result = tokio::time::timeout(Duration::from_secs(4), async {
+                        let mut check = match check.take() {
+                            Some(existing) if existing.matches(phone, &app.bundle_id) => existing,
+                            _ => AutomationCheck::connect(phone, &app.bundle_id).await?,
+                        };
+                        let hello = check.read().await?;
+                        Ok::<_, Error>((check, hello))
+                    }).await;
+                    if let Ok(Ok((check, hello))) = result {
+                        if let Some(hello) = hello.filter(|hello| hello.matches(&installed, record.map(|r| r.signed_at))) {
+                            hello.apply(&mut probe, check.challenge);
+                        }
+                        *automation = Some(check);
                     }
                 }
             }
@@ -267,6 +340,41 @@ mod tests {
     }
 
     #[test]
+    fn a_remounted_image_requires_a_fresh_automation_confirmation() {
+        let current = "eeb029a9-6b71-492f-abef-44bfe8c73ea8".parse().unwrap();
+        let hello = |challenge, ready| serde_json::from_value::<Hello>(serde_json::json!({
+            "schema": "poki.hello/1",
+            "version": "0.4.4",
+            "build": "1683",
+            "at": "2026-11-20T04:00:00Z",
+            "usb_setup_challenge": challenge,
+            "ui_automation_ready": ready,
+        })).unwrap();
+        let mut remounted = WizardProbe {
+            phone: Some(base_phone(true, Some(true))),
+            installed: Some(installed(Some(true), false)),
+            ddi_mounted: true,
+            ..Default::default()
+        };
+
+        hello("13a30613-30e6-485b-9b69-7b158e75aa47", true).apply(&mut remounted, current);
+        assert_eq!(evaluate(&remounted), WizardState::PokiNotStarted);
+        hello("eeb029a9-6b71-492f-abef-44bfe8c73ea8", false).apply(&mut remounted, current);
+        assert_eq!(evaluate(&remounted), WizardState::AutomationPending);
+        hello("eeb029a9-6b71-492f-abef-44bfe8c73ea8", true).apply(&mut remounted, current);
+        assert_eq!(evaluate(&remounted), WizardState::Completed);
+
+        let legacy = serde_json::from_value::<Hello>(serde_json::json!({
+            "schema": "poki.hello/1",
+            "version": "0.4.4",
+            "build": "1683",
+            "at": "2026-11-20T04:00:00Z",
+        })).unwrap();
+        legacy.apply(&mut remounted, current);
+        assert_eq!(evaluate(&remounted), WizardState::PokiUpdateRequired);
+    }
+
+    #[test]
     fn wizard_state_machine_evaluates_all_states_and_recovers_after_unplug_and_reboot() {
         assert_eq!(evaluate(&WizardProbe::default()), WizardState::DeviceDisconnected);
 
@@ -319,6 +427,7 @@ mod tests {
             ddi_mounted: false,
             poki_started: true,
             automation_ready: true,
+            poki_update_required: false,
             failure: None,
         };
         assert_eq!(evaluate(&after_reboot), WizardState::DdiUnmounted);

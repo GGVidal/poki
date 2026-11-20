@@ -15,6 +15,7 @@ enum PokiHandoff {
     }
     static var helloFile: URL { folder.appendingPathComponent("poki-hello.json") }
     static var sealedKeyFile: URL { folder.appendingPathComponent("model-key.json") }
+    private static var usbChallengeFile: URL { folder.appendingPathComponent("usb-setup-challenge") }
 
     private static let keyAccount = "handoff.model-key"
     private static let importedKey = "handoff.imported"
@@ -85,6 +86,8 @@ enum PokiHandoff {
         if !loopbackWorking { loopback["say"] = loopbackSay ?? "" }
         var hello: [String: Any] = ["schema": "poki.hello/1", "model_key": offer, "loopback": loopback]
         hello["ui_automation_ready"] = uiAutomationReady
+        let challenge = try? String(contentsOf: usbChallengeFile, encoding: .utf8)
+        hello["usb_setup_challenge"] = challenge.flatMap(UUID.init(uuidString:))?.uuidString ?? ""
         hello["version"] = info?["CFBundleShortVersionString"] as? String ?? "?"
         hello["build"] = info?["CFBundleVersion"] as? String ?? "?"
         if let update = PokiUpdateInfo.read(app: .main, channelFile: AppFiles.support.appendingPathComponent("signer/state/channel.json"), requestFile: folder.appendingPathComponent("update-request.json")) {

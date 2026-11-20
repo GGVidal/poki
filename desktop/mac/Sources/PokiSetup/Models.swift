@@ -384,6 +384,7 @@ enum USBSetupStep: String, Decodable {
     case ddiUnmounted = "ddi_unmounted"
     case appUntrusted = "app_untrusted"
     case pokiNotStarted = "poki_not_started"
+    case pokiUpdateRequired = "poki_update_required"
     case automationPending = "automation_pending"
     case completed
 }

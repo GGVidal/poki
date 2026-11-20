@@ -163,7 +163,10 @@ final class AppModel {
     private(set) var passcodeHint = false
     /// Turning on now will probably bring up iOS's passcode screen (no automation has started since
     /// this iPhone last restarted, or ever): the owner is told first (`passcodeHeadsUp`).
-    var passcodeExpected: Bool { UserDefaults.standard.double(forKey: Self.automationBootKey) != BootClock.current }
+    var passcodeExpected: Bool {
+        let boot = BootClock.current
+        return boot <= 0 || UserDefaults.standard.double(forKey: Self.automationBootKey) != boot
+    }
     var passcodeHeadsUp = false
     private(set) var passcodeConfirmationPending = false
     static let passcodeConfirmationMessage: LocalizedStringResource = "To turn on automation, open Settings › Connection and tap Continue."
@@ -2483,6 +2486,7 @@ final class AppModel {
 
     func verifyMountedImageAutomation() {
         guard usesMountedImageWithoutLoopback, !probeDriven, !passcodeConfirmationPending else { return }
+        InProcessWDA.gate.withLock { $0.declined = false }
         if !sessionOn { startSession() }
         if sessionOn { wakeRunner(asked: "checking UI Automation during USB setup") }
     }

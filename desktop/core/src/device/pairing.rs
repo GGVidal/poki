@@ -51,7 +51,7 @@ pub async fn pair(phone: &Phone, reporter: &Reporter, wait: Duration) -> Result<
         return Err(Error::device("Pairing needs the cable. Plug the iPhone in with a data cable."));
     }
     reporter.step("pair", "Pairing with the iPhone");
-    let mut mux = UsbmuxdConnection::default().await?;
+    let mut mux = super::mux_addr().connect(0).await?;
     let buid = mux.get_buid().await?;
     let provider = phone.provider()?;
     let local = saved(&phone.udid)?;

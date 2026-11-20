@@ -23,6 +23,7 @@ const COPY: Record<USBSetupStep, [string, string]> = {
   ddi_unmounted: ["Restore the developer disk image", "Keep the iPhone connected and unlocked. Poki Setup can restore the image without reinstalling Poki."],
   app_untrusted: ["Trust the app developer", "On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki."],
   poki_not_started: ["Open Poki on your iPhone", "Tap Poki on the iPhone Home Screen."],
+  poki_update_required: ["Update Poki to finish setup", "Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again."],
   automation_pending: ["Enable UI Automation", "On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks."],
   completed: ["Poki is ready", "You can unplug the USB cable and use Poki on your iPhone."],
 };
@@ -44,6 +45,7 @@ export default function Setup() {
   const [working, setWorking] = useState(false);
   const [certQuestion, setCertQuestion] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const requestedSelection = useRef<string | null>(null);
   const probing = useRef(false);
   const automatic = useRef(new Set<string>());
   const { steps, apply, fail, reset } = useSteps(STEPS);
@@ -58,11 +60,11 @@ export default function Setup() {
     probing.current = true;
     try {
       const next = await api.wizardState(selected);
-      if (!active()) return;
+      if (!active() || requestedSelection.current !== selected) return;
       setProbeError(null);
       setSnapshot(next);
     } catch (e) {
-      if (active()) setProbeError({ kind: failureKind(e), text: failureText(e) });
+      if (active() && requestedSelection.current === selected) setProbeError({ kind: failureKind(e), text: failureText(e) });
     } finally { probing.current = false; }
   };
 
@@ -118,9 +120,13 @@ export default function Setup() {
             {(snapshot.usb_phones.length > 1 || state === "choose_device") && (
               <label className="row">
                 {t("Device")}
-                <select value={udid ?? ""} onChange={(e) => setSelected(e.target.value)}>
+                <select value={udid ?? ""} disabled={running || working || certQuestion} onChange={(e) => {
+                  requestedSelection.current = e.target.value;
+                  setSnapshot(null);
+                  setSelected(e.target.value);
+                }}>
                   <option value="" disabled>{t("Choose a device")}</option>
-                  {snapshot.usb_phones.map((phone, index) => <option value={phone.udid} key={phone.udid}>{phone.name || t("Device") + " " + (index + 1)}</option>)}
+                  {snapshot.usb_phones.map((phone) => <option value={phone.udid} key={phone.udid}>{phone.name || t("Device")} · {phone.udid.slice(-6)}</option>)}
                 </select>
               </label>
             )}

@@ -325,6 +325,8 @@
 "Trust the app developer" = "Trust the app developer";
 "On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki." = "On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki.";
 "Open Poki on your iPhone" = "Open Poki on your iPhone";
+"Update Poki to finish setup" = "Update Poki to finish setup";
+"Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again." = "Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again.";
 "Tap Poki on the iPhone Home Screen." = "Tap Poki on the iPhone Home Screen.";
 "Enable UI Automation" = "Enable UI Automation";
 "On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks." = "On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks.";

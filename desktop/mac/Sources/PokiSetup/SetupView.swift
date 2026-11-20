@@ -6,6 +6,7 @@ struct SetupView: View {
     @State private var handOff = false
     @State private var wizard: USBSetupSnapshot?
     @State private var wizardSelection: String?
+    @State private var changingWizardSelection = false
     @State private var probeError: String?
     @State private var wizardError: String?
     @State private var wizardAction: String?
@@ -32,7 +33,7 @@ struct SetupView: View {
                 if let result { resultSection(result) }
             } else {
                 wizardSection
-                if wizard?.state == .accountSignedOut { AccountView(embedded: true) }
+                if !changingWizardSelection, wizard?.state == .accountSignedOut { AccountView(embedded: true) }
                 if let s = model.steps["install"], !s.isEmpty, installing {
                     Section { JobProgress(steps: s, running: true, weights: JobProgress.install) }
                 }
@@ -83,18 +84,23 @@ struct SetupView: View {
         Section {
             if let wizard, wizard.usbPhones.count > 1 || wizard.state == .chooseDevice {
                 Picker(localized("Device"), selection: Binding(
-                    get: { wizard.selectedUdid },
-                    set: { wizardSelection = $0; wizardError = nil }
+                    get: { changingWizardSelection ? wizardSelection : wizard.selectedUdid },
+                    set: {
+                        changingWizardSelection = true
+                        wizardSelection = $0
+                        wizardError = nil
+                    }
                 )) {
                     Text(localized("Choose a device")).tag(String?.none)
-                    ForEach(Array(wizard.usbPhones.enumerated()), id: \.element.udid) { index, phone in
-                        Text(phone.name.isEmpty ? localized("Device") + " " + String(index + 1) : phone.name).tag(Optional(phone.udid))
+                    ForEach(wizard.usbPhones) { phone in
+                        Text("\(phone.name.isEmpty ? localized("Device") : phone.name) · \(phone.udid.suffix(6))").tag(Optional(phone.udid))
                     }
                 }
+                .disabled(wizardAction != nil || installing || certificateQuestion != nil)
             }
             if let probeError {
                 Label(probeError, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
-            } else if let wizard {
+            } else if let wizard, !changingWizardSelection {
                 Text(wizardTitle(wizard.state)).font(.headline)
                 Text(wizardInstruction(wizard.state)).foregroundStyle(.secondary)
                 if let failure = wizard.failure, wizard.state == .signingFailed || wizard.state == .installFailed {
@@ -122,6 +128,7 @@ struct SetupView: View {
         case .ddiUnmounted: localized("Restore the developer disk image")
         case .appUntrusted: localized("Trust the app developer")
         case .pokiNotStarted: localized("Open Poki on your iPhone")
+        case .pokiUpdateRequired: localized("Update Poki to finish setup")
         case .automationPending: localized("Enable UI Automation")
         case .completed: localized("Poki is ready")
         }
@@ -140,6 +147,7 @@ struct SetupView: View {
         case .ddiUnmounted: localized("Keep the iPhone connected and unlocked. Poki Setup can restore the image without reinstalling Poki.")
         case .appUntrusted: localized("On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki.")
         case .pokiNotStarted: localized("Tap Poki on the iPhone Home Screen.")
+        case .pokiUpdateRequired: localized("Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again.")
         case .automationPending: localized("On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks.")
         case .completed: localized("You can unplug the USB cable and use Poki on your iPhone.")
         }
@@ -164,11 +172,13 @@ struct SetupView: View {
     }
 
     private func refreshWizard() async {
+        let selection = wizardSelection
         do {
-            let snapshot: USBSetupSnapshot = try await model.bridge.call("wizard_state", ["udid": wizardSelection])
-            guard !Task.isCancelled else { return }
+            let snapshot: USBSetupSnapshot = try await model.bridge.call("wizard_state", ["udid": selection])
+            guard !Task.isCancelled, selection == wizardSelection else { return }
             if wizard?.state != snapshot.state || wizard?.selectedUdid != snapshot.selectedUdid { wizardError = nil }
             wizard = snapshot
+            changingWizardSelection = false
             probeError = nil
             guard let udid = snapshot.selectedUdid else { automaticActions.removeAll(); return }
             let action: String
@@ -182,12 +192,12 @@ struct SetupView: View {
                 Task { await runWizard(action, udid: udid) }
             }
         } catch {
-            if !Task.isCancelled { probeError = error.localizedDescription }
+            if !Task.isCancelled, selection == wizardSelection { probeError = error.localizedDescription }
         }
     }
 
     private func runWizard(_ action: String, udid: String) async {
-        guard wizardAction == nil else { return }
+        guard wizardAction == nil, !changingWizardSelection, wizard?.selectedUdid == udid else { return }
         wizardAction = action
         wizardError = nil
         defer { wizardAction = nil }
@@ -485,7 +495,8 @@ struct SetupView: View {
     }
 
     private func install() async {
-        guard let udid = showInstallOptions ? model.selectedPhone?.id : wizard?.selectedUdid else { return }
+        guard showInstallOptions || !changingWizardSelection,
+              let udid = showInstallOptions ? model.selectedPhone?.id : wizard?.selectedUdid else { return }
         failed = nil
         wizardError = nil
         result = nil

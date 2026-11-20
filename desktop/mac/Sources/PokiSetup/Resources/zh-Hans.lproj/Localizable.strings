@@ -325,6 +325,8 @@
 "Trust the app developer" = "信任应用开发者";
 "On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki." = "在 iPhone 上打开「设置 › 通用 › VPN 与设备管理」，选中 Apple 账户对应的开发者并轻点「信任」。按提示重启后打开 Poki。";
 "Open Poki on your iPhone" = "在 iPhone 上打开 Poki";
+"Update Poki to finish setup" = "更新 Poki 以完成安装";
+"Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again." = "请保留已安装的 Poki，以免丢失数据。使用原来的 Apple 账户和安装工具更新，然后再次打开 Poki。";
 "Tap Poki on the iPhone Home Screen." = "在 iPhone 主屏幕上轻点 Poki。";
 "Enable UI Automation" = "启用 UI 自动化";
 "On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks." = "在 iPhone 上打开「设置 › 开发者」，开启「启用 UI 自动化」。返回 Poki 启动自动化，并按 iOS 提示输入锁屏密码。";
