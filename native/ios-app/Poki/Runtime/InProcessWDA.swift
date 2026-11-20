@@ -382,6 +382,7 @@ final class InProcessWDA: HTTPTransport, @unchecked Sendable {
     /// the front app), a touch or text is refused here, the last place before it would be sent.
     /// Opening an app and the Home button stay: they are how a task leaves Poki.
     private func refuseInPoki() throws {
+        if native.hasDuoCompanionTask { return }
         guard let own = Bundle.main.bundleIdentifier, native.frontApp()["bundleId"] as? String == own else { return }
         throw Refusal("unknown error", "not sent: Poki itself is in front, and nothing is tapped or typed in Poki. Open the task's app first (launch)")
     }

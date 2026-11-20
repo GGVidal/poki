@@ -92,9 +92,11 @@ static long long capturedDisplayID;
 @property(nonatomic, strong) AXNode *own;
 @property(nonatomic, strong) AXNode *target;
 @property(nonatomic, strong) AXNode *snapshot;
+@property(nonatomic, strong) AXNode *otherWindow;
 @property(nonatomic) BOOL missTarget;
 @property(nonatomic) BOOL ownOnRight;
 @property(nonatomic) BOOL pokiHidden;
+@property(nonatomic) BOOL hitsFollowFocus;
 @end
 @implementation CompanionFixture
 - (PKDisplayGeometry)sceneDisplayGeometry { return self.scene; }
@@ -108,11 +110,12 @@ static long long capturedDisplayID;
 }
 - (NSArray *)activeApplications { return @[self.own, self.target]; }
 - (id)elementAtPoint:(CGPoint)point error:(NSError **)error {
+    if (self.hitsFollowFocus) return self.own;
     BOOL left = point.y >= 475.5;
     return left != self.ownOnRight ? self.own : self.missTarget ? nil : self.target;
 }
 - (id)requestSnapshotForElement:(id)element attributes:(NSArray *)attributes parameters:(NSDictionary *)parameters error:(NSError **)error {
-    return self.snapshot;
+    return element == self.own ? self.otherWindow : self.snapshot;
 }
 @end
 
@@ -306,6 +309,8 @@ static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop) {
 
     runner.pokiHidden = YES;
     runner.own.processIdentifier = getpid() + 2;
+    runner.otherWindow = [AXNode new];
+    runner.otherWindow.frame = CGRectMake(0, 0, 469, 669);
     scene.peer = CGRectNull;
     scene.panePlacementKnown = NO;
     runner.scene = scene;
@@ -321,7 +326,14 @@ static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop) {
         sent.delivery != PKDeliverySent || session.gesture.displayID != 2 ||
         !CGPointEqualToPoint(session.gesture.path.start, CGPointMake(100, 425))) return NO;
 
+    runner.hitsFollowFocus = YES;
+    if (!checkShot(runner, 2, crop, 255, @"when Clock has focus", YES)) return NO;
+    sent = [runner touch:tap timeout:1 geometry:runner.displayGeometry];
+    if (sent.delivery != PKDeliverySent || session.gesture.displayID != 2 ||
+        !CGPointEqualToPoint(session.gesture.path.start, CGPointMake(100, 425))) return NO;
+
     session.gesture = nil;
+    runner.hitsFollowFocus = NO;
     runner.ownOnRight = YES;
     PKOutcome *refused = [runner touch:tap timeout:1 geometry:runner.displayGeometry];
     if (refused.delivery != PKDeliveryNotSent || session.gesture ||
