@@ -20,7 +20,8 @@ export type Account = { signed_in: boolean; needs_reauth?: boolean; apple_id: st
 export type USBSetupStep =
   | "device_disconnected" | "choose_device" | "device_untrusted" | "developer_mode_off" | "account_signed_out"
   | "ready_to_install" | "signing_failed" | "install_failed" | "ddi_unmounted"
-  | "app_untrusted" | "poki_not_started" | "poki_update_required" | "automation_pending" | "completed";
+  | "app_untrusted" | "poki_not_started" | "poki_signing_unknown" | "poki_update_required"
+  | "automation_pending" | "completed";
 export type USBSetupSnapshot = {
   state: USBSetupStep;
   usb_phones: { udid: string; name: string }[];

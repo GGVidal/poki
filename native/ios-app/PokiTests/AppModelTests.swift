@@ -624,6 +624,58 @@ final class InProcessPasscodeTests: XCTestCase {
         await waitFor("Poki opens automation after the user taps Start again") { self.model.hasOpenInProcessSession }
     }
 
+    func testUSBSetupHelloRevokesReadinessAfterAnAutomationFailure() async throws {
+        let defaults = UserDefaults.standard
+        let keys = ["automationStartedBoot", "automationConfirmationFailed"]
+        let saved = keys.map { defaults.object(forKey: $0) }
+        let challengeFile = PokiHandoff.folder.appendingPathComponent("usb-setup-challenge")
+        try FileManager.default.createDirectory(at: PokiHandoff.folder, withIntermediateDirectories: true)
+        let previousChallenge = try? Data(contentsOf: challengeFile)
+        defer {
+            for (key, value) in zip(keys, saved) { defaults.set(value, forKey: key) }
+            if let previousChallenge {
+                try? previousChallenge.write(to: challengeFile, options: .atomic)
+            } else {
+                try? FileManager.default.removeItem(at: challengeFile)
+            }
+        }
+        func readinessReply() throws -> Bool {
+            let challenge = UUID().uuidString
+            try Data(challenge.utf8).write(to: challengeFile, options: .atomic)
+            model.handoffTick()
+            let data = try Data(contentsOf: PokiHandoff.helloFile)
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(reply["usb_setup_challenge"] as? String, challenge)
+            return try XCTUnwrap(reply["ui_automation_ready"] as? Bool)
+        }
+
+        useSystem(27, usbSetup: true)
+        model.verifyMountedImageAutomation()
+        await finishPreparing()
+        await waitFor("the first USB setup attempt opened automation") { self.model.hasOpenInProcessSession }
+        XCTAssertTrue(try readinessReply())
+
+        await withCheckedContinuation { done in model.closeInProcess("the first setup attempt ended") { done.resume() } }
+        session.holdNextOpen()
+        model.verifyMountedImageAutomation()
+        await waitFor("the second automation attempt reached iOS") { self.session.isHoldingOpen }
+        session.answer(["ok": false, "detail": "Timed out while enabling automation mode."])
+        await waitFor("the latest attempt timed out") {
+            self.model.host.currentRunner.describe.contains("owner did not enter the iPhone passcode")
+        }
+        XCTAssertFalse(try readinessReply(), "a new USB challenge must reflect the latest failure in the same boot")
+        XCTAssertFalse(model.isDone(.automation), "USB setup must offer automation again after the failure")
+
+        let previouslyConfirmed = model.setup.uiAutomation
+        useSystem(27, usbSetup: true)
+        model.setup.uiAutomation = previouslyConfirmed
+        XCTAssertFalse(try readinessReply(), "relaunching Poki must not revive the earlier confirmation")
+        model.verifyMountedImageAutomation()
+        await finishPreparing()
+        await waitFor("a later explicit attempt confirms automation again") { self.model.hasOpenInProcessSession }
+        XCTAssertTrue(try readinessReply())
+    }
+
     func testCellularPreparationWaitsForTheImageWithoutOpeningAutomation() async {
         let opened = expectation(description: "Cellular preparation only mounts the developer image")
         opened.isInverted = true

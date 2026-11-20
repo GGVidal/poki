@@ -325,6 +325,9 @@
 "Trust the app developer" = "Trust the app developer";
 "On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki." = "On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki.";
 "Open Poki on your iPhone" = "Open Poki on your iPhone";
+"Check the Poki signature" = "Check the Poki signature";
+"Try opening Poki. If iOS asks you to trust its developer, open Settings › General › VPN & Device Management. If the signature has expired, keep Poki installed and renew it with the original installer, Apple Account, and signing team." = "Try opening Poki. If iOS asks you to trust its developer, open Settings › General › VPN & Device Management. If the signature has expired, keep Poki installed and renew it with the original installer, Apple Account, and signing team.";
+"Renew Poki without losing data" = "Renew Poki without losing data";
 "Update Poki to finish setup" = "Update Poki to finish setup";
 "Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again." = "Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again.";
 "Tap Poki on the iPhone Home Screen." = "Tap Poki on the iPhone Home Screen.";

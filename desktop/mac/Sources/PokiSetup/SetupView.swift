@@ -103,6 +103,10 @@ struct SetupView: View {
             } else if let wizard, !changingWizardSelection {
                 Text(wizardTitle(wizard.state)).font(.headline)
                 Text(wizardInstruction(wizard.state)).foregroundStyle(.secondary)
+                if wizard.state == .pokiSigningUnknown,
+                   let guide = URL(string: "https://github.com/JosssphZhou/poki/blob/main/docs/iphone-guide.md#update-poki") {
+                    Link(localized("Renew Poki without losing data"), destination: guide)
+                }
                 if let failure = wizard.failure, wizard.state == .signingFailed || wizard.state == .installFailed {
                     Text(failure.message).foregroundStyle(.secondary).textSelection(.enabled)
                 }
@@ -128,6 +132,7 @@ struct SetupView: View {
         case .ddiUnmounted: localized("Restore the developer disk image")
         case .appUntrusted: localized("Trust the app developer")
         case .pokiNotStarted: localized("Open Poki on your iPhone")
+        case .pokiSigningUnknown: localized("Check the Poki signature")
         case .pokiUpdateRequired: localized("Update Poki to finish setup")
         case .automationPending: localized("Enable UI Automation")
         case .completed: localized("Poki is ready")
@@ -147,6 +152,7 @@ struct SetupView: View {
         case .ddiUnmounted: localized("Keep the iPhone connected and unlocked. Poki Setup can restore the image without reinstalling Poki.")
         case .appUntrusted: localized("On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki.")
         case .pokiNotStarted: localized("Tap Poki on the iPhone Home Screen.")
+        case .pokiSigningUnknown: localized("Try opening Poki. If iOS asks you to trust its developer, open Settings › General › VPN & Device Management. If the signature has expired, keep Poki installed and renew it with the original installer, Apple Account, and signing team.")
         case .pokiUpdateRequired: localized("Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again.")
         case .automationPending: localized("On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks.")
         case .completed: localized("You can unplug the USB cable and use Poki on your iPhone.")

@@ -23,6 +23,7 @@ const COPY: Record<USBSetupStep, [string, string]> = {
   ddi_unmounted: ["Restore the developer disk image", "Keep the iPhone connected and unlocked. Poki Setup can restore the image without reinstalling Poki."],
   app_untrusted: ["Trust the app developer", "On your iPhone, open Settings › General › VPN & Device Management. Select the developer for your Apple Account and tap Trust. Follow any restart prompt, then open Poki."],
   poki_not_started: ["Open Poki on your iPhone", "Tap Poki on the iPhone Home Screen."],
+  poki_signing_unknown: ["Check the Poki signature", "Try opening Poki. If iOS asks you to trust its developer, open Settings › General › VPN & Device Management. If the signature has expired, keep Poki installed and renew it with the original installer, Apple Account, and signing team."],
   poki_update_required: ["Update Poki to finish setup", "Keep Poki installed to preserve its data. Update it with the Apple Account and tool you used to install it, then open it again."],
   automation_pending: ["Enable UI Automation", "On your iPhone, open Settings › Developer and turn on Enable UI Automation. Return to Poki, start automation and enter the iPhone passcode when iOS asks."],
   completed: ["Poki is ready", "You can unplug the USB cable and use Poki on your iPhone."],
@@ -132,6 +133,11 @@ export default function Setup() {
             )}
             <h2>{t(COPY[snapshot.state][0])}</h2>
             <p className="muted">{t(COPY[snapshot.state][1])}</p>
+            {state === "poki_signing_unknown" && (
+              <button className="link" onClick={() => openLink("https://github.com/JosssphZhou/poki/blob/main/docs/iphone-guide.md#update-poki")}>
+                {t("Renew Poki without losing data")}
+              </button>
+            )}
             {(state === "signing_failed" || state === "install_failed") && <ErrorBox error={snapshot.failure?.message ?? null} />}
             {udid && state && hasAction(state) && (
               <Capsule disabled={working} onClick={() => act(state, udid)}>

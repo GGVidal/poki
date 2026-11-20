@@ -175,12 +175,27 @@ final class AppModel {
     private var passcodeHeadsUpReconnect = true
     private var passcodeHeadsUpSeen = 0.0
     private static let automationBootKey = "automationStartedBoot"
+    private static let automationConfirmationFailedKey = "automationConfirmationFailed"
+    private var automationConfirmationFailed = UserDefaults.standard.bool(forKey: AppModel.automationConfirmationFailedKey) {
+        didSet { UserDefaults.standard.set(automationConfirmationFailed, forKey: Self.automationConfirmationFailedKey) }
+    }
+
+    var usbSetupAutomationReady: Bool {
+        setup.uiAutomation && !passcodeExpected && !automationConfirmationFailed
+    }
+
     /// Automation started in this boot: iOS will not ask again until the next restart.
     private func automationStarted() {
+        automationConfirmationFailed = false
         InProcessWDA.gate.withLock { $0.startedThisBoot = true }
         AutomationAllowance(boot: BootClock.current, at: Date()).save()
         guard UserDefaults.standard.double(forKey: Self.automationBootKey) != BootClock.current else { return }
         UserDefaults.standard.set(BootClock.current, forKey: Self.automationBootKey)
+    }
+
+    private func invalidateAutomationConfirmation() {
+        automationConfirmationFailed = true
+        writeSetupHello()
     }
     /// Continue on the note: Poki turns on, and iOS's passcode screen comes next.
     func continueAfterPasscodeHeadsUp() {
@@ -713,6 +728,8 @@ final class AppModel {
                         confirmed.uiAutomation = true
                         self.setup = confirmed
                     }
+                } else if result["code"] as? String != "open_under_way" {
+                    self.invalidateAutomationConfirmation()
                 }
                 let detail = result["detail"] as? String ?? ""
                 // iOS gives up on the passcode after a minute and says only that enabling timed out.
@@ -831,8 +848,12 @@ final class AppModel {
             log.add("setup", what)
             turnOnIfWanted()
         }
+        writeSetupHello()
+    }
+
+    private func writeSetupHello() {
         PokiHandoff.writeHello(loopbackWorking: loopback.isWorking, loopbackSay: loopback.isWorking ? nil : loopbackSentence,
-                               uiAutomationReady: setup.uiAutomation && !passcodeExpected)
+                               uiAutomationReady: usbSetupAutomationReady)
     }
 
     /// The one thing to do for the local connection, for the person, as the installer says it.
@@ -1692,6 +1713,7 @@ final class AppModel {
         if status != runner { log.add("runner", "\(status.state)\(status.detail.map { ": \($0)" } ?? "")\(status.state == "failed" && runner.state != "failed" ? " [\(networkNote)]" : "")") }
         // Events from a launcher that was stopped for idle are old news.
         guard !runnerPaused else { return }
+        if status.state == "failed", !hasOpenInProcessSession { invalidateAutomationConfirmation() }
         if preparingCellularImage, status.isRunning || status.state == "failed" || status.state == "waiting_network" {
             preparingCellularImage = false
         }
@@ -2452,7 +2474,7 @@ final class AppModel {
         case .loopback: loopback.isWorking || hasOpenInProcessSession || usesMountedImageWithoutLoopback
         // The disk image downloads by itself (and is checked again when Poki turns on): it does not hold the step open.
         case .pairing: usesMountedImageWithoutLoopback || (pairingPath != nil && pairingTrouble == nil)
-        case .automation: setup.uiAutomation
+        case .automation: usesMountedImageWithoutLoopback ? usbSetupAutomationReady : setup.uiAutomation
         case .background: background.allowed
         }
     }

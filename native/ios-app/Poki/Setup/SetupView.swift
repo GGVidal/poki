@@ -110,7 +110,7 @@ struct SetupView: View {
                 "Open **Settings › Developer**. It appears once Developer Mode is on.",
                 "Turn on **Enable UI Automation**.",
             ])
-            if model.usesMountedImageWithoutLoopback, model.passcodeExpected || !model.setup.uiAutomation {
+            if model.usesMountedImageWithoutLoopback, !model.usbSetupAutomationReady {
                 Button("Start") { model.verifyMountedImageAutomation() }
                     .disabled(model.passcodeConfirmationPending)
             } else {
@@ -893,7 +893,7 @@ struct SetupStepPage: View {
                 "Open **Settings › Developer**. It appears once Developer Mode is on.",
                 "Turn on **Enable UI Automation**.",
             ])
-            if model.usesMountedImageWithoutLoopback, model.passcodeExpected || !model.setup.uiAutomation {
+            if model.usesMountedImageWithoutLoopback, !model.usbSetupAutomationReady {
                 Button("Start") { model.verifyMountedImageAutomation() }
                     .disabled(model.passcodeConfirmationPending)
             } else {

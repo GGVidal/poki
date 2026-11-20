@@ -21,6 +21,7 @@ pub enum WizardState {
     DdiUnmounted,
     AppUntrusted,
     PokiNotStarted,
+    PokiSigningUnknown,
     PokiUpdateRequired,
     AutomationPending,
     Completed,
@@ -83,6 +84,7 @@ pub fn evaluate(probe: &WizardProbe) -> WizardState {
         if probe.poki_started {
             return if probe.automation_ready { WizardState::Completed } else { WizardState::AutomationPending };
         }
+        if app.expires_at.is_none() { return WizardState::PokiSigningUnknown; }
         if app.profile_validated == Some(false) || (app.profile_validated.is_none() && app.team_is_free) {
             return WizardState::AppUntrusted;
         }
@@ -372,6 +374,29 @@ mod tests {
         })).unwrap();
         legacy.apply(&mut remounted, current);
         assert_eq!(evaluate(&remounted), WizardState::PokiUpdateRequired);
+    }
+
+    #[test]
+    fn an_install_with_unknown_signing_offers_recovery_until_poki_answers() {
+        let mut probe = WizardProbe {
+            phone: Some(base_phone(true, Some(true))),
+            account_signed_in: true,
+            installed: Some(InstalledPokiView {
+                expires_at: None,
+                ..installed(Some(false), false)
+            }),
+            ddi_mounted: true,
+            ..Default::default()
+        };
+
+        assert_eq!(serde_json::to_value(evaluate(&probe)).unwrap(), "poki_signing_unknown");
+        probe.installed.as_mut().unwrap().profile_validated = Some(true);
+        assert_eq!(serde_json::to_value(evaluate(&probe)).unwrap(), "poki_signing_unknown");
+
+        probe.poki_started = true;
+        assert_eq!(evaluate(&probe), WizardState::AutomationPending);
+        probe.automation_ready = true;
+        assert_eq!(evaluate(&probe), WizardState::Completed);
     }
 
     #[test]
