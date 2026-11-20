@@ -1977,6 +1977,10 @@ final class AppModel {
 
     private var duoCompanionTask: UUID?
     var drivesDuoCompanion: Bool { duoCompanionTask != nil }
+    var hasVisibleDuoCompanion: Bool {
+        guard automationPath == .inProcess, let placement = PKInProcess.shared().duoPlacement() else { return false }
+        return placement != "fullscreen"
+    }
 
     /// The chat ended without reporting a result: the Live
     /// Activity's quiet wait finishes the run, as it does an outside agent's.
@@ -1987,7 +1991,7 @@ final class AppModel {
     /// The chat's task began (Poki is in front): the Live Activity is there for it, with no old plan.
     /// The chat says when the task ends (chatTaskEnded), so until then a pause between steps, while the
     /// model thinks, never reads as the end of the run (ESP-954).
-    func chatTaskBegan(splitViewSession: String? = nil) {
+    func chatTaskBegan(splitViewSession: String? = nil) async {
         log.add("session-timing", String(format: "task_submitted uptime=%.6f", ProcessInfo.processInfo.systemUptime))
         chatTaskActive = automationPath == .inProcess
         if chatTaskActive { lastAgentActivity = Date() }
@@ -1999,7 +2003,14 @@ final class AppModel {
         lastShot = nil
         activitySplitViewSession = splitViewSession
         activity.setChatOwnsCompletion(true)
-        // The owner sees at once that Poki took the task: the Live Activity (started here, while
+        if drivesDuoCompanion {
+            prepareForTask()
+            if let sessionStartTask { await sessionStartTask.value }
+            let bound = sessionOn && !Task.isCancelled ? await core.bindCompanionTarget() : false
+            log.add("runner", bound ? "Duo companion bound before the model started" : "Duo companion could not be bound at task start")
+        }
+        guard !Task.isCancelled else { return }
+        // The owner sees that Poki took the task: the Live Activity (started here, while
         // Poki is in front) and iOS's background line say so before the model's first answer.
         if sessionOn {
             activity.update { state in

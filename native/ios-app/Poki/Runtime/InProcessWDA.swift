@@ -168,6 +168,9 @@ final class InProcessWDA: HTTPTransport, @unchecked Sendable {
                 }
                 return try self.touch(fingers, into: other)
             },
+            "POST /poki/companion-target": { [unowned self] _, _ in
+                .bool(self.native.bindDuoCompanionTarget())
+            },
             "POST /poki/workspace-launcher": { [unowned self] body, _ in
                 let labels = body?["labels"]?.array?.compactMap(\.string) ?? []
                 guard !self.native.hasSelectedPane, let menu = body?["menu"]?.bool, !labels.isEmpty else {

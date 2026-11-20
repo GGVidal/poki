@@ -2117,6 +2117,33 @@ static const NSTimeInterval PKWorkspaceFrontSeconds = 4.0;
 static const NSTimeInterval PKFrontSeconds = 2.0;
 static const int PKFrontKey = -1;
 
+- (BOOL)bindDuoCompanionTarget {
+    PKDuoCompanionTask *task = self.duoCompanionTask;
+    if (!task || !self.isPokiSceneVisible) return NO;
+    if (task.target) return YES;
+    PKDisplayGeometry display = self.displayGeometry;
+    if (CGRectIsNull(display.peer)) return NO;
+    PKOutcome *refused;
+    uint64_t generation = 0;
+    id session = [self current:&generation outcome:&refused];
+    if (!session) return NO;
+    id ax = [self accessibilityFor:generation];
+    PKWorkspace *target = PKBounded(PKFrontKey, PKFrontSeconds, NULL, ^id {
+        id element = nil;
+        PKWorkspace *workspace = [self companionOn:display ax:ax session:session generation:generation known:nil element:&element];
+        if (!workspace) return nil;
+        workspace.targetBundle = [self bundleForPID:PKAXPid(element) session:session];
+        return workspace.targetBundle.length ? workspace : nil;
+    });
+    if (!target || !self.isPokiSceneVisible || !PKSameDisplay(display, self.displayGeometry) ||
+        ![_sessions isCurrent:session generation:generation]) return NO;
+    @synchronized (self) {
+        if (task != _duoCompanionTask) return NO;
+        if (!task.target) task.target = target;
+        return YES;
+    }
+}
+
 /// The front app's AX element, with its bundle id and pid in `info`.
 - (id)front:(NSDictionary **)info ax:(id *)client {
     return [self front:info ax:client code:NULL];
@@ -2173,18 +2200,10 @@ static const int PKFrontKey = -1;
             PKWorkspace *companion = [weakSelf companionOn:geometry ax:ax session:session generation:generation known:nil element:&chosen];
             if (!companion) return @{};
             if (companionTask) {
-                NSString *bundle = [owner bundleForPID:PKAXPid(chosen) session:session];
-                if (!bundle.length || !owner.isPokiSceneVisible || !PKSameDisplay(geometry, owner.displayGeometry)) return @{};
-                @synchronized (owner) {
-                    if (companionTask != owner->_duoCompanionTask) return @{};
-                    if (!companionTask.target) {
-                        companion.targetBundle = bundle;
-                        companionTask.target = companion;
-                    }
-                }
                 PKWorkspace *target = companionTask.target;
+                if (!target || target.selectRight != companion.selectRight) return @{};
                 int targetPID = target.selectRight ? target.rightPID : target.leftPID;
-                if (target.selectRight != companion.selectRight || targetPID != PKAXPid(chosen)) return @{};
+                if (targetPID != PKAXPid(chosen)) return @{};
             }
             pane = companion.selectRight ? companion.right : companion.left;
             paneLocal = companion.paneLocal;

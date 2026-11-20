@@ -121,6 +121,7 @@ static long long capturedDisplayID;
 
 @interface PKInProcess (CompanionTask)
 - (BOOL)beginDuoCompanionTask;
+- (BOOL)bindDuoCompanionTarget;
 @end
 
 static XCUIScreen *panel(long long displayID, CGSize grid, CGSize picture, UIColor *color) {
@@ -293,7 +294,7 @@ static BOOL checkRecoveredCompanionEdge(PKDisplayGeometry scene, CGSize crop) {
         CGPointEqualToPoint(session.gesture.path.start, CGPointMake(100, 531));
 }
 
-static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop) {
+static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop, BOOL switchBeforeRead) {
     CompanionFixture *runner = companion(scene);
     AXNode *button = [AXNode new];
     button.elementType = 9;
@@ -305,7 +306,8 @@ static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop) {
     root.children = @[button];
     runner.snapshot = root;
     if ([runner respondsToSelector:@selector(beginDuoCompanionTask)] && ![runner beginDuoCompanionTask]) return NO;
-    if (!checkShot(runner, 2, crop, 255, @"before replacing Poki", YES)) return NO;
+    if ([runner respondsToSelector:@selector(bindDuoCompanionTarget)] && ![runner bindDuoCompanionTarget]) return NO;
+    if (!switchBeforeRead && !checkShot(runner, 2, crop, 255, @"before replacing Poki", YES)) return NO;
 
     runner.pokiHidden = YES;
     runner.own.processIdentifier = getpid() + 2;
@@ -314,7 +316,8 @@ static BOOL checkCompanionAfterSwitch(PKDisplayGeometry scene, CGSize crop) {
     scene.peer = CGRectNull;
     scene.panePlacementKnown = NO;
     runner.scene = scene;
-    if (!checkShot(runner, 2, crop, 255, @"same target after Clock replaces Poki", YES)) return NO;
+    NSString *scenario = switchBeforeRead ? @"first read after Clock replaces Poki" : @"same target after Clock replaces Poki";
+    if (!checkShot(runner, 2, crop, 255, scenario, YES)) return NO;
     NSString *xml = [runner sourceXML:NULL code:NULL];
     if (![xml containsString:@"label=\"Calculator\" x=\"24\" y=\"80\""]) return NO;
     CGRect viewport = runner.viewport;
@@ -399,7 +402,8 @@ int main(void) {
         geometry.panePlacementKnown = YES;
         BOOL inset = checkInsetWindow(geometry, crop);
         BOOL activation = checkCompanionActivation(geometry);
-        BOOL afterSwitch = checkCompanionAfterSwitch(geometry, crop);
-        return launchPlacement && recoveredEdge && picture && inset && activation && afterSwitch ? 0 : 1;
+        BOOL afterSwitch = checkCompanionAfterSwitch(geometry, crop, NO);
+        BOOL switchBeforeRead = checkCompanionAfterSwitch(geometry, crop, YES);
+        return launchPlacement && recoveredEdge && picture && inset && activation && afterSwitch && switchBeforeRead ? 0 : 1;
     }
 }
