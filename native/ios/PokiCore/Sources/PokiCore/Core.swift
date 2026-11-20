@@ -95,13 +95,22 @@ public struct CoreConfig: Sendable {
 public enum RunnerState: Sendable, Equatable {
     case running
     case starting(String)
+    case awaitingAutomationAuthorization(String)
     case failed(String, fix: String?)
 
     public var isRunning: Bool { self == .running }
+
+    var isStarting: Bool {
+        switch self {
+        case .starting, .awaitingAutomationAuthorization: true
+        case .running, .failed: false
+        }
+    }
+
     public var describe: String {
         switch self {
         case .running: return "running"
-        case .starting(let detail): return "starting (\(detail))"
+        case .starting(let detail), .awaitingAutomationAuthorization(let detail): return "starting (\(detail))"
         case .failed(let detail, let fix): return "failed: \(detail)" + (fix.map { ". Fix on the phone: \($0)" } ?? "")
         }
     }
@@ -654,6 +663,9 @@ public final class PokiCore: @unchecked Sendable {
         let activity = ToolActivity(id: UUID().uuidString, name: name, summary: name == "do" ? computer.labels(actions) : "Look at the screen", started: Date(), session: local ? nil : session)
         // One tool call at a time per phone; a second waits briefly, then says what the first is doing.
         guard await gate.enter(waiting: config.busyWait) else {
+            if case .awaitingAutomationAuthorization? = host?.currentRunner {
+                return ToolResult(text: "Poki is waiting for the owner to authorize automation. Nothing was sent.", jpeg: nil, waitingForOwner: true)
+            }
             if computer.hasLocalWorkspace {
                 return ToolResult(text: "busy: Poki is still working in Split View; nothing was sent.", jpeg: nil, isError: true)
             }
@@ -670,6 +682,7 @@ public final class PokiCore: @unchecked Sendable {
         emit(.toolStarted(activity))
         // The owner's time on an approval, and the runner's start, come on top of the tool's own time.
         let deadline = config.toolDeadline + (name == "do" ? config.approvalWait : 0) + config.runnerWait + 1
+            + (local ? Computer.authorizationWait : 0)
         var output: ToolResult
         computer.failureLog.value = nil
         do {
@@ -680,7 +693,7 @@ public final class PokiCore: @unchecked Sendable {
                     }
                     return await computer.look(full: args["full"]?.bool ?? false, pane: args["pane"]?.string, session: session, local: local, expectedApps: expectedApps)
                 }
-                return await computer.act(actions: actions, full: args["full"]?.bool ?? false, finish: args["finish"]?.bool ?? false, session: session, answerBy: answerBy, app: args["app"], byOwnersVoice: byOwnersVoice)
+                return await computer.act(actions: actions, full: args["full"]?.bool ?? false, finish: args["finish"]?.bool ?? false, session: session, answerBy: answerBy, app: args["app"], byOwnersVoice: byOwnersVoice, local: local)
             }
         } catch {
             // Never reached in practice (every step has its own deadline), but a call always answers.
@@ -721,7 +734,7 @@ public final class PokiCore: @unchecked Sendable {
     func status() -> ToolResult {
         let state = host?.currentRunner
         var waitingForOwner = computer.handoffWaiting
-        if case .starting? = state { waitingForOwner = true }
+        if state?.isStarting == true { waitingForOwner = true }
         var lines = ["runner: \(state?.describe ?? "unknown")"]
         if let relay { lines.append("relay: \(relay.stateDescription)") }
         if let p = approvals.pending { lines.append("approval waiting on the phone: \(p.summary) (\(p.reason), id \(p.id))") }

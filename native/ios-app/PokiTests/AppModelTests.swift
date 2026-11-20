@@ -568,9 +568,9 @@ final class InProcessPasscodeTests: XCTestCase {
     }
 
     /// A fresh model on an iPhone running this iOS major version, with Poki on.
-    private func useSystem(_ major: Int) {
+    private func useSystem(_ major: Int, transport: HTTPTransport? = nil) {
         model?.stopSession()
-        model = AppModel(launcher: launcher, pairer: FakePairing(), automation: session,
+        model = AppModel(launcher: launcher, pairer: FakePairing(), automation: session, transport: transport,
                          systemVersion: OperatingSystemVersion(majorVersion: major, minorVersion: 6, patchVersion: 1))
         model.loopback.simulate(.working(ms: 9))
         model.setup.loopback = .proxy
@@ -1037,6 +1037,31 @@ final class InProcessPasscodeTests: XCTestCase {
         session.answer(["ok": false, "code": "missing_framework"])
         await waitFor("the second local failure is reported") { self.model.host.currentRunner.describe.contains("missing_framework") }
         XCTAssertEqual(launcher.restarts, restarts + 1, "one retry while the loopback stays up")
+    }
+
+    func testLocalPhoneReadContinuesAfterTheOwnerAllowsAutomation() async throws {
+        let transport = SessionScreenTransport(session: session)
+        useSystem(27, transport: transport)
+        await prepareWithoutPhoneTask()
+        session.holdNextOpen()
+
+        let reading = Task { await model.runTool("look", arguments: "{}") }
+        await waitFor("the local phone step is opening automation") { self.session.isHoldingOpen }
+        session.setAuthorizationWait(4)
+        model.checkIdle()
+
+        XCTAssertTrue(model.passcodeHint)
+        XCTAssertEqual(transport.screenReads, 0)
+        try await captureSessionState("owner-authorization-waiting")
+
+        session.answer(nil)
+        let screen = await reading.value
+
+        XCTAssertFalse(model.passcodeHint)
+        XCTAssertFalse(screen.isError, screen.text)
+        XCTAssertTrue(screen.text.contains("General"), screen.text)
+        XCTAssertEqual(transport.screenReads, 1, "the original read gets the screen after authorization")
+        try await captureSessionState("owner-authorization-ready")
     }
 
     func testAPasscodeWaitAsksTheOwnerAndTellsTheAgentWhoMustEnterIt() async throws {

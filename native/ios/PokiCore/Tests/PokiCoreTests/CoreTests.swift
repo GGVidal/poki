@@ -54,6 +54,49 @@ final class LoopbackWaitTests: XCTestCase {
     }
 }
 
+final class AutomationAuthorizationTests: XCTestCase {
+    func testOriginalLookReadsTheScreenAfterTheOwnerAllowsAutomation() async {
+        let (core, wda, host) = makeCore { $0.runnerWait = 0 }
+        host.state.value = .awaitingAutomationAuthorization("the owner is entering the passcode")
+        host.readRunnerState.value = {
+            wda.source([("StaticText", "Screen after authorization")])
+            return .running
+        }
+
+        let screen = await core.callTool("look", arguments: "{}")
+
+        XCTAssertFalse(screen.isError, screen.text)
+        XCTAssertTrue(screen.text.contains("Screen after authorization"), screen.text)
+        XCTAssertNotNil(screen.jpeg)
+    }
+
+    func testDecliningAutomationEndsTheOriginalLookWithoutReadingTheScreen() async {
+        let (core, wda, host) = makeCore { $0.runnerWait = 0 }
+        host.state.value = .awaitingAutomationAuthorization("the owner is entering the passcode")
+        host.readRunnerState.value = { .failed("the owner cancelled automation authorization", fix: nil) }
+
+        let screen = await core.callTool("look", arguments: "{}")
+
+        XCTAssertTrue(screen.isError, screen.text)
+        XCTAssertTrue(screen.text.contains("the owner cancelled automation authorization"), screen.text)
+        XCTAssertNil(screen.jpeg)
+        XCTAssertTrue(wda.sent.isEmpty)
+    }
+
+    func testAnActionWaitingForAuthorizationRequiresAReadOfTheNewScreen() async {
+        let (core, wda, host) = makeCore { $0.runnerWait = 0 }
+        host.state.value = .awaitingAutomationAuthorization("the owner is entering the passcode")
+        host.readRunnerState.value = { .running }
+
+        let step = await core.callTool("do", arguments: #"{"actions":[{"tap":[20,100]}]}"#)
+
+        XCTAssertTrue(step.text.contains("Call look to read the current screen"), step.text)
+        XCTAssertTrue(step.text.contains("Nothing was sent"), step.text)
+        XCTAssertTrue(wda.sent.isEmpty)
+    }
+
+}
+
 final class ToolTests: XCTestCase {
     func testSentDialogTouchesDoNotConfirmAnUnchangedScreen() async {
         let (core, wda, _) = makeCore()

@@ -518,8 +518,11 @@ final class Computer: @unchecked Sendable {
     }
 
     func lookNow(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil) async -> ToolResult {
-        let until = now() + config.toolDeadline
-        if let blocked = await waitForRunner(until: until) { return blocked }
+        let until: Double
+        switch await waitForRunner(until: now() + config.toolDeadline, authorization: local ? .read : .none) {
+        case .ready(let deadline): until = deadline
+        case .blocked(let result): return result
+        }
         if let selectedPane, selectedPane.session != session, (hasLocalWorkspace || !beginsTask() || pane == nil) { return workspaceInUse() }
         if let pane {
             if let failure = await selectPane(pane, session: session, until: until) { return failure }
@@ -775,33 +778,50 @@ final class Computer: @unchecked Sendable {
         (try? await runner.raw("GET", "/wda/locked", timeout: 1, countsAsMiss: false))?.bool ?? false
     }
 
-    /// The app stops the runner when no agent is using the phone, and asking for its state wakes it.
-    /// The call asks once, as it begins. While it is starting, the call waits for it (every 250 ms,
-    /// at most `runnerWait`, within the call's deadline) and then goes on; a failed runner is answered
-    /// at once, with its fix. Waiting only reads the state: a failure heard while waiting ends this
-    /// call without another open behind it, and the next call asks again.
-    func waitForRunner(until: Double) async -> ToolResult? {
+    static let authorizationWait: Double = 90
+
+    private enum AuthorizationWait { case none, read, action }
+
+    private enum RunnerReadiness {
+        case ready(deadline: Double)
+        case blocked(ToolResult)
+    }
+
+    private func waitForRunner(until: Double, authorization: AuthorizationWait) async -> RunnerReadiness {
         var state = host.runnerState()
-        // A runner seen starting is a new process: what the last one was finishing, and its settings,
-        // went with it (seen in the gym: after a restart the first call still waited on a request the
-        // old runner had been serving).
-        var restarted = false
-        if case .starting = state { restarted = true }
-        let waitUntil = min(now() + config.runnerWait, until - config.readTimeout - 1)
-        while case .starting = state, now() < waitUntil {
+        let wasStarting = state.isStarting
+        let startupDeadline = min(now() + config.runnerWait, until - config.readTimeout - 1)
+        var authorizationDeadline: Double?
+        while state.isStarting, !Task.isCancelled {
+            if authorization != .none, case .awaitingAutomationAuthorization = state, authorizationDeadline == nil {
+                authorizationDeadline = now() + Self.authorizationWait
+            }
+            guard now() < (authorizationDeadline ?? startupDeadline) else { break }
             await sleep(seconds: 0.25)
             state = host.currentRunner
         }
-        if restarted { runner.forgetRunner() }
-        guard !state.isRunning else { return nil }
-        let why = runner.lastRestart.value.map { "runner: \($0)\n" } ?? ""
-        // A runner that is starting (the first start after a restart can wait for the owner's
-        // password or Developer Mode on the phone) is not an error: the model keeps polling look
-        // or status every few seconds and goes on when it is up; the owner is told on the phone.
-        if case .failed = state {
-            return ToolResult(text: "runner: \(state.describe)\nNothing was sent. Fix it on the phone, then call look again.", jpeg: nil, isError: true)
+        if Task.isCancelled {
+            return .blocked(ToolResult(text: "Task stopped. Nothing was sent.", jpeg: nil, isError: true))
         }
-        return ToolResult(text: "\(why)runner: \(state.describe)\nNothing was sent. It is still starting (the first start after a restart can wait for the owner to enter their password on the phone, which the phone asks them for); call look or status again every few seconds, and go on with the task when it answers with the screen.", jpeg: nil, isError: false, waitingForOwner: true)
+        if wasStarting { runner.forgetRunner() }
+        if let authorizationDeadline, now() >= authorizationDeadline {
+            return .blocked(ToolResult(text: "Poki stopped waiting for automation authorization. Nothing was sent.", jpeg: nil, isError: true))
+        }
+        if state.isRunning {
+            if authorizationDeadline != nil {
+                // The owner may have left the phone on a different screen while approving automation.
+                if authorization == .action {
+                    return .blocked(ToolResult(text: "Automation is ready. Nothing was sent. Call look to read the current screen before choosing the next action.", jpeg: nil))
+                }
+                return .ready(deadline: now() + config.toolDeadline)
+            }
+            return .ready(deadline: until)
+        }
+        let why = runner.lastRestart.value.map { "runner: \($0)\n" } ?? ""
+        if case .failed = state {
+            return .blocked(ToolResult(text: "runner: \(state.describe)\nNothing was sent. Fix it on the phone, then call look again.", jpeg: nil, isError: true))
+        }
+        return .blocked(ToolResult(text: "\(why)runner: \(state.describe)\nNothing was sent. It is still starting (the first start after a restart can wait for the owner to enter their password on the phone, which the phone asks them for); call look or status again every few seconds, and go on with the task when it answers with the screen.", jpeg: nil, isError: false, waitingForOwner: true))
     }
 
     // MARK: do
@@ -838,7 +858,7 @@ final class Computer: @unchecked Sendable {
 
     /// `byOwnersVoice`: the Voice tab's model acting for the owner, not the agent: it is not held back
     /// by a step handed to the owner, and it leaves the agent's unused approval in place.
-    func act(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, app: JSON? = nil, byOwnersVoice: Bool = false) async -> ToolResult {
+    func act(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, app: JSON? = nil, byOwnersVoice: Bool = false, local: Bool = false) async -> ToolResult {
         var actions = actions
         var bound: String?
         if config.appNames() {
@@ -860,7 +880,7 @@ final class Computer: @unchecked Sendable {
             }
             if let kept = sessionApp, kept.session == session { bound = kept.bundle }
         }
-        var result = restartNote(await actNow(actions: actions, full: full, finish: finish, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice))
+        var result = restartNote(await actNow(actions: actions, full: full, finish: finish, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice, local: local))
         if finish { sessionApp = nil }
         else if let bound, let kept = sessionApp, let front = lastForeground?.bundleID, front != bound, !config.isPoki(lastForeground) {
             result.text += "\nthe session's app \(kept.name) (\(bound)) is not in front; \(lastForeground?.describe ?? front) is. app: \"\(kept.name)\" brings it back; app: false lets go of it"
@@ -901,14 +921,17 @@ final class Computer: @unchecked Sendable {
         return action
     }
 
-    func actNow(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, byOwnersVoice: Bool = false) async -> ToolResult {
+    func actNow(actions: [JSON], full: Bool, finish: Bool = false, session: String? = nil, answerBy: Double? = nil, byOwnersVoice: Bool = false, local: Bool = false) async -> ToolResult {
         scrollFound = nil
         typedInto = nil
         var started = now()
         let callStarted = started
         var approvalWaited = 0.0
-        var until = started + config.toolDeadline
-        if let blocked = await waitForRunner(until: until) { return blocked }
+        var until: Double
+        switch await waitForRunner(until: started + config.toolDeadline, authorization: local ? .action : .none) {
+        case .ready(let deadline): until = deadline
+        case .blocked(let result): return result
+        }
         if let selectedPane, selectedPane.session != session { return workspaceInUse() }
         // The app the owner is in before anything is sent: the read before may be another task's.
         if beginsTask() {

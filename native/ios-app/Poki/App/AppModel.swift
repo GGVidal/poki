@@ -190,9 +190,15 @@ final class AppModel {
         startSession(reconnectLocal: passcodeHeadsUpReconnect)
     }
     func cancelPasscodeHeadsUp() {
+        let wasHoldingAnOpen = passcodeHeldOpen != nil
         passcodeConfirmationPending = false
         passcodeHeadsUp = false
         passcodeHeldOpen = nil
+        if wasHoldingAnOpen {
+            InProcessWDA.gate.withLock { $0.declined = true }
+            inProcessSession = .failed(code: "passcode_declined", detail: "the owner cancelled automation authorization")
+            host.update(runner: coreState(of: runner))
+        }
     }
     /// The in-process open waiting for Continue on the passcode note: its reason.
     private var passcodeHeldOpen: String?
@@ -633,6 +639,7 @@ final class AppModel {
             passcodeHeldOpen = why
             passcodeConfirmationPending = true
             passcodeHeadsUp = true
+            host.update(runner: coreState(of: runner))
             log.add("runner", "first automation since this iPhone restarted: requested notice that iOS will ask for the passcode")
             return
         }
@@ -1233,6 +1240,8 @@ final class AppModel {
     }
 
     func stopSession() {
+        let awaitingAuthorization = passcodeConfirmationPending || inProcessPasscode
+        cancelPasscodeHeadsUp()
         sessionStartTask?.cancel()
         pendingPrepareForTask = false
         preparingCellularImage = false
@@ -1259,6 +1268,7 @@ final class AppModel {
         background.stop()
         activity.end()
         sessionOn = false
+        if awaitingAuthorization { host.update(runner: .failed("Poki was turned off", fix: nil)) }
         chatTaskActive = false
         stepUnderWay = nil
         runner = .idle
@@ -1350,10 +1360,15 @@ final class AppModel {
             return
         }
         if automationPath == .inProcess {
+            let awaitingAuthorization = passcodeConfirmationPending || inProcessPasscode
+            if awaitingAuthorization { cancelPasscodeHeadsUp() }
             Task { [core] in _ = await core.finishTask(switching: false) }
             // The owner's own Stop ends the session; standing by on its own keeps it where the policy says so.
             closeInProcess("standing by", keepingSession: !byOwner && idleSessionPolicy == .pauseAutomation)
             standBy(reason: reason)
+            if awaitingAuthorization {
+                host.update(runner: .failed("Poki was stopped while waiting for automation authorization", fix: nil))
+            }
             return
         }
         log.add("runner", "stopping: \(reason)")
@@ -1647,6 +1662,9 @@ final class AppModel {
     func coreState(of status: RunnerStatus) -> RunnerState {
         // In-process, a running launcher only mounted the disk image; tools wait for the session.
         if automationPath == .inProcess, status.state == "running", inProcessSession != .open {
+            if passcodeConfirmationPending {
+                return .awaitingAutomationAuthorization(AppLocalization.text(Self.passcodeConfirmationMessage))
+            }
             return inProcessSession.agentState
         }
         if status.code == "passcode" {
@@ -2046,7 +2064,7 @@ final class AppModel {
             if !sessionStarting { startSession() }
             if let task = sessionStartTask { await task.value }
         }
-        if passcodeConfirmationPending {
+        if passcodeConfirmationPending, automationPath != .inProcess || !sessionOn {
             return PokiCore.ToolAnswer(text: "not_sent: \(AppLocalization.text(Self.passcodeConfirmationMessage)) Nothing was sent.", jpeg: nil, isError: true)
         }
         guard sessionOn else {
