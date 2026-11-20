@@ -146,25 +146,26 @@ jobs:
           calls = chat.get("calls", [])
           names = [c["name"] for c in calls]
           finished = names[-1:] == ["finish_task"]
-          reads = calls[2:-1] if finished else calls[2:]
+          open_count = names.count("do")
+          reads = calls[1 + open_count:-1] if finished else calls[1 + open_count:]
           need(not chat.get("running", True), "the chat's task ended")
-          need(names[:2] == ["report_plan", "do"] and finished and
-               1 <= len(reads) <= 3 and all(c["name"] == "look" for c in reads),
-               f"pi ran the scripted calls with bounded read retries ({names})")
+          need(1 <= open_count <= 3 and 1 <= len(reads) <= 3 and
+               names == ["report_plan"] + ["do"] * open_count + ["look"] * len(reads) + ["finish_task"],
+               f"pi ran the scripted calls with bounded open and read retries ({names})")
           need(names[:1] == ["report_plan"] and calls[0]["ok"] and finished and calls[-1]["ok"],
                "planning and finishing succeeded")
           need(bool(reads) and reads[-1]["ok"] and all(not c["ok"] for c in reads[:-1]),
                "the last Settings read succeeded after any failed reads")
-          need(any(r.get("observed_settings") for r in requests), "a fresh read identified Settings")
-          if len(calls) > 1 and calls[1]["name"] == "do" and not calls[1]["ok"]:
-              print("The open call returned an error; the later Settings read must verify the outcome.")
+          need(sum(bool(r.get("observed_settings")) for r in requests) == 2,
+               "a fresh read identified Settings in each task")
           need(any("Settings is open" in r for r in chat.get("replies", [])), "Poki answered in the chat")
           need(not chat.get("problems"), f"no problem notes ({chat.get('problems')})")
           need(steps.get("chat_saved", {}).get("saved") is True, "the chat was saved as a session")
           need(any(r["pictures"] > 0 for r in requests), "a screenshot reached the model")
           need(any("look" in r["tools"] and "finish_task" in r["tools"] for r in requests), "the model saw Poki's tools")
           handoff = steps.get("ask_poki", {})
-          need(handoff.get("error") is False and "Settings is open" in handoff.get("text", ""), "ask_poki returned Poki's result")
+          need(handoff.get("error") is False and "result: done: Settings is open" in handoff.get("text", ""),
+               "ask_poki returned Poki's completed result")
           need(steps.get("handoff_saved", {}).get("count", 0) >= 1, "the hand-off was saved as a session")
           sys.exit(1 if failures else 0)
           PY

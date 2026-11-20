@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""A scripted OpenAI-compatible model for the on-device agent's end-to-end check (ios-agent-chat.yml).
+"""A scripted OpenAI-compatible model for the on-device agent's end-to-end check (ios-app.yml).
 
 Poki's chat is pointed at http://127.0.0.1:8765/v1 as a custom endpoint. Each conversation follows the
-same script, with a bounded retry when the simulator cannot read Settings:
+same script, with bounded retries when an open was refused as busy or a read failed:
 
-  report_plan → do (open Settings) → look (up to three attempts) → finish_task → a plain answer
+  report_plan → do (open Settings) → look → finish_task → a plain answer
 
 so the real pi loop in the app runs real look and do calls on the simulator. Every request is summed up
 in a JSON line (roles, tool names, whether a screenshot came back) for the workflow to check.
@@ -25,31 +25,39 @@ SCRIPT = [
 ]
 ANSWER = "Done: Settings is open on the iPhone, and I can see its list."
 READ_FAILED = "I could not read Settings on the iPhone."
-MAX_LOOK_ATTEMPTS = 3
+MAX_ATTEMPTS = 3
 SETTINGS_NAMES = {"Settings", "设置", "設定", "com.apple.Preferences"}
 
 
 def next_step(messages):
     results = [message for message in messages if message.get("role") == "tool"]
-    if len(results) < 3:
+    if len(results) < 2:
         return SCRIPT[len(results)], None
 
-    latest = results[-1]
-    call_id = latest.get("tool_call_id")
-    name = next(
-        (call["function"]["name"] for message in messages if message.get("role") == "assistant"
-         for call in (message.get("tool_calls") or []) if call.get("id") == call_id),
-        None,
-    )
+    call_names = {
+        call["id"]: call["function"]["name"]
+        for message in messages if message.get("role") == "assistant"
+        for call in (message.get("tool_calls") or [])
+    }
+    result_names = [call_names.get(result.get("tool_call_id")) for result in results]
+    name = result_names[-1]
+    content = results[-1].get("content") or ""
+    if name == "do":
+        first_line = content.partition("\n")[0]
+        if first_line.startswith("busy: ") and "nothing was sent" in first_line:
+            if result_names.count("do") < MAX_ATTEMPTS:
+                return SCRIPT[1], None
+            return None, READ_FAILED
+        return SCRIPT[2], None
     if name == "finish_task":
         return None, ANSWER
     if name != "look":
         return None, READ_FAILED
 
-    lines = (latest.get("content") or "").splitlines()
+    lines = content.splitlines()
     if any(line.startswith("app: ") and line[5:].partition("   read:")[0] in SETTINGS_NAMES for line in lines):
         return SCRIPT[3], None
-    if len(results) - 2 < MAX_LOOK_ATTEMPTS and any(line.startswith("read: failed (") for line in lines):
+    if result_names.count("look") < MAX_ATTEMPTS and any(line.startswith("read: failed (") for line in lines):
         return SCRIPT[2], None
     return None, READ_FAILED
 
@@ -90,6 +98,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         tool, reply = next_step(body.get("messages", []))
         line = summary(body)
+        line["next_tool"] = tool[0] if tool else None
         line["observed_settings"] = tool is not None and tool[0] == "finish_task"
         with open(self.log_path, "a") as f:
             f.write(json.dumps(line) + "\n")
