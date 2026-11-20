@@ -318,10 +318,15 @@ final class RoutineTests: XCTestCase {
             },
             {
               "name": "步骤里带设置",
-              "description": "顶层没有记录 App",
+              "description": "A legacy skill attributed to the first app",
+              "app": "com.tencent.xin",
               "steps": [
                 {"action": {"tap": "@"}, "app": "com.apple.springboard"},
-                {"action": {"tap": "@"}, "target": {"type": "Button", "label": "通用", "x": 100, "y": 120}, "app": "com.apple.Preferences"}
+                {"action": {"tap": "@"}, "target": {"type": "Button", "label": "Discover", "x": 100, "y": 120}, "app": "com.tencent.xin"},
+                {"action": {"launch": "com.apple.Preferences"}, "app": "com.tencent.xin"},
+                {"action": {"tap": "@"}, "target": {"type": "Button", "label": "通用", "x": 100, "y": 120}, "app": "com.apple.Preferences"},
+                {"action": {"wait": 100}, "app": "com.tencent.xin"},
+                {"action": {"button": "home"}, "app": "com.tencent.xin"}
               ],
               "params": {},
               "expect": [],
@@ -374,6 +379,18 @@ final class RoutineTests: XCTestCase {
         let exported = String(decoding: exportedData, as: UTF8.self)
         XCTAssertTrue(exported.contains("\"schema\" : \"poki.agent-backup/2\""), exported)
         XCTAssertTrue(exported.contains("\"skills\""), exported)
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(legacyJSON.utf8)) as? [String: Any])
+        let migrated = try XCTUnwrap(JSONSerialization.jsonObject(with: exportedData) as? [String: Any])
+        let originalSkills = try XCTUnwrap(original["routines"] as? [[String: Any]])
+        let migratedSkills = try XCTUnwrap(migrated["skills"] as? [[String: Any]])
+        for old in originalSkills {
+            let name = try XCTUnwrap(old["name"] as? String)
+            var before = old
+            var after = try XCTUnwrap(migratedSkills.first { $0["name"] as? String == name })
+            before.removeValue(forKey: "app")
+            after.removeValue(forKey: "app")
+            XCTAssertEqual(before as NSDictionary, after as NSDictionary, "Migration must preserve the skill content and run history")
+        }
         let roundTripped = RoutineStore(url: nil)
         _ = try roundTripped.importData(exportedData, by: "test")
         XCTAssertEqual(roundTripped.skills.map(\.name).sorted(), imported.skills.map(\.name).sorted())
