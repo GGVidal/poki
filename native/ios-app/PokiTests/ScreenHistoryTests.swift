@@ -84,6 +84,8 @@ final class ScreenHistoryTests: XCTestCase {
             (.notPaired, "Pair this iPhone in Settings › Connection to start recording."),
             (.task, "Automation is using the screen. Recording resumes when it releases the screen."),
             (.locked, "Unlock this iPhone to resume recording."),
+            (.backgroundExpired, "iOS paused background recording. Open Poki to resume."),
+            (.readFailed, "Poki couldn’t read the screen. It will try again."),
             (.waiting, "Starting recording…"),
             (.reading, "Recording"),
         ]
