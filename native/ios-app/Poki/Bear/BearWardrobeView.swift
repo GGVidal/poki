@@ -25,16 +25,12 @@ struct BearWardrobeOverlay: View {
                             .background(WardrobeTheme.panel, in: WardrobeTheme.sheet)
                     }
                     .frame(maxWidth: 520)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityAction(.escape) { close() }
                     .transition(panelTransition)
                     .accessibilityHidden(mixing)
                     .zIndex(1)
 
                     if mixing {
                         BearMixView { mixing = false }
-                            .accessibilityElement(children: .contain)
-                            .accessibilityAction(.escape) { mixing = false }
                             .transition(reduceMotion ? .opacity : .move(edge: .trailing))
                             .zIndex(2)
                     }
@@ -45,6 +41,7 @@ struct BearWardrobeOverlay: View {
         }
         .allowsHitTesting(isPresented)
         .accessibilityHidden(!isPresented)
+        .accessibilityAction(.escape) { if mixing { mixing = false } else { close() } }
         .animation(reduceMotion ? .easeInOut(duration: 0.15) : .easeInOut(duration: 0.27), value: mixing)
     }
 

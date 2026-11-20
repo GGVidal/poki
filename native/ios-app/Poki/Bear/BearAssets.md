@@ -10,4 +10,4 @@ Copyright (c) 2026 Joseph Zhou (周瑟夫). All rights reserved, to the extent t
 
 ## Outfit models
 
-Each set has two USDZ files, one for headwear and one for clothes. Both use the joint names from `PokiBear.usdz`. The headwear follows the head joint. The sleeves and cuffs use weights from the matching arm mesh. The rest of the garment follows the body joint. The meshes bind to the bear's relaxed standing pose. Mesh names that start with `Primary_` or `Accent_` identify the garment colors the app can change.
+Each set has two USDZ files, one for headwear and one for clothes. Both use the joint names from `PokiBear.usdz`. The headwear follows the head joint. The sleeves and cuffs use weights from the matching arm mesh. The torso and hem use weights from the bear's torso, including the shoulder joints. The garments are fitted in the relaxed standing pose and exported in the bear's bind pose. Mesh names that start with `Primary_` or `Accent_` identify the garment colors the app can change.
