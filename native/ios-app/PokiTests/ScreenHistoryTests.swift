@@ -9,7 +9,7 @@ import XCTest
 /// them, through the same call a run makes.
 @MainActor
 final class ScreenHistoryTests: XCTestCase {
-    private let keys = ["history.enabled", "history.listMode", "history.excluded", "history.included"]
+    private let keys = [HistoryCapture.enabledKey, "history.listMode", "history.excluded", "history.included"]
     private var saved: [String: Any] = [:]
     private var savedLanguage = AppLocalization.system
     private var savedCaptureMode: HistoryCapture.ListMode = .exclude
@@ -521,9 +521,10 @@ final class ScreenHistoryTests: XCTestCase {
 
     private func assertRevokedPendingQuery(change: PendingPrivacyChange) async throws {
         try unlockHistoryForFixture()
-        let capture = HistoryCapture.shared
+        let capture = change == .deviceLock ? HistoryCapture() : HistoryCapture.shared
         let lock = HistoryLock.shared
         capture.enabled = true
+        defer { if change == .deviceLock { capture.enabled = false } }
         let savedBiometrics = lock.biometricsOn
         defer {
             if lock.unlocked, lock.biometricsOn != savedBiometrics { _ = lock.setBiometrics(savedBiometrics) }
