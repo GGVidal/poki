@@ -92,8 +92,9 @@ struct RootView: View {
     @State private var threadsOpen = false
     @State private var detailsOpen = false
     @State private var detailsPath = NavigationPath()
-    /// The first run is up, over everything (`FirstRunGuide`).
-    @State private var welcoming = false
+    /// The welcome is up, over everything (`FirstRunGuide`): after a fresh install or a new version.
+    @State private var welcome = FirstRun.due()
+    private var welcoming: Bool { welcome != nil }
     /// A setup step a link opened while the first run is up: it opens there.
     @State private var welcomeLink: SetupStep?
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -260,15 +261,12 @@ struct RootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tint.page.ignoresSafeArea())
-        .overlay {
-            if curtain { LaunchCurtain(done: { curtain = false }).ignoresSafeArea().allowsHitTesting(false) }
-        }
+        .modifier(LaunchLayers(curtain: $curtain, welcome: $welcome, link: $welcomeLink))
         .onGeometryChange(for: Bool.self) { geometry in
             geometry.size.width >= Self.sidebarWidth + 1 + Self.minimumChatWidth
         } action: { showsSidebar = $0 }
-        .fullScreenCover(isPresented: $welcoming) { FirstRunGuide(link: $welcomeLink, done: { welcoming = false }).modifier(LinkAskAlert()) }
-        // A link that would change the relay or the pairing file asks first. The first run's cover shows its own.
-        .modifier(LinkAskAlert(active: !welcoming))
+        // A link that would change the relay or the pairing file asks first, over the welcome too.
+        .modifier(LinkAskAlert())
         .task { InProcessProbe.shared.startFromLaunchArguments(model: model) }
         .alert(model.connectionAsk.map { AppLocalization.text(LocalizedStringResource("Allow \($0.client) to connect?")) } ?? "",
                isPresented: Binding(get: { model.connectionAsk != nil }, set: { if !$0 { model.answerConnection(false) } }),
@@ -400,9 +398,10 @@ struct RootView: View {
     /// The Action Button, Control Center, Shortcuts or Spotlight (PokiEntry), once Poki is in front. A task
     /// under way is shown, not interrupted: Talk starts only when Poki is free. Pairing stays on its step,
     /// and the first run stays up: its record is asked, not `welcoming`, because at a cold launch the
-    /// request can be here before the cover is.
+    /// request can be here before the cover is. An update's welcome does not hold an entry up: it closes.
     private func takeEntry() {
         guard scenePhase == .active, let request = PokiEntry.shared.take(), !model.pairingUnderWay, !FirstRun.isDue() else { return }
+        if welcoming { FirstRun.finish(); welcome = nil }
         detailsOpen = false
         if let handoff = AskPoki.liveSessionID { show(.session(handoff)); return }
         show(.chat)
@@ -439,7 +438,6 @@ struct RootView: View {
         if let address = defaults.string(forKey: "pokiVoiceBridge") { _ = model.voice.setBridge(address) }
         // `-pokiHome sessions|paused` (the old home's samples): the conversations, open.
         if defaults.string(forKey: "pokiHome") != nil, defaults.string(forKey: "pokiChat") == nil { threadsOpen = true }
-        if FirstRun.isDue() { welcoming = true }
         switch defaults.string(forKey: "pokiScreen") {
         case "chat":
             show(.chat)
