@@ -8,6 +8,11 @@ import PiSwiftAI
 /// not JSON, so every chunk was dropped and the answer ended with "Stream ended without finish_reason".
 /// A repeated `data:` prefix is folded into one; every other line passes through unchanged.
 ///
+/// It moves a request to a provider's next address when one can't be reached: no connection, or a
+/// gateway error (502, 503, 504) before any of the answer. The addresses are tried in the provider's
+/// order, each once per request; the model's words are never sent twice, since a request that got an
+/// answer is not repeated.
+///
 /// It also keeps what the address answered to the last request, for Poki's log when the request
 /// fails: the address without its query, the HTTP status and content type, and for an error the
 /// start of the server's words, with the key replaced. A stream's contents (the model's words) are
@@ -22,10 +27,13 @@ final class CustomEndpointClient: ProviderHTTPClient, @unchecked Sendable {
         var events = 0
         var repaired = 0
         var sawDone = false
+        /// Addresses tried before this one for the same request, as the log shows them.
+        var movedFrom: [String] = []
 
         /// One line for Poki's log, without the key.
         func summary(key: String?) -> String {
             var parts = ["custom address \(url)"]
+            if !movedFrom.isEmpty { parts.append("after \(movedFrom.joined(separator: ", ")) could not be reached") }
             if let failure { parts.append("no answer (\(failure))") }
             if let status {
                 parts.append("HTTP \(status)" + (contentType.map { " (\($0))" } ?? ""))
@@ -42,9 +50,41 @@ final class CustomEndpointClient: ProviderHTTPClient, @unchecked Sendable {
     private let inner: any ProviderHTTPClient
     private let lock = NSLock()
     private var last: Seen?
+    /// The address requests are made for, and the ones to move them to, in order.
+    private let primary: String?
+    private let backups: [String]
 
-    init(inner: any ProviderHTTPClient = DefaultProviderHTTPClient()) {
+    init(inner: any ProviderHTTPClient = DefaultProviderHTTPClient(), primary: String? = nil, backups: [String] = []) {
         self.inner = inner
+        self.primary = primary.map(ModelCatalog.normalizedAddress)
+        self.backups = backups.map(ModelCatalog.normalizedAddress).filter { !$0.isEmpty }
+    }
+
+    /// The client for one custom provider's model: its first address and the backups that speak the
+    /// same API.
+    convenience init(for model: Model) {
+        let provider = CustomProviders.provider(piProvider: model.provider)
+        self.init(primary: model.baseUrl, backups: provider?.backups.map(\.normalized) ?? [])
+    }
+
+    /// The request's address moved from the first base address to `other`, keeping the path pi added
+    /// (`/responses`, `/chat/completions`); nil when the request is not for the first address.
+    static func moved(_ url: URL?, from base: String, to other: String) -> URL? {
+        guard let text = url?.absoluteString else { return nil }
+        let from = ModelCatalog.normalizedAddress(base)
+        let to = ModelCatalog.normalizedAddress(other)
+        guard !from.isEmpty, text.hasPrefix(from) else { return nil }
+        var rest = String(text.dropFirst(from.count))
+        // pi adds /v1 to an address without a path; the other address may already end in it.
+        if !from.hasSuffix("/v1"), to.hasSuffix("/v1"), rest.hasPrefix("/v1/") { rest = String(rest.dropFirst(3)) }
+        return URL(string: to + rest)
+    }
+
+    /// A failure another address may not have: no connection, or a gateway with nothing behind it.
+    static func movable(_ error: Error) -> Bool {
+        guard let code = (error as? URLError)?.code else { return false }
+        return [.cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .networkConnectionLost, .timedOut,
+                .secureConnectionFailed, .notConnectedToInternet].contains(code)
     }
 
     /// What the address answered to the last request, or nil before the first.
@@ -55,15 +95,39 @@ final class CustomEndpointClient: ProviderHTTPClient, @unchecked Sendable {
     }
 
     func send(_ request: URLRequest, timeoutPolicy: ProviderHTTPTimeoutPolicy) async throws -> ProviderHTTPResponse {
-        lock.withLock { last = Seen(url: Self.shown(request.url)) }
-        let response: ProviderHTTPResponse
-        do {
-            response = try await inner.send(request, timeoutPolicy: timeoutPolicy)
-        } catch {
-            let failure = (error as? URLError).map { "URLError \($0.code.rawValue)" } ?? String(describing: type(of: error))
-            lock.withLock { last?.failure = failure }
-            throw error
+        var attempts = [request]
+        if let primary {
+            for backup in backups {
+                guard let url = Self.moved(request.url, from: primary, to: backup) else { continue }
+                var next = request
+                next.url = url
+                attempts.append(next)
+            }
         }
+        var tried: [String] = []
+        var response: ProviderHTTPResponse?
+        for (index, attempt) in attempts.enumerated() {
+            let isLast = index == attempts.count - 1
+            lock.withLock {
+                last = Seen(url: Self.shown(attempt.url))
+                last?.movedFrom = tried
+            }
+            do {
+                let answer = try await inner.send(attempt, timeoutPolicy: timeoutPolicy)
+                if !isLast, [502, 503, 504].contains(answer.statusCode) {
+                    tried.append(Self.shown(attempt.url) + " (HTTP \(answer.statusCode))")
+                    continue
+                }
+                response = answer
+                break
+            } catch {
+                let failure = (error as? URLError).map { "URLError \($0.code.rawValue)" } ?? String(describing: type(of: error))
+                lock.withLock { last?.failure = failure }
+                if isLast || !Self.movable(error) || Task.isCancelled { throw error }
+                tried.append(Self.shown(attempt.url) + " (\(failure))")
+            }
+        }
+        guard let response else { throw URLError(.cannotConnectToHost) }
         let type = response.headers.first { $0.key.lowercased() == "content-type" }?.value
         lock.withLock {
             last?.status = response.statusCode
