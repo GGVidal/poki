@@ -361,6 +361,9 @@ impl Client {
                 return Err(apple_error(&root_st));
             }
         }
+        if http_status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            return Err(Error::msg("Apple's sign-in service is temporarily unavailable (HTTP 503). Wait a few minutes, then try signing in again."));
+        }
         if !http_status.is_success() {
             return Err(Error::msg(format!("Apple's sign-in service answered HTTP {http_status}.")));
         }
