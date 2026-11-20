@@ -250,6 +250,39 @@ final class CustomModelDiscoveryTests: XCTestCase {
         XCTAssertEqual(CustomProviders.provider(provider.id)?.primary?.sent, .chatCompletions)
     }
 
+    func testDiscardingAProbedDraftModelLeavesTheSavedModelAbleToChat() async throws {
+        let endpoint = CustomEndpoint(url: address, found: .chatCompletions)
+        let saved = CustomProvider(endpoints: [endpoint], model: "original-model")
+        try ModelKeys.saveCustom(saved, typedKey: "", keepKey: false)
+        let reply = #"{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"original-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Original model replied."},"finish_reason":"stop"}]}"#
+        ModelServerStub.responder = { request, body in
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            switch (request.url?.path, json?["model"] as? String) {
+            case ("/v1/responses", "draft-model"):
+                return (200, "text/event-stream", #"data: {"type":"response.completed","response":{"status":"completed"}}"# + "\n\n")
+            case ("/v1/chat/completions", "original-model"):
+                return (200, "text/event-stream", "data: \(reply)\n\ndata: [DONE]\n\n")
+            default:
+                return (404, "application/json", #"{"error":{"message":"This model does not support this API."}}"#)
+            }
+        }
+
+        var draft = saved
+        draft.model = "draft-model"
+        let probe = await CustomProviders.testConnection(to: endpoint, key: "", draft: draft)
+        XCTAssertTrue(probe.result.passed)
+        XCTAssertEqual(probe.api, .responses)
+
+        let model = try XCTUnwrap(ModelProvider.custom.piModel(ModelKeys.selectedModel))
+        let loop = PiLoop(provider: .custom, model: model, tools: []) { _ in
+            .init(text: "", jpeg: nil, isError: false)
+        }
+        var messages: [String] = []
+        let outcome = await loop.run("Say which model answered.", instructions: "Be brief.", maxTurns: 1) { messages.append($0) }
+        XCTAssertEqual(outcome, .done)
+        XCTAssertEqual(messages, ["Original model replied."])
+    }
+
     func testOfficialModelIdsTakeTheCatalogSetupAndTheOwnerChoiceWins() throws {
         let known = ModelProvider.customModel("openai/gpt-6.1-sol", baseUrl: address, api: .openAIResponses, reasoning: nil)
         let official = try XCTUnwrap(ModelProvider.openai.piModel("gpt-6.1-sol"))

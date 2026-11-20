@@ -271,18 +271,12 @@ struct CustomProviderEditor: View {
         testing = true
         results = [:]
         let endpoints = filled
-        let model = draft.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reasoning = draft.reasoning
-        let providerID = draft.id
+        let draft = self.draft
         let keys = Dictionary(uniqueKeysWithValues: endpoints.map { ($0.id, key(for: $0.url)) })
         Task {
             for endpoint in endpoints {
-                let run = await ConnectionCheck.runCustom(url: endpoint.normalized, key: keys[endpoint.id] ?? "", modelID: model,
-                                                          api: endpoint.api, reasoning: reasoning)
+                let run = await CustomProviders.testConnection(to: endpoint, key: keys[endpoint.id] ?? "", draft: draft)
                 results[endpoint.id] = Outcome(result: run.result, api: run.api)
-                if run.result.passed {
-                    CustomProviders.record(found: run.api, endpoint: endpoint, provider: providerID)
-                }
             }
             testing = false
             if closeIfPassed, let first = endpoints.first, results[first.id]?.result.passed == true {

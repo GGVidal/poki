@@ -150,6 +150,20 @@ enum CustomProviders {
         ModelKeys.saved += 1
     }
 
+    @MainActor
+    static func testConnection(to endpoint: CustomEndpoint, key: String, draft: CustomProvider) async -> (result: ConnectionCheck.Result, api: CustomAPIStyle) {
+        let model = draft.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let run = await ConnectionCheck.runCustom(url: endpoint.normalized, key: key, modelID: model,
+                                                  api: endpoint.api, reasoning: draft.reasoning)
+        guard run.result.passed, endpoint.api == .automatic, let saved = provider(draft.id),
+              saved.model == model, saved.reasoning == draft.reasoning else { return run }
+        let keyData = try? (Keychain.read(keyAccount(saved.id)) ?? Data())
+        let savedKey = keyData.flatMap { String(data: $0, encoding: .utf8) }
+        guard savedKey?.trimmingCharacters(in: .whitespacesAndNewlines) == key.trimmingCharacters(in: .whitespacesAndNewlines) else { return run }
+        record(found: run.api, endpoint: endpoint, provider: saved.id)
+        return run
+    }
+
     /// Removes the provider, its key, its model lists and its models from the chat's menu.
     static func remove(_ id: UUID) {
         let wasSelected = ModelKeys.selectedProvider == .custom && parse(ModelKeys.selectedModel)?.provider == id
