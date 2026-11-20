@@ -29,12 +29,17 @@ static long long capturedDisplayID;
 
 @interface FoldFixture : PKInProcess
 @property(nonatomic) PKDisplayGeometry currentGeometry;
+@property(nonatomic) CGRect targetPane;
 @end
 @implementation FoldFixture
-- (PKDisplayGeometry)displayGeometry { return self.currentGeometry; }
+- (PKDisplayGeometry)sceneDisplayGeometry { return self.currentGeometry; }
 // The foreground scene supplies known geometry; this check needs no AX or daemon session.
 - (BOOL)isPokiSceneVisible { return YES; }
 - (NSData *)daemonJPEGForScreen:(id)screen { return nil; }
+- (id)sharedFront:(NSDictionary **)info ax:(id *)ax code:(NSString **)code {
+    if (info) *info = @{@"pane": [NSValue valueWithCGRect:self.targetPane]};
+    return nil;
+}
 @end
 
 static XCUIScreen *panel(long long displayID, CGSize grid, CGSize picture, UIColor *color) {
@@ -65,10 +70,10 @@ static int graySample(CGImageRef image) {
     return gray;
 }
 
-static BOOL checkShot(FoldFixture *runner, long long displayID, CGSize expected, int expectedGray, NSString *stage) {
+static BOOL checkShot(FoldFixture *runner, long long displayID, CGSize expected, int expectedGray, NSString *stage, BOOL split) {
     capturedDisplayID = 0;
     NSString *reason = nil;
-    NSData *data = [runner screenshot:&reason refreshViewport:NO];
+    NSData *data = [runner screenshot:&reason refreshViewport:split];
     UIImage *picture = data ? [UIImage imageWithData:data] : nil;
     CGImageRef image = picture.CGImage;
     CGSize actual = image ? CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image)) : CGSizeZero;
@@ -91,7 +96,7 @@ int main(void) {
             .peer = CGRectNull, .nativeSize = cover, .toFixed = CGAffineTransformIdentity,
             .orientation = UIInterfaceOrientationPortrait, .routesDisplay = YES};
         runner.currentGeometry = geometry;
-        if (!checkShot(runner, 1, cover, 0, @"cover")) return 1;
+        if (!checkShot(runner, 1, cover, 0, @"cover", NO)) return 1;
 
         geometry.bounds = CGRectMake(0, 0, 951, 669);
         geometry.nativeSize = CGSizeMake(1878, 2670);
@@ -99,6 +104,30 @@ int main(void) {
         geometry.orientation = UIInterfaceOrientationLandscapeLeft;
         geometry.orientationRevision++;
         runner.currentGeometry = geometry;
-        return checkShot(runner, 2, inner, 255, @"unfolded inner landscape") ? 0 : 1;
+        if (!checkShot(runner, 2, inner, 255, @"unfolded inner landscape", NO)) return 1;
+
+        XCUIScreen *active = panels[1];
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+        format.scale = 1;
+        format.opaque = YES;
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:inner format:format];
+        active.pixels = [renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *context) {
+            [UIColor.whiteColor setFill];
+            [context fillRect:(CGRect){CGPointZero, inner}];
+            [UIColor.blackColor setFill];
+            [context fillRect:CGRectMake(0, 0, 1407, inner.height)];
+        }];
+        geometry.bounds = CGRectMake(0, 0, 469, 669);
+        geometry.nativeSize = CGSizeMake(2007, 1407);
+        runner.currentGeometry = geometry;
+        runner.targetPane = CGRectMake(482, 0, 469, 669);
+        CGSize crop = CGSizeMake(1407, 2006);
+        if (!checkShot(runner, 2, crop, 255, @"Poki left, target right", YES)) return 1;
+
+        geometry.bounds.size.width = 389;
+        geometry.nativeSize.height = 1167;
+        runner.currentGeometry = geometry;
+        runner.targetPane = CGRectMake(0, 0, 469, 669);
+        return checkShot(runner, 2, crop, 0, @"Poki right, target left", YES) ? 0 : 1;
     }
 }
