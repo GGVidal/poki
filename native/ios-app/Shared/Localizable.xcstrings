@@ -5160,13 +5160,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先在“使用准备”中选择并开启 Poki 内置通道。"
+            "value" : "请先在“使用准备”中选择并开启 本机通道。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "請先在「使用準備」中選擇並開啟 Poki 內建通道。"
+            "value" : "請先在「使用準備」中選擇並開啟 本機通道。"
           }
         },
         "en" : {
@@ -6442,13 +6442,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请在“使用准备”中开启 Poki 内置通道，待检查通过后重新配对。"
+            "value" : "请在“使用准备”中开启 本机通道，待检查通过后重新配对。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "請在「使用準備」中開啟 Poki 內建通道，待檢查通過後重新配對。"
+            "value" : "請在「使用準備」中開啟 本機通道，待檢查通過後重新配對。"
           }
         },
         "en" : {
@@ -8557,24 +8557,24 @@
         }
       }
     },
-    "Look around now. Once the switches are on, I can use this iPhone. They are in Settings › Automation › Setup." : {
+    "Look around now. Once the switches are on, I can use this iPhone. They are in Settings › Connection." : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Look around now. Once the switches are on, I can use this iPhone. They are in Settings › Automation › Setup."
+            "value" : "Look around now. Once the switches are on, I can use this iPhone. They are in Settings › Connection."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "现在可以先随便看看。开关都打开后，我就能使用这台 iPhone。开关在「设置 › 自动化 › 使用准备」里。"
+            "value" : "现在可以先随便看看。开关都打开后，我就能使用这台 iPhone。开关在「设置 › 连接」里。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "現在可以先隨便看看。開關都打開後，我就能使用這支 iPhone。開關在「設定 › 自動化 › 使用準備」裡。"
+            "value" : "現在可以先隨便看看。開關都打開後，我就能使用這支 iPhone。開關在「設定 › 連線」裡。"
           }
         }
       }
@@ -11595,7 +11595,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请开启 Poki 内置通道，Poki 才能连接。"
+            "value" : "请开启 本机通道，Poki 才能连接。"
           }
         },
         "en" : {
@@ -11607,7 +11607,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "請開啟 Poki 內建通道，Poki 才能連線。"
+            "value" : "請開啟 本機通道，Poki 才能連線。"
           }
         }
       }
@@ -15628,13 +15628,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请重连 Poki 内置通道并检查 Wi-Fi。若 10.7.0.1 仍无应答，请到“使用准备 › 配对”重新配对并检查开发者模式。"
+            "value" : "请重连 本机通道并检查 Wi-Fi。若 10.7.0.1 仍无应答，请到“使用准备 › 配对”重新配对并检查开发者模式。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "請重連 Poki 內建通道並檢查 Wi-Fi。若 10.7.0.1 仍無應答，請到「使用準備 › 配對」重新配對並檢查開發者模式。"
+            "value" : "請重連 本機通道並檢查 Wi-Fi。若 10.7.0.1 仍無應答，請到「使用準備 › 配對」重新配對並檢查開發者模式。"
           }
         },
         "en" : {
@@ -16375,7 +16375,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开启 Poki 内置通道 ›"
+            "value" : "开启 本机通道 ›"
           }
         },
         "en" : {
@@ -16387,7 +16387,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "開啟 Poki 內建通道 ›"
+            "value" : "開啟 本機通道 ›"
           }
         }
       }
@@ -20481,7 +20481,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 内置通道"
+            "value" : "本机通道"
           }
         },
         "en" : {
@@ -20493,7 +20493,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 內建通道"
+            "value" : "本機通道"
           }
         }
       }
@@ -27393,13 +27393,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请在代理 App 中开启本机通道，或允许显示 iOS 运行提示条直接启动。Poki 内置通道当前已关闭。"
+            "value" : "请在代理 App 中开启本机通道，或允许显示 iOS 运行提示条直接启动。本机通道当前已关闭。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "請在代理 App 中開啟本機通道，或允許顯示 iOS 運行提示條直接啟動。Poki 內建通道目前已關閉。"
+            "value" : "請在代理 App 中開啟本機通道，或允許顯示 iOS 運行提示條直接啟動。本機通道目前已關閉。"
           }
         },
         "en" : {
