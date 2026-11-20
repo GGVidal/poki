@@ -37,6 +37,50 @@ final class ChatScrollTests: XCTestCase {
         XCTAssertEqual(scroll.contentOffset.y, reading, accuracy: 1, "A reply must not pull you away from what you are reading")
     }
 
+    func testHomeComposerKeepsItsMarginsInTheDuoLeftPane() throws {
+        try XCTSkipUnless(PKInProcess.canUseDuoSplitView(), "Run on the iPhone Duo simulator.")
+        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
+        let chat = ChatModel(app: app)
+        let root = UIHostingController(rootView: RootView().environment(app).environment(chat))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let pane = DuoPaneWindow(windowScene: scene)
+        pane.frame = CGRect(x: 0, y: 0, width: 469, height: 669)
+        pane.rootViewController = root
+        pane.makeKeyAndVisible()
+        window = pane
+
+        func composerFrame() throws -> CGRect {
+            settle {
+                Self.find(LaunchCurtain.Stage.self, in: root.view) == nil
+                    && (Self.find(CapsuleTextView.self, in: root.view)?.bounds.width ?? 0) > 100
+            }
+            XCTAssertNil(Self.find(LaunchCurtain.Stage.self, in: root.view))
+            let field = try XCTUnwrap(Self.find(CapsuleTextView.self, in: root.view))
+            return field.convert(field.bounds, to: root.view)
+        }
+
+        let reference = try composerFrame()
+        XCTAssertEqual(root.view.bounds.width, 469, accuracy: 1)
+        XCTAssertEqual(root.view.bounds.height, 669, accuracy: 1)
+        XCTAssertEqual(root.view.safeAreaInsets.left, 0, accuracy: 1)
+        XCTAssertEqual(root.view.safeAreaInsets.right, 0, accuracy: 1)
+        root.additionalSafeAreaInsets.left = 84
+        settle { root.view.safeAreaInsets.left == 84 }
+        XCTAssertEqual(root.view.safeAreaInsets.left, 84, accuracy: 1)
+        root.view.layoutIfNeeded()
+        let actual = try composerFrame()
+
+        let screenshot = UIGraphicsImageRenderer(bounds: root.view.bounds).image { _ in
+            root.view.drawHierarchy(in: root.view.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: screenshot)
+        attachment.name = "Duo left pane home"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertEqual(actual.minX, reference.minX, accuracy: 1, "The left safe area moved the composer")
+        XCTAssertEqual(actual.maxX, reference.maxX, accuracy: 1, "The right side of the composer moved")
+    }
+
     func testResizingTheRootKeepsAnUnsentDraftInTheSameConversation() throws {
         let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
         let chat = ChatModel(app: app)
@@ -170,4 +214,8 @@ final class ChatScrollTests: XCTestCase {
                 .bottomBar { Color.clear.frame(height: 80) }
         }
     }
+}
+
+private final class DuoPaneWindow: UIWindow {
+    override var safeAreaInsets: UIEdgeInsets { UIEdgeInsets(top: 0, left: 0, bottom: 34, right: 0) }
 }
