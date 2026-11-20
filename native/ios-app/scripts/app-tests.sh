@@ -14,7 +14,8 @@ else
   DD="$APP_DIR/../../build/app-tests"
 fi
 X="$(xcode-select -p)/Platforms/iPhoneSimulator.platform/Developer"
-TIMEOUT_SECONDS="${POKI_TEST_TIMEOUT:-1200}"
+TIMEOUT_SECONDS="${POKI_APP_TESTS_SECONDS:-${POKI_TEST_TIMEOUT:-1200}}"
+PERSISTENT_LOG="${POKI_APP_TESTS_LOG:-${POKI_TEST_LOG:-}}"
 
 BUILD_ARGS=()
 if [ -n "${POKI_SPM_DIR:-}" ]; then
@@ -55,15 +56,29 @@ xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
 
 # PokiTests read the English text, as on CI's simulator, whatever language this Mac's simulator uses.
 LOG="$(mktemp)"
+SHOOTER=""
 cleanup() {
-  if [ -n "${POKI_TEST_LOG:-}" ] && [ -f "$LOG" ]; then
-    mkdir -p "$(dirname "$POKI_TEST_LOG")"
-    tr '\r' '\n' < "$LOG" > "$POKI_TEST_LOG"
+  if [ -n "$SHOOTER" ]; then
+    kill "$SHOOTER" 2>/dev/null || true
+    wait "$SHOOTER" 2>/dev/null || true
+  fi
+  if [ -n "$PERSISTENT_LOG" ] && [ -f "$LOG" ]; then
+    mkdir -p "$(dirname "$PERSISTENT_LOG")"
+    tr '\r' '\n' < "$LOG" > "$PERSISTENT_LOG"
   fi
   rm -f "$LOG"
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+if [ -n "${POKI_APP_TESTS_SHOTS:-}" ]; then
+  mkdir -p "$POKI_APP_TESTS_SHOTS"
+  (
+    while sleep 60; do
+      xcrun simctl io "$UDID" screenshot --type=jpeg "$POKI_APP_TESTS_SHOTS/$(date +%H%M%S).jpg" >/dev/null 2>&1 || true
+    done
+  ) &
+  SHOOTER=$!
+fi
 SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$X/usr/lib/libXCTestBundleInject.dylib" \
 SIMCTL_CHILD_XCTestBundlePath="$APP/PlugIns/PokiTests.xctest" \
 SIMCTL_CHILD_DYLD_FRAMEWORK_PATH="$X/Library/Frameworks:$X/Library/PrivateFrameworks" \
