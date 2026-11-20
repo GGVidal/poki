@@ -1934,18 +1934,21 @@ final class AppModel {
         }
     }
 
-    func finishSplitViewTask(localSession: String, pairConfirmed: Bool = true, cancelled: () -> Bool = { false }) async {
-        _ = await core.settle(timeout: 30)
-        if let line = await core.finishTask(switching: pairConfirmed, localSession: localSession) { log.add("runner", line) }
-        // The Split View task is over: as at the end of any task, the automation session closes.
+    func finishSplitViewTask(localSession: String, pairConfirmed: Bool = true, authorizationDeclined: Bool = false, cancelled: () -> Bool = { false }) async {
+        if authorizationDeclined {
+            await core.discardWorkspace(session: localSession)
+        } else {
+            _ = await core.settle(timeout: 30)
+            if let line = await core.finishTask(switching: pairConfirmed, localSession: localSession) { log.add("runner", line) }
+        }
         if chatTaskActive { lastAgentActivity = Date() }
         chatTaskActive = false
-        closeAfterTask("the Split View task ended")
+        if !authorizationDeclined { closeAfterTask("the Split View task ended") }
         guard activitySplitViewSession == localSession else { return }
         activitySplitViewSession = nil
         lastAgentActivity = Date()
         activity.setChatOwnsCompletion(false)
-        if cancelled() { activity.endStoppedRun() }
+        if authorizationDeclined || cancelled() { activity.endStoppedRun() }
     }
 
     func reserveSplitViewWorkspace(session: String) async -> Bool {

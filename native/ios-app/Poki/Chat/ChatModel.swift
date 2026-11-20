@@ -608,18 +608,19 @@ final class ChatModel {
             began("pi", prepared.provider, prepared.model, task: prepared.text, splitViewSession: splitSession)
             if let splitSession, pair.count == 2 {
                 phoneStepUnderWay = true
-                let confirmed = await openSplitViewPair(pair, session: splitSession, token: token)
+                let preparation = await openSplitViewPair(pair, session: splitSession, token: token)
                 phoneStepUnderWay = false
-                guard runToken == token, confirmed else {
-                    await app.finishSplitViewTask(localSession: splitSession, pairConfirmed: false) {
+                guard runToken == token, preparation == .confirmed else {
+                    let declined = preparation == .authorizationDeclined
+                    await app.finishSplitViewTask(localSession: splitSession, pairConfirmed: false, authorizationDeclined: declined) {
                         self.runToken != token || Task.isCancelled
                     }
                     if runToken == token {
-                        AppLog.shared.add("chat", "workspace planning could not confirm the requested Split View apps")
-                        let words = Self.splitViewSetupMessage(pair[0], pair[1])
-                        let outcome = PiLoop.Outcome.failed(words)
+                        let outcome: PiLoop.Outcome = declined
+                            ? .authorizationDeclined
+                            : .failed(Self.splitViewSetupMessage(pair[0], pair[1]))
                         ended(outcome, delivered: prepared.you.id)
-                        logEnd("pi", outcome: outcome, session: prepared.runSession, text: prepared.text, stopped: false)
+                        logEnd("pi", outcome: outcome, session: prepared.runSession, text: prepared.text, stopped: declined)
                         running = false
                         awaitingModel = false
                         lastOutcome = outcome
@@ -638,8 +639,8 @@ final class ChatModel {
                 self.add(.poki(text))
             }
             if let splitSession {
-                await app.finishSplitViewTask(localSession: splitSession, pairConfirmed: outcome != .authorizationDeclined) {
-                    self.runToken != token || Task.isCancelled || outcome == .stopped || outcome == .authorizationDeclined
+                await app.finishSplitViewTask(localSession: splitSession, authorizationDeclined: outcome == .authorizationDeclined) {
+                    self.runToken != token || Task.isCancelled || outcome == .stopped
                 }
             }
             let current = runToken == token
@@ -654,10 +655,10 @@ final class ChatModel {
 
     private enum WorkspaceChoice { case split([String]), normal, failed(String) }
 
-    private enum PairCheck { case confirmed, unavailable, differentPair, stopped }
+    private enum PairCheck { case confirmed, unavailable, differentPair, stopped, authorizationDeclined }
 
-    private func openSplitViewPair(_ pair: [String], session: String, token: Int) async -> Bool {
-        guard await app.reserveSplitViewWorkspace(session: session), !Task.isCancelled else { return false }
+    private func openSplitViewPair(_ pair: [String], session: String, token: Int) async -> PairCheck {
+        guard await app.reserveSplitViewWorkspace(session: session), !Task.isCancelled else { return .unavailable }
         let currentTask = task
         let background = UIApplication.shared.beginBackgroundTask(withName: "Open Poki Split View") { currentTask?.cancel() }
         defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
@@ -666,29 +667,29 @@ final class ChatModel {
         // destination, then open the source beside it, preserving the destination's last window.
         let anchor = pair[1]
         let source = pair[0]
-        await activateForSplitView(anchor, session: session)
-        switch await confirmSplitViewPair(expected, session: session, token: token, seconds: 12) {
-        case .confirmed: return true
-        case .stopped: return false
+        if (await activateForSplitView(anchor, session: session)).automationAuthorizationDeclined { return .authorizationDeclined }
+        let initial = await confirmSplitViewPair(expected, session: session, token: token, seconds: 12)
+        switch initial {
+        case .confirmed, .stopped, .authorizationDeclined: return initial
         case .unavailable, .differentPair: break
         }
-        guard runToken == token, !Task.isCancelled, let target = KnownApps.find(anchor) else { return false }
-        guard await app.clearSplitViewPaneForSetup(session: session), runToken == token, !Task.isCancelled else { return false }
+        guard runToken == token, !Task.isCancelled, let target = KnownApps.find(anchor) else { return .unavailable }
+        guard await app.clearSplitViewPaneForSetup(session: session), runToken == token, !Task.isCancelled else { return .unavailable }
         AppLog.shared.add("chat", "opening the requested apps through the system Split View menu")
-        await activateForSplitView("com.apple.springboard", session: session)
+        if (await activateForSplitView("com.apple.springboard", session: session)).automationAuthorizationDeclined { return .authorizationDeclined }
         do {
-            guard try await selectLauncherItem([target.english, target.simplified, target.traditional], menu: false, session: session) else { return false }
-            guard try await selectLauncherItem(["Open in Split View", "以分屏浏览打开", "以分割顯示方式打開", "以分割顯示打開"], menu: true, session: session) else { return false }
+            guard try await selectLauncherItem([target.english, target.simplified, target.traditional], menu: false, session: session) else { return .unavailable }
+            guard try await selectLauncherItem(["Open in Split View", "以分屏浏览打开", "以分割顯示方式打開", "以分割顯示打開"], menu: true, session: session) else { return .unavailable }
             try await Task.sleep(for: .seconds(1))
-        } catch { return false }
-        guard runToken == token, !Task.isCancelled else { return false }
-        await activateForSplitView(source, session: session)
-        return await confirmSplitViewPair(expected, session: session, token: token, seconds: 35) == .confirmed
+        } catch { return .unavailable }
+        guard runToken == token, !Task.isCancelled else { return .stopped }
+        if (await activateForSplitView(source, session: session)).automationAuthorizationDeclined { return .authorizationDeclined }
+        return await confirmSplitViewPair(expected, session: session, token: token, seconds: 35)
     }
 
-    private func activateForSplitView(_ bundle: String, session: String) async {
+    private func activateForSplitView(_ bundle: String, session: String) async -> PokiCore.ToolAnswer {
         let request: JSON = ["actions": [["launch": .string(bundle)]]]
-        _ = await app.runTool("do", arguments: request.serialized(), localSession: session)
+        return await app.runTool("do", arguments: request.serialized(), localSession: session)
     }
 
     private func selectLauncherItem(_ labels: [String], menu: Bool, session: String) async throws -> Bool {
@@ -710,6 +711,7 @@ final class ChatModel {
         var pane = "left"
         while runToken == token, !Task.isCancelled, ContinuousClock.now < deadline {
             let read = await app.runTool("look", arguments: "{\"pane\":\"\(pane)\"}", localSession: session, expectedApps: pair)
+            if read.automationAuthorizationDeclined { return .authorizationDeclined }
             if read.text.contains("screen: locked") { return .stopped }
             if read.text.contains("do not match the planned Split View pair") { return .differentPair }
             // Keep the initial layout so a rotation before the model's first read also triggers recovery.

@@ -14,6 +14,13 @@ public struct ToolResult: Sendable {
     var screen: String?
     var waitingForOwner = false
     var automationAuthorizationDeclined = false
+    var screenEvidence: ScreenEvidence? = nil
+}
+
+struct ScreenEvidence: OptionSet, Sendable {
+    let rawValue: UInt8
+    static let references = Self(rawValue: 1 << 0)
+    static let screenshot = Self(rawValue: 1 << 1)
 }
 
 /// A sent action failed: whether it may have reached the phone.
@@ -195,7 +202,7 @@ final class Computer: @unchecked Sendable {
                 invalidateWorkspaceRead()
                 return ToolResult(text: (["Split View: the \(pane.side) pane could not be confirmed; call look with that pane again"] +
                     did.map { "did: \($0)" } + (error.map { ["error: \($0)"] } ?? [])).joined(separator: "\n"),
-                    jpeg: nil, isError: true, splitViewNeedsRead: true)
+                    jpeg: nil, isError: true, splitViewNeedsRead: true, screenEvidence: [])
             }
         }
         if reading.png != nil || !reading.elements.isEmpty {
@@ -225,7 +232,7 @@ final class Computer: @unchecked Sendable {
             lines += did.map { "did: \($0)" }
             if let error { lines.append("error: \(error)") }
             lines += extra + kept + staleNote
-            return ToolResult(text: lines.joined(separator: "\n"), jpeg: stale, isError: true)
+            return ToolResult(text: lines.joined(separator: "\n"), jpeg: stale, isError: true, screenEvidence: [])
         }
         let treeRead = !reading.elements.isEmpty || reading.notes.isEmpty
         let sameApp = reading.foreground?.bundleID == nil || reading.foreground?.bundleID == lastForeground?.bundleID
@@ -453,10 +460,13 @@ final class Computer: @unchecked Sendable {
         }
         typedInto = nil
         let footer = gone.isEmpty ? [] : ["gone since the last read: " + gone.prefix(20).map { "\($0.ref) \($0.element.type) \"\($0.element.text.prefix(40))\"" }.joined(separator: ", ")]
+        var evidence: ScreenEvidence = []
+        if treeRead || pictureOnly { evidence.insert(.references) }
+        if reading.png != nil, jpeg != nil, size != nil { evidence.insert(.screenshot) }
         // A screenshot helps the caller recover from a failed action without hiding the failure.
         return ToolResult(text: (header + body + footer).joined(separator: "\n"), jpeg: jpeg, isError: error != nil,
                           screen: treeRead ? "\(reading.foreground?.bundleID ?? "")\n\(tree)" + (pictureMoved ? "\npicture moved: \(UUID().uuidString)" : "") : nil,
-                          waitingForOwner: handoffWaiting)
+                          waitingForOwner: handoffWaiting, screenEvidence: evidence)
     }
 
     /// An answer with nothing done but the picture (served apart from WDA's queue), so a busy runner
@@ -494,7 +504,7 @@ final class Computer: @unchecked Sendable {
         if let error { lines.append("error: \(error)") }
         lines += extra
         lines.append("poki: Poki is in front, showing the owner's chat with you, so no screen of the task is read yet. Start the task in its app: do {launch: \"bundle id\"}, or do {run: \"name\"} for a saved skill.")
-        return ToolResult(text: lines.joined(separator: "\n"), jpeg: nil, isError: error != nil, screen: "poki", waitingForOwner: handoffWaiting)
+        return ToolResult(text: lines.joined(separator: "\n"), jpeg: nil, isError: error != nil, screen: "poki", waitingForOwner: handoffWaiting, screenEvidence: [])
     }
 
     /// The `handoff:` line: a step handed to the owner that is waiting, or just done (reported once).
@@ -512,7 +522,7 @@ final class Computer: @unchecked Sendable {
         handoff.apply(.endTask)
     }
 
-    private var authorizationRead: (revision: UInt64, task: String?)?
+    private var authorizationRead: (revision: UInt64, task: String?, evidence: ScreenEvidence)?
 
     func look(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil, localTask: String? = nil) async -> ToolResult {
         let started = now()
@@ -521,6 +531,7 @@ final class Computer: @unchecked Sendable {
     }
 
     func lookNow(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil, localTask: String? = nil) async -> ToolResult {
+        if local { authorizationRead = nil }
         let until: Double
         let revision: UInt64?
         switch await waitForRunner(until: now() + config.toolDeadline, authorization: local ? .read : .none) {
@@ -578,9 +589,9 @@ final class Computer: @unchecked Sendable {
         if begins, let app = lastForeground { origin = (app, session, now()) } else if origin?.session == session { origin?.lastCall = now() }
         if begins, let line = skillsLine() { result.text += "\n" + line }
         guard await locked else {
-            if local, let revision, !Task.isCancelled, !result.isError, result.screen != nil, result.jpeg != nil,
+            if local, let revision, !Task.isCancelled, !result.isError, let evidence = result.screenEvidence,
                host.currentRunner.automationRevision == revision {
-                authorizationRead = (revision, localTask)
+                authorizationRead = (revision, localTask, evidence)
             }
             return result
         }
@@ -758,13 +769,19 @@ final class Computer: @unchecked Sendable {
     }
 
     /// Drop references on an owner stop without a runner request or a visible app switch.
-    func forgetTask() {
+    func forgetTask(discardingPane: Bool = false) {
         if let ws = workspaceOwner.value {
             approvals.discardWorkspaceDecisions(session: ws)
         } else {
             approvals.discardAll()
         }
         endHandoff()
+        if discardingPane {
+            selectedPane = nil
+            paneOffset = nil
+            authorizationRead = nil
+            clearPaneRead()
+        }
         if selectedPane == nil { workspaceOwner.value = nil }
         origin = nil
         workspaceReads.removeAll()
@@ -842,15 +859,42 @@ final class Computer: @unchecked Sendable {
     }
 
     private func readRequiredAfterAuthorization() -> ToolResult {
-        ToolResult(text: "Automation is ready. Nothing was sent. Call look to read the current screen before choosing the next action.",
+        ToolResult(text: "Automation is ready. Nothing was sent. Call look to read the current screen before choosing the next action. Coordinates need a current screenshot; element numbers need current references.",
                    jpeg: nil, isError: true)
     }
 
-    private func requiresAuthorizationRead(_ action: JSON) -> Bool {
-        switch ActionKind(action) {
-        case .launch, .handoff, .wait, .waitUntil, nil: return false
-        case .button: return action["button"]?.text?.lowercased() != "home"
-        default: return true
+    private func canActAfterAuthorization(_ action: JSON, evidence: ScreenEvidence) -> Bool {
+        guard let kind = ActionKind(action) else { return true }
+        let target = action[kind.rawValue]
+        func sourceForPoint(_ point: JSON?) -> ScreenEvidence {
+            if point?.array != nil || (point?["ref"]?.int == nil && point?["x"]?.double != nil && point?["y"]?.double != nil) {
+                return .screenshot
+            }
+            return .references
+        }
+        switch kind {
+        case .launch, .handoff, .wait, .waitUntil:
+            return true
+        case .button:
+            return target?.text?.lowercased() == "home" || !evidence.isEmpty
+        case .tap, .longPress, .pinch:
+            return evidence.contains(sourceForPoint(target))
+        case .drag:
+            if target?.array != nil { return evidence.contains(.screenshot) }
+            return evidence.contains(sourceForPoint(target?["from"]).union(sourceForPoint(target?["to"])))
+        case .type:
+            return action["ref"] == nil && action["into"] == nil ? !evidence.isEmpty : evidence.contains(.references)
+        case .scrollTo:
+            return evidence.contains(.references)
+        case .swipe:
+            return (target?["in"] ?? action["in"]) == nil ? !evidence.isEmpty : evidence.contains(.references)
+        case .path:
+            let steps = target?["steps"]?.array ?? target?.array ?? []
+            return !evidence.isEmpty && steps.allSatisfy {
+                ActionKind($0) != .path && canActAfterAuthorization($0, evidence: evidence)
+            }
+        case .run, .back, .key:
+            return !evidence.isEmpty
         }
     }
 
@@ -911,6 +955,10 @@ final class Computer: @unchecked Sendable {
             if let kept = sessionApp, kept.session == session { bound = kept.bundle }
         }
         var result = restartNote(await actNow(actions: actions, full: full, finish: finish, session: session, answerBy: answerBy, byOwnersVoice: byOwnersVoice, local: local, localTask: localTask))
+        if local, let read = authorizationRead, read.task == localTask, let evidence = result.screenEvidence,
+           host.currentRunner.automationRevision == read.revision {
+            authorizationRead = (read.revision, localTask, result.isError ? [] : evidence)
+        }
         if finish { sessionApp = nil }
         else if let bound, let kept = sessionApp, let front = lastForeground?.bundleID, front != bound, !config.isPoki(lastForeground) {
             result.text += "\nthe session's app \(kept.name) (\(bound)) is not in front; \(lastForeground?.describe ?? front) is. app: \"\(kept.name)\" brings it back; app: false lets go of it"
@@ -963,9 +1011,12 @@ final class Computer: @unchecked Sendable {
         case .ready(let deadline, let readyRevision): (until, revision) = (deadline, readyRevision)
         case .blocked(let result): return result
         }
-        if local, let revision, actions.contains(where: requiresAuthorizationRead),
-           authorizationRead?.revision != revision || authorizationRead?.task != localTask {
-            return readRequiredAfterAuthorization()
+        if local, let revision {
+            let read = authorizationRead
+            let evidence = read?.revision == revision && read?.task == localTask ? read?.evidence ?? [] : []
+            if actions.contains(where: { !canActAfterAuthorization($0, evidence: evidence) }) {
+                return readRequiredAfterAuthorization()
+            }
         }
         if let selectedPane, selectedPane.session != session { return workspaceInUse() }
         // The app the owner is in before anything is sent: the read before may be another task's.

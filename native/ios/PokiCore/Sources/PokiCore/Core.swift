@@ -645,6 +645,14 @@ public final class PokiCore: @unchecked Sendable {
         return computer.reserveWorkspace(session: session)
     }
 
+    /// Release the local workspace after iOS declined automation, without calling the runner.
+    public func discardWorkspace(session: String) async {
+        guard await gate.enter(waiting: config.busyWait) else { return }
+        defer { gate.leave() }
+        guard computer.ownsTask(session: session) else { return }
+        computer.forgetTask(discardingPane: true)
+    }
+
     public func clearWorkspacePaneForSetup(session: String) async -> Bool {
         guard await gate.enter(waiting: config.busyWait) else { return false }
         defer { gate.leave() }

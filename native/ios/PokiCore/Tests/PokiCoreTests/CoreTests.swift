@@ -122,6 +122,53 @@ final class AutomationAuthorizationTests: XCTestCase {
         }
     }
 
+    func testElementTreeOnlyAfterAuthorizationDoesNotAllowTappingTheCachedScreenshot() async {
+        let (core, wda, host) = makeCore()
+        host.state.value = .automationReady(revision: 1)
+        let previous = await core.callTool("look", arguments: "{}")
+        XCTAssertNotNil(previous.jpeg)
+
+        host.state.value = .automationReady(revision: 2)
+        wda.source([("Button", "Current button")])
+        wda.set("GET /screenshot") { _ in (500, ["value": ["error": "screenshot unavailable"]]) }
+        let current = await core.callTool("look", arguments: "{}")
+        XCTAssertTrue(current.text.contains("Current button"), current.text)
+        XCTAssertTrue(current.text.contains("the screenshot is the one of the read before"), current.text)
+        XCTAssertEqual(current.jpeg, previous.jpeg)
+
+        let coordinate = await core.callTool("do", arguments: #"{"actions":[{"tap":[20,100]}]}"#)
+        XCTAssertTrue(coordinate.isError, coordinate.text)
+        XCTAssertFalse(wda.sent.contains { $0.hasSuffix("/wda/tap") })
+
+        let byElement = await core.callTool("do", arguments: #"{"actions":[{"tap":1}]}"#)
+        XCTAssertTrue(byElement.text.contains("did: tap"), byElement.text)
+        XCTAssertTrue(byElement.text.contains("Current button"), byElement.text)
+        XCTAssertEqual(wda.sent.filter { $0.hasSuffix("/wda/tap") }.count, 1)
+    }
+
+    func testScreenshotOnlyAfterAuthorizationAllowsCoordinatesButNotOldElementNumbers() async {
+        let (core, wda, host) = makeCore()
+        host.state.value = .automationReady(revision: 1)
+        let previous = await core.callTool("look", arguments: "{}")
+        XCTAssertTrue(previous.text.contains("General"), previous.text)
+
+        host.state.value = .automationReady(revision: 2)
+        wda.set("GET /source") { _ in (500, ["value": ["error": "tree unavailable"]]) }
+        wda.set("GET /screenshot") { _ in (200, ["value": .string(Data("current screen".utf8).base64EncodedString())]) }
+        let current = await core.callTool("look", arguments: "{}")
+        XCTAssertTrue(current.text.contains("no element tree"), current.text)
+        XCTAssertNotNil(current.jpeg)
+        XCTAssertNotEqual(current.jpeg, previous.jpeg)
+
+        let byOldElement = await core.callTool("do", arguments: #"{"actions":[{"tap":1}]}"#)
+        XCTAssertTrue(byOldElement.isError, byOldElement.text)
+        XCTAssertFalse(wda.sent.contains { $0.hasSuffix("/wda/tap") })
+
+        let coordinate = await core.callTool("do", arguments: #"{"actions":[{"tap":{"x":20,"y":100}}]}"#)
+        XCTAssertTrue(coordinate.text.contains("did: tap"), coordinate.text)
+        XCTAssertEqual(wda.sent.filter { $0.hasSuffix("/wda/tap") }.count, 1)
+    }
+
     func testOriginalLookSurvivesSlowOpeningBeforeTheAuthorizationPrompt() async {
         let (core, wda, host) = makeCore { $0.runnerWait = 0 }
         let opening = RunnerState.openingAutomationSession("opening the in-process automation session")
