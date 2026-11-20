@@ -1,6 +1,28 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Also uses" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Also uses"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还用到"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "還用到"
+          }
+        }
+      }
+    },
     "Apple's sign-in service is temporarily unavailable (HTTP 503). Wait a few minutes, then try signing in again." : {
       "extractionState" : "manual",
       "localizations" : {
