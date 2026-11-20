@@ -591,6 +591,63 @@ final class RoutineTests: XCTestCase {
         XCTAssertEqual(store.note(note.id)?.isLocked, true)
     }
 
+    func testUndoingLegacySkillChangesRestoresTheCorrectAppWithoutLosingContent() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("poki-undo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("agent-memory.json")
+        for (action, by, oldLocked, expectedLocked) in [
+            ("forgot", "owner", true, true),
+            ("forgot", "Poki", false, true),
+            ("edited", "owner", true, false),
+            ("edited", "Poki", false, true),
+        ] {
+            let legacy = """
+            {
+              "name": "Search a topic",
+              "description": "Search Little Red Book after using WeChat",
+              "app": "com.tencent.xin",
+              "steps": [
+                {"action": {"tap": "@"}, "target": {"type": "Button", "label": "Discover", "x": 100, "y": 120}, "app": "com.tencent.xin"},
+                {"action": {"launch": "com.xingin.discover"}, "app": "com.tencent.xin"},
+                {"action": {"type": "{{topic}}"}, "app": "com.xingin.discover"}
+              ],
+              "params": {"topic": "coffee"}, "expect": ["Results"], "read": ["Title"],
+              "runs": 9, "ok": 7, "failuresInARow": 1, "lastMs": 420,
+              "savedBy": "Poki", "locked": \(oldLocked),
+              "created": "2026-11-01T00:00:00Z", "updated": "2026-11-02T00:00:00Z"
+            }
+            """
+            let old = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(legacy.utf8)) as? [String: Any])
+            var current = old
+            current["name"] = "Renamed search"
+            current["description"] = "Edited description"
+            current["locked"] = false
+            let history: [String: Any] = [
+                "schema": "poki.agent-backup/1",
+                "routines": action == "edited" ? [current] : [],
+                "notes": [], "runs": [],
+                "changes": [["id": "legacy-change", "action": action, "by": by,
+                             "at": "2026-11-03T00:00:00Z", "routineName": "Renamed search",
+                             "routineApp": "com.tencent.xin", "routine": old]],
+            ]
+            try JSONSerialization.data(withJSONObject: history).write(to: file)
+            let store = RoutineStore(url: file)
+            XCTAssertTrue(store.undo("legacy-change"), "\(action) by \(by)")
+            let restored = try XCTUnwrap(store.skill(named: "Search a topic"))
+            XCTAssertEqual(restored.app, "com.xingin.discover", "\(action) by \(by)")
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            var expected = try decoder.decode(Skill.self, from: Data(legacy.utf8))
+            expected.app = "com.xingin.discover"
+            expected.locked = expectedLocked
+            XCTAssertEqual(restored, expected, "Undo must preserve content, run history, and its existing lock semantics")
+            XCTAssertNil(store.skill(named: "Renamed search"))
+            XCTAssertFalse(store.undo("legacy-change"), "a history entry can only be undone once")
+            XCTAssertEqual(RoutineStore(url: file).skill(named: "Search a topic"), expected)
+        }
+    }
+
     func testAnExportCarriesNoForgottenText() throws {
         let store = RoutineStore(url: nil)
         store.remember("Mom is the contact Mama", by: "owner")
