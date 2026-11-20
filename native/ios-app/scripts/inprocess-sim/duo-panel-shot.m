@@ -370,6 +370,31 @@ static BOOL checkCompanionTaskHeldPicture(PKDisplayGeometry scene, CGSize crop) 
     return checkShot(runner, 2, crop, 255, @"held AX read preserves the confirmed task pane picture", NO);
 }
 
+static BOOL checkHeldReadAfterTargetReplacement(PKDisplayGeometry scene, CGSize crop, CGSize inner, NSString *mode) {
+    CompanionFixture *runner = companion(scene);
+    if ([mode isEqualToString:@"selected"] && ![runner selectPane:@"right" code:NULL]) return NO;
+    if ([mode isEqualToString:@"task"] &&
+        (![runner beginDuoCompanionTask] || ![runner bindDuoCompanionTarget])) return NO;
+    NSString *baseline = [mode stringByAppendingString:@": Calculator before replacement"];
+    if (!checkShot(runner, 2, crop, 255, baseline, YES)) return NO;
+
+    runner.target = [AXNode new];
+    runner.target.processIdentifier = getpid() + 2;
+    XCUIScreen *screen = panels.lastObject;
+    NSData *calculator = screen.pixels;
+    screen.pixels = panel(screen.displayID, screen.bounds.size, inner, UIColor.blackColor).pixels;
+    NSString *reason = nil;
+    NSDictionary *observation = nil;
+    NSData *picture = [runner screenshot:&reason refreshViewport:NO observation:&observation];
+    screen.pixels = calculator;
+
+    printf("%s: held read after same-size app replacement: %s, gray %d, bundle %s\n", mode.UTF8String,
+           picture ? "returned pixels" : reason.UTF8String ?: "no screenshot",
+           picture ? graySample([UIImage imageWithData:picture].CGImage) : -1,
+           [observation[@"bundleId"] UTF8String] ?: "none");
+    return !picture && !observation && [reason isEqualToString:@"target_pane_unconfirmed"];
+}
+
 int main(void) {
     @autoreleasepool {
         CGSize cover = CGSizeMake(1398, 2034), inner = CGSizeMake(2852, 2006);
@@ -429,7 +454,11 @@ int main(void) {
         BOOL switchBeforeRead = checkCompanionAfterSwitch(geometry, crop, YES);
         BOOL bindingRetry = checkCompanionBindingRetry(geometry, crop);
         BOOL heldTaskPicture = checkCompanionTaskHeldPicture(geometry, crop);
+        BOOL replacementSafe = YES;
+        for (NSString *mode in @[@"selected", @"task", @"automatic"]) {
+            replacementSafe &= checkHeldReadAfterTargetReplacement(geometry, crop, inner, mode);
+        }
         return launchPlacement && recoveredEdge && picture && inset && activation && afterSwitch && switchBeforeRead &&
-            bindingRetry && heldTaskPicture ? 0 : 1;
+            bindingRetry && heldTaskPicture && replacementSafe ? 0 : 1;
     }
 }
