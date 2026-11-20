@@ -80,7 +80,6 @@ final class HistoryCapture: ObservableObject {
 
     // MARK: Settings (kept in UserDefaults)
 
-    // The old switch also covered one-off reads. Continuous capture needs a fresh opt-in.
     nonisolated static let enabledKey = "history.recordingEnabled"
     nonisolated static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
     nonisolated private static let queryLease = HistoryQueryPermissionLease()
@@ -170,6 +169,12 @@ final class HistoryCapture: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
+        if defaults.object(forKey: Self.enabledKey) == nil,
+           let legacyEnabled = defaults.object(forKey: "history.enabled") as? Bool {
+            defaults.set(legacyEnabled, forKey: Self.enabledKey)
+            // HistoryLock can initialize the query lease before capture starts.
+            Self.queryLease.setEnabled(legacyEnabled)
+        }
         enabled = defaults.bool(forKey: Self.enabledKey)
         listMode = ListMode(rawValue: defaults.string(forKey: "history.listMode") ?? "") ?? .exclude
         // Poki's own screens and the suggested apps are left out from the start.
