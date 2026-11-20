@@ -72,9 +72,9 @@ def exercise(device, helper, output, strain):
         with Image.open(path) as image:
             return image.convert("RGB").resize((WIDTH, HEIGHT), Image.Resampling.BOX)
 
-    def gold(image):
+    def gold(image, box=(163, 145, 239, 208)):
         return sum(r > 120 and r > 1.08 * g and g > 1.24 * b
-                   for r, g, b in pixels(image, (163, 145, 239, 208)))
+                   for r, g, b in pixels(image, box))
 
     def cardigan(image):
         return sum(b > 1.3 * r and b > 1.1 * g and r < 95
@@ -85,9 +85,32 @@ def exercise(device, helper, output, strain):
     with subprocess.Popen([helper, "--hid-session", device], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           text=True) as session:
         assert json.loads(session.stdout.readline())["ready"]
+        avatar = control("chat.header.outfits")
+        def avatar_region(top, bottom):
+            x, y, width, height = (avatar[key] for key in ("x", "y", "width", "height"))
+            return tuple(map(round, (x + width * 0.18, y + height * top, x + width * 0.82, y + height * bottom)))
+
+        crown_region = avatar_region(0.04, 0.45)
+        cape_region = avatar_region(0.68, 1)
+
+        def cape(image):
+            return sum(r > 85 and r > 1.35 * g and r > 1.30 * b for r, g, b in pixels(image, cape_region))
+
         tap("chat.header.outfits")
         tap("wardrobe.set.0")
         selected("wardrobe.set.0")
+        bare_avatar = preview("set-bare")
+        tap("wardrobe.set.7")
+        selected("wardrobe.set.7")
+        until("Little King is selected but its crown or cape is missing from the chat avatar",
+              lambda: preview("set-king"),
+              lambda image: gold(image, crown_region) > gold(bare_avatar, crown_region) + 5
+              and cape(image) > cape(bare_avatar) + 15)
+        tap("wardrobe.set.0")
+        selected("wardrobe.set.0")
+        until("The chat avatar still wears Little King after selecting No Outfit", lambda: preview("set-removed"),
+              lambda image: gold(image, crown_region) <= gold(bare_avatar, crown_region) + 3
+              and cape(image) <= cape(bare_avatar) + 5)
         tap("wardrobe.mix")
         selected("wardrobe.headwear.0")
         bare = preview("bare")
@@ -104,7 +127,7 @@ def exercise(device, helper, output, strain):
         selected("wardrobe.clothes.0")
         until("The preview still shows an outfit after Remove All", lambda: preview("removed"),
               lambda image: gold(image) <= gold(bare) + 10 and cardigan(image) <= cardigan(crown) + 10)
-    print(f"PASS ({strain}): the still preview shows the crown, the mix, and the bare bear after Remove All.")
+    print(f"PASS ({strain}): the chat avatar previews Little King, and Mix and Match shows both pieces.")
 
 
 if __name__ == "__main__":
