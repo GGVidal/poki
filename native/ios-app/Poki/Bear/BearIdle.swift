@@ -1,19 +1,13 @@
 import RealityKit
 import simd
 
-/// The faces drawn over the bear's own eyes and mouth (`PokiBear-expressions.usdz`), one for each of the
-/// states that has one. `prefix` starts the names of the meshes that make the face.
+/// Mouth expressions from PokiBear-expressions.usdz. The joy reaction uses the model's own mouth.
 enum BearFace: Int, CaseIterable {
-    case think, done, sad, ask, sleep, surprise
-
-    /// The faces that draw a mouth of their own, and the ones that draw the eyes (closed) of their own.
-    static let mouthFaces: [BearFace] = [.think, .sad, .ask, .sleep, .surprise]
-    static let eyeFaces: [BearFace] = [.done, .sleep]
+    case think, sad, ask, sleep, surprise
 
     var prefix: String {
         switch self {
         case .think: "Expr_Think"
-        case .done: "Expr_Done"
         case .sad: "Expr_Sad"
         case .ask: "Expr_Ask"
         case .sleep: "Expr_Sleep"
@@ -56,11 +50,6 @@ struct BearIdle {
         var mouth: Float = 0, sparkles: Float = 0
         /// How far each face (`BearFace`) is drawn over the bear's own, from 0 (none) to 1.
         var faces = SIMD8<Float>(repeating: 0)
-        /// The thinking face: a squinted left lid and a wavy mouth.
-        var thinkExpression: Float {
-            get { faces[BearFace.think.rawValue] }
-            set { faces[BearFace.think.rawValue] = newValue }
-        }
         subscript(face: BearFace) -> Float {
             get { faces[face.rawValue] }
             set { faces[face.rawValue] = newValue }
@@ -520,13 +509,11 @@ struct BearIdleJoints {
             joints[left].rotation *= simd_quatf(angle: pose.shoulders, axis: [0, 0, 1])
         }
 
-        // Per-eye spherical gaze clamped strictly inside each eye's white sclera ellipse (and below
-        // any active thinking eyelid), eliminating clipping and parallax pop-out at every head angle.
+        // Keep the shared gaze inside both eyes as the pupils move over the curved face.
         let eyeTransforms = BearEyeBounds.transforms(
             desiredGaze: pose.gaze,
             headYaw: pose.headYaw,
-            headPitch: pose.headPitch,
-            thinkingLid: pose.thinkExpression
+            headPitch: pose.headPitch
         )
         if let idx = pupilR, idx < joints.count {
             joints[idx].translation += eyeTransforms.right.translation
@@ -537,8 +524,8 @@ struct BearIdleJoints {
             joints[idx].rotation = eyeTransforms.left.rotation * joints[idx].rotation
         }
         // Closed-eye/smile arcs stay centered in the sockets, following only gently with the shared gaze.
-        let arcRTransform = BearEyeBounds.spherical(side: .right, gazeDelta: eyeTransforms.right.gazeDelta * 0.25, includeBaseline: false)
-        let arcLTransform = BearEyeBounds.spherical(side: .left, gazeDelta: eyeTransforms.left.gazeDelta * 0.25, includeBaseline: false)
+        let arcRTransform = BearEyeBounds.spherical(side: .right, gazeDelta: eyeTransforms.right.gazeDelta * 0.25)
+        let arcLTransform = BearEyeBounds.spherical(side: .left, gazeDelta: eyeTransforms.left.gazeDelta * 0.25)
         if let idx = arcR, idx < joints.count {
             joints[idx].translation += arcRTransform.translation
             joints[idx].rotation = arcRTransform.rotation * joints[idx].rotation
@@ -550,7 +537,7 @@ struct BearIdleJoints {
 
         // Hide the default smile mouth while a face that draws its own mouth is shown. Done keeps the
         // model's open mouth, so it is not among them.
-        if BearFace.mouthFaces.contains(where: { pose[$0] > 0.35 }), pose.mouth < 0.25, let closedMouth = mouths.first, closedMouth < joints.count {
+        if BearFace.allCases.contains(where: { pose[$0] > 0.35 }), pose.mouth < 0.25, let closedMouth = mouths.first, closedMouth < joints.count {
             joints[closedMouth].translation.z -= Self.swap
         }
 
@@ -572,10 +559,6 @@ struct BearIdleJoints {
         // A spring that has played a smile leaves a sliver of it behind, which must not count as a smile and
         // keep the eyes open when the state shuts them.
         if pose.smile > 0.001 { smile(pose.smile, in: &joints) } else if pose.shut > 0.001 { smile(pose.shut, top: 0.2, in: &joints) }
-        // The faces that draw closed eyes of their own take the model's arcs away.
-        if BearFace.eyeFaces.contains(where: { pose[$0] > 0.35 }) {
-            for joint in arcs where joint < joints.count { joints[joint].scale = .zero }
-        }
     }
 
     /// The eyes going to the smile's arcs and back as a blink does: the pupils flatten to a line, are
