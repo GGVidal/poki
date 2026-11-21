@@ -384,31 +384,170 @@ def tool_text(msg: dict) -> str:
     return ""
 
 
+def is_tool_error(text: str) -> bool:
+    stripped = text.strip()
+    lower = stripped.lower()
+    if not stripped:
+        return False
+    return (
+        lower.startswith("error:")
+        or lower.startswith("not_sent:")
+        or lower.startswith("busy:")
+        or lower.startswith("invalid model plan")
+        or lower.startswith("invalid task result")
+        or lower.startswith("task stopped.")
+        or "no app with that bundle id is installed" in lower
+        or "\nerror:" in lower
+    )
+
+
+def is_settings_about_page(screen_text: str) -> bool:
+    has_about_nav = re.search(
+        r'(?m)^[ +~]*[0-9]+\s+NavigationBar\s+"(?:About|关于本机)"',
+        screen_text,
+    ) is not None
+    still_on_general = re.search(
+        r'(?m)^[ +~]*[0-9]+\s+NavigationBar\s+"(?:General|通用)"',
+        screen_text,
+    ) is not None
+    has_about_field = any(
+        token in screen_text
+        for token in (
+            "iOS版本",
+            "iOS Version",
+            "型号名称",
+            "Model Name",
+            "型号号码",
+            "Model Number",
+            "序列号",
+            "Serial Number",
+            "名称",
+            "Name",
+        )
+    )
+    return has_about_nav and has_about_field and not still_on_general
+
+
+def is_photos_onboarding_splash(screen_text: str) -> bool:
+    return any(
+        token in screen_text
+        for token in ("“照片”新功能", "What’s New in Photos", "What's New in Photos")
+    )
+
+
+def is_system_alert(screen_text: str) -> bool:
+    if re.search(r'(?m)^[ +~]*[0-9]+\s+Alert\s+"', screen_text) is not None:
+        return True
+    lower = screen_text.lower()
+    return "app: home screen" in lower and ("lists the alert only" in lower or "system alert" in lower)
+
+
+def find_alert_dismiss_ref(screen_text: str) -> int | None:
+    m = re.search(
+        r'(?m)^[ +~]*([0-9]+)\s+Button\s+"(?:不允许|Don\'t Allow|Don’t Allow|稍后|Not Now|好|OK|关闭|Close)"',
+        screen_text,
+    )
+    return int(m.group(1)) if m else None
+
+
+def is_photos_foreground(screen_text: str) -> bool:
+    if is_tool_error(screen_text) or is_system_alert(screen_text) or is_photos_onboarding_splash(screen_text):
+        return False
+    if re.search(r'(?m)^app:\s*(?:Photos|照片)\b', screen_text) is not None:
+        return True
+    return "com.apple.mobileslideshow" in screen_text and "app: Home screen" not in screen_text and "app: unknown" not in screen_text
+
+
+def is_photos_library_page(screen_text: str) -> bool:
+    if not is_photos_foreground(screen_text):
+        return False
+    return any(
+        token in screen_text
+        for token in (
+            "PXCuratedLibrary",
+            "图库",
+            "Library",
+            "精选集",
+            "Collections",
+            "排序和筛选",
+            "content_scroll_view",
+            'Button "选择"',
+            'Button "Select"',
+        )
+    )
+
+
+def _record_tool_error(state: dict, turn_idx: int, text: str):
+    if is_tool_error(text):
+        state.setdefault("tool_errors", []).append(f"turn {turn_idx}: {text.strip()[:160]}")
+
+
 def decide_action(task_name: str, turn_idx: int, tool_msgs: list, state: dict):
+    last = tool_text(tool_msgs[-1]) if tool_msgs else ""
+    if tool_msgs:
+        _record_tool_error(state, turn_idx, last)
+
     if task_name == "settings":
         if turn_idx == 0:
             return "report_plan", {"steps": ["打开设置", "进入通用", "查看关于本机"], "currentStep": 1, "title": "查看关于本机"}
         if turn_idx == 1:
             return "do", {"actions": [{"launch": "com.apple.Preferences"}]}
         if turn_idx == 2:
-            last = tool_text(tool_msgs[-1])
-            state["saw_settings"] = "com.apple.Preferences" in last or "Settings" in last or "设置" in last
+            state["saw_settings"] = (
+                not is_tool_error(last)
+                and ("com.apple.Preferences" in last or "Settings" in last or "设置" in last)
+            )
             m = re.search(r'(?m)^[ +~]*([0-9]+)\s+\S+\s+"(?:General|通用)"', last)
             if m:
                 return "do", {"actions": [{"tap": int(m.group(1))}]}
-            return "look", {}
-        if turn_idx == 3:
-            last = tool_text(tool_msgs[-1])
-            state["saw_general"] = any(k in last for k in ("About", "关于本机", "General", "通用"))
-            return "look", {}
-        if turn_idx == 4:
+            state["target_error"] = "General button not found in Settings"
             return "finish_task", {
-                "success": True,
-                "summary": "已打开设置并查看通用页面。",
-                "details": [{"label": "App", "value": "Settings"}],
+                "success": False,
+                "summary": "未能找到设置里的通用入口。",
+                "details": [],
                 "answer": {"kind": "action"},
             }
-        return None, "已打开设置并核对通用页面。"
+        if turn_idx == 3:
+            state["saw_general"] = (
+                not is_tool_error(last)
+                and re.search(r'(?m)^[ +~]*[0-9]+\s+NavigationBar\s+"(?:General|通用)"', last) is not None
+            )
+            m = re.search(r'(?m)^[ +~]*([0-9]+)\s+\S+\s+"(?:About|关于本机)"', last)
+            if m:
+                return "do", {"actions": [{"tap": int(m.group(1))}]}
+            state["target_error"] = "About button not found in Settings > General"
+            return "finish_task", {
+                "success": False,
+                "summary": "未能找到通用页面里的关于本机入口。",
+                "details": [],
+                "answer": {"kind": "action"},
+            }
+        if turn_idx == 4:
+            if not is_tool_error(last) and is_settings_about_page(last):
+                state["saw_about"] = True
+                details = [{"label": "Page", "value": "About"}]
+                m_ver = re.search(r'"((?:iOS版本|iOS Version)[^"]*)"', last)
+                if m_ver:
+                    details.append({"label": "Version", "value": m_ver.group(1)})
+                return "finish_task", {
+                    "success": True,
+                    "summary": "已打开设置中的通用并进入关于本机页面。",
+                    "details": details,
+                    "answer": {"kind": "action"},
+                }
+            state["saw_about"] = False
+            state["target_error"] = "About page was never observed after tapping About"
+            return "finish_task", {
+                "success": False,
+                "summary": "未能进入通用里的关于本机页面。",
+                "details": [],
+                "answer": {"kind": "action"},
+            }
+        if turn_idx == 5:
+            state["finish_task_answer"] = last
+            state["finish_task_ok"] = last.startswith("Result recorded") and not is_tool_error(last)
+            return None, "已打开设置并核对通用里的关于本机页面。"
+        return None, "已打开设置并核对通用里的关于本机页面。"
 
     if task_name == "web":
         if turn_idx == 0:
@@ -418,14 +557,20 @@ def decide_action(task_name: str, turn_idx: int, tool_msgs: list, state: dict):
         if turn_idx == 2:
             return "web_read", {"find": "Example Domain"}
         if turn_idx == 3:
-            last = tool_text(tool_msgs[-1])
-            state["saw_example"] = "Example Domain" in last and "example.com" in last
+            ok = not is_tool_error(last) and "Example Domain" in last and "example.com" in last
+            state["saw_example"] = ok
+            if not ok:
+                state["target_error"] = "example.com title and domain not verified in web_read"
             return "finish_task", {
-                "success": True,
-                "summary": "标题是 Example Domain，域名是 example.com。",
-                "details": [{"label": "标题", "value": "Example Domain"}, {"label": "域名", "value": "example.com"}],
+                "success": ok,
+                "summary": "标题是 Example Domain，域名是 example.com。" if ok else "未能核实网页标题和域名。",
+                "details": [{"label": "标题", "value": "Example Domain"}, {"label": "域名", "value": "example.com"}] if ok else [],
                 "answer": {"kind": "field", "items": []},
             }
+        if turn_idx == 4:
+            state["finish_task_answer"] = last
+            state["finish_task_ok"] = last.startswith("Result recorded") and not is_tool_error(last)
+            return None, "已核实 example.com，标题为 Example Domain。"
         return None, "已核实 example.com，标题为 Example Domain。"
 
     if task_name == "photos":
@@ -433,20 +578,59 @@ def decide_action(task_name: str, turn_idx: int, tool_msgs: list, state: dict):
             return "report_plan", {"steps": ["打开照片", "查看并滑动列表"], "currentStep": 1, "title": "查看照片"}
         if turn_idx == 1:
             return "do", {"actions": [{"launch": "com.apple.mobileslideshow"}]}
-        if turn_idx == 2:
-            last = tool_text(tool_msgs[-1])
-            state["saw_photos"] = "com.apple.mobileslideshow" in last or "Photos" in last or "照片" in last
-            return "look", {}
-        if turn_idx == 3:
-            return "do", {"actions": [{"swipe": "up"}]}
-        if turn_idx == 4:
+        if state.get("finish_sent"):
+            state["finish_task_answer"] = last
+            state["finish_task_ok"] = last.startswith("Result recorded") and not is_tool_error(last)
+            return None, "已打开照片并浏览最近的照片。"
+        if is_system_alert(last):
+            ref = find_alert_dismiss_ref(last)
+            if ref is not None and turn_idx < 7:
+                return "do", {"actions": [{"tap": ref}]}
+            state["target_error"] = "photos blocked by unhandled system alert"
+            state["finish_sent"] = True
+            return "finish_task", {
+                "success": False,
+                "summary": "未能关闭照片系统弹窗。",
+                "details": [],
+                "answer": {"kind": "action"},
+            }
+        if is_photos_onboarding_splash(last):
+            m = re.search(r'(?m)^[ +~]*([0-9]+)\s+Button\s+"(?:Continue|继续)"', last)
+            if m and turn_idx < 7:
+                return "do", {"actions": [{"tap": int(m.group(1))}]}
+            state["target_error"] = "photos onboarding splash never dismissed"
+            state["finish_sent"] = True
+            return "finish_task", {
+                "success": False,
+                "summary": "未能跳过照片新功能引导页。",
+                "details": [],
+                "answer": {"kind": "action"},
+            }
+        if is_photos_library_page(last) or (state.get("saw_photos_library") and is_photos_foreground(last)):
+            state["saw_photos"] = True
+            state["saw_photos_library"] = True
+            if not state.get("did_photos_look") and not state.get("did_photos_swipe") and turn_idx == 2:
+                state["did_photos_look"] = True
+                return "look", {}
+            if not state.get("did_photos_swipe"):
+                state["did_photos_swipe"] = True
+                return "do", {"actions": [{"swipe": "up"}]}
+            state["saw_photos_after_swipe"] = True
+            state["finish_sent"] = True
             return "finish_task", {
                 "success": True,
                 "summary": "已打开照片并查看最近照片。",
                 "details": [{"label": "App", "value": "Photos"}],
                 "answer": {"kind": "action"},
             }
-        return None, "已打开照片并浏览最近的照片。"
+        state["target_error"] = "photos library never reached (still on onboarding, alert, or wrong app)"
+        state["finish_sent"] = True
+        return "finish_task", {
+            "success": False,
+            "summary": "未能进入照片图库页面。",
+            "details": [],
+            "answer": {"kind": "action"},
+        }
 
     if task_name == "false_scroll":
         if turn_idx == 0:
@@ -461,13 +645,85 @@ def decide_action(task_name: str, turn_idx: int, tool_msgs: list, state: dict):
                 "answer": {"kind": "action"},
             }
         if turn_idx == 3:
-            last = tool_text(tool_msgs[-1])
             state["finish_task_answer"] = last
             state["finish_task_rejected"] = "older messages" in last or "Confirmed 0 of" in last or "较早的消息" in last
+            state["finish_task_ok"] = last.startswith("Result recorded") and not state["finish_task_rejected"]
             return None, "测试完成。"
         return None, "测试完成。"
 
     raise ValueError(f"unknown task {task_name}")
+
+
+def evaluate_run_result(task_name: str, turns: list, state: dict, probe_item: dict | None = None, transport_error: str | None = None) -> str | None:
+    if transport_error is not None:
+        return transport_error
+    if len(turns) < 4:
+        return f"too few turns: {len(turns)}"
+    if state.get("tool_errors"):
+        return f"tool error: {state['tool_errors'][0]}"
+    if state.get("target_error"):
+        return state["target_error"]
+    if not state.get("finish_task_ok"):
+        ans = (state.get("finish_task_answer") or "").strip()[:160]
+        return f"finish_task was not accepted: {ans or 'no receipt'}"
+    if task_name == "settings":
+        if not state.get("saw_settings"):
+            return "settings app never observed in screen read"
+        if not state.get("saw_general"):
+            return "general page never observed in Settings"
+        if not state.get("saw_about"):
+            return "about page never observed in Settings"
+    elif task_name == "web":
+        if not state.get("saw_example"):
+            return "example.com content never verified in web_read"
+    elif task_name == "photos":
+        if not state.get("saw_photos"):
+            return "photos app never observed in screen read"
+        if not state.get("saw_photos_library"):
+            return "photos library never observed past onboarding"
+        if not state.get("saw_photos_after_swipe"):
+            return "photos library never confirmed after swipe"
+    if isinstance(probe_item, dict):
+        if probe_item.get("ok") is False:
+            return f"probe reported failure: {probe_item.get('error') or probe_item.get('text') or 'ok=false'}"
+        text = str(probe_item.get("text") or "")
+        if "result: not done" in text:
+            return f"chat task ended not done: {text[:160]}"
+    return None
+
+
+def format_run_summary(rows: list[dict]) -> str:
+    lines = []
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    for r in rows:
+        groups.setdefault((r["profile"], r["task"], r["label"]), []).append(r)
+    lines.append("=== Summary (succeeded samples per group; failed samples listed separately) ===")
+    for (profile, task, label), grp in sorted(groups.items()):
+        ok_rows = [r for r in grp if r["ok"]]
+        fail_rows = [r for r in grp if not r["ok"]]
+        if ok_rows:
+            step_meds = [r["step_interval_median_ms"] for r in ok_rows if r["step_interval_median_ms"] is not None]
+            wire_meds = [r["wire_bytes_median"] for r in ok_rows if r["wire_bytes_median"] is not None]
+            tok_meds = [r["tokens_median"] for r in ok_rows if r["tokens_median"] is not None]
+            iv = f"{statistics.median(step_meds):.1f}ms" if step_meds else "n/a"
+            wb = f"{statistics.median(wire_meds):.0f}B" if wire_meds else "n/a"
+            tk = f"{statistics.median(tok_meds):.0f}tok" if tok_meds else "n/a"
+        else:
+            iv = wb = tk = "n/a"
+        lines.append(
+            f"  [{profile}] {task:10s} {label:10s} ok={len(ok_rows)}/{len(grp)} failed={len(fail_rows)} "
+            f"step_p50={iv} wire_p50={wb} tok_p50={tk}"
+        )
+    failed_all = [r for r in rows if not r["ok"]]
+    lines.append(f"=== Failed samples ({len(failed_all)}/{len(rows)}) ===")
+    if not failed_all:
+        lines.append("  (none)")
+    else:
+        for r in failed_all:
+            lines.append(
+                f"  FAIL {r['run_id']} [{r['profile']}] {r['label']} {r['task']} r{r['round_idx']}: {r['error']}"
+            )
+    return "\n".join(lines)
 
 
 class ScriptedHandler(BaseHTTPRequestHandler):
@@ -785,6 +1041,7 @@ def run_one(server, udid: str, app_path: Path, label: str, commit_sha: str, task
         (run_dir / "poki-log-slice.txt").write_text(log_tail)
 
     probe_calls = []
+    probe_chat_item = None
     task_total_ms = None
     if probe_file.exists():
         try:
@@ -792,6 +1049,7 @@ def run_one(server, udid: str, app_path: Path, label: str, commit_sha: str, task
             (run_dir / "inprocess-probe.json").write_text(json.dumps(probe_data, ensure_ascii=False, indent=2))
             for item in probe_data:
                 if item.get("step") == "chat":
+                    probe_chat_item = item
                     task_total_ms = (item.get("seconds") or 0) * 1000.0
                     probe_calls = item.get("calls") or []
         except Exception:
@@ -806,15 +1064,13 @@ def run_one(server, udid: str, app_path: Path, label: str, commit_sha: str, task
     if task_total_ms is None and m_task_s:
         task_total_ms = float(m_task_s.group(1)) * 1000.0
 
-    if error is None:
-        if len(turns) < 4:
-            error = f"too few turns: {len(turns)}"
-        elif task_name == "settings" and not state.get("saw_settings"):
-            error = "settings app never observed in screen read"
-        elif task_name == "web" and not state.get("saw_example"):
-            error = "example.com content never verified in web_read"
-        elif task_name == "photos" and not state.get("saw_photos"):
-            error = "photos app never observed in screen read"
+    error = evaluate_run_result(
+        task_name=task_name,
+        turns=turns,
+        state=state,
+        probe_item=probe_chat_item,
+        transport_error=error,
+    )
 
     intervals = [t["step_interval_ms"] for t in turns if t["step_interval_ms"] is not None]
     tool_ms_list = [c.get("ms", 0) for c in probe_calls if isinstance(c, dict)]
@@ -941,6 +1197,16 @@ def main(argv=None):
     all_rows = []
     try:
         with ephemeral_simulator(device_type=args.device_type, runtime=args.runtime) as udid:
+            if "photos" in task_list and targets:
+                warm_label, warm_sha, warm_app = targets[0]
+                warm_row = run_one(
+                    server, udid, warm_app, f"warmup_{warm_label}", warm_sha, "photos", profile_list[0], -1,
+                    out_dir / "warmup", developer_dir=developer_dir, memory_file=args.memory_file, save_payload=False,
+                )
+                print(
+                    f"[warmup] {warm_label} photos ok={warm_row['ok']} {warm_row['error']}".rstrip(),
+                    flush=True,
+                )
             for profile in profile_list:
                 for r in range(args.rounds):
                     order = targets[r % len(targets):] + targets[:r % len(targets)]
@@ -969,9 +1235,13 @@ def main(argv=None):
         server.shutdown()
         conn.close()
 
+    summary_text = format_run_summary(all_rows)
+    (out_dir / "summary.txt").write_text(summary_text + "\n")
+    print(summary_text, flush=True)
+
     failed = [r for r in all_rows if not r["ok"]]
     if failed:
-        print(f"ERROR: {len(failed)}/{len(all_rows)} runs failed", file=sys.stderr)
+        print(f"ERROR: {len(failed)}/{len(all_rows)} runs failed (all failed rows retained in results.sqlite and runs.jsonl)", file=sys.stderr)
         sys.exit(2)
     if args.max_wire_bytes is not None:
         med_wire = statistics.median(r["wire_bytes_median"] for r in all_rows if r["wire_bytes_median"] is not None)
