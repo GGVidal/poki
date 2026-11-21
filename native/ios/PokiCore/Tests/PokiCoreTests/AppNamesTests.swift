@@ -7,7 +7,7 @@ final class AppNamesTests: XCTestCase {
     static let names = ["clock": "com.apple.mobiletimer", "时钟": "com.apple.mobiletimer", "com.apple.mobiletimer": "com.apple.mobiletimer",
                         "com.example.alias": "com.example.other"]
     static let installedApps = ["clock": "com.apple.mobiletimer", "时钟": "com.apple.mobiletimer",
-                                "com.apple.mobiletimer": "com.apple.mobiletimer", "com.example.shop": "com.example.shop"]
+                                "com.apple.mobiletimer": "com.apple.mobiletimer", "a.i.chat": "com.example.chat"]
 
     func core(names: Bool = true, quick: Bool = true) -> (PokiCore, FakeWDA) {
         let wda = FakeWDA()
@@ -64,6 +64,65 @@ final class AppNamesTests: XCTestCase {
 
         XCTAssertFalse(result.isError, result.text)
         XCTAssertTrue(result.text.contains("Chats"), result.text)
+    }
+
+    func testAReverseDNSShapedDisplayNameOpensAfterTheIDIsRefused() async {
+        let (core, wda) = core()
+        _ = await core.call("look", [:])
+        wda.set("POST /wda/apps/activate") { [wda] body in
+            guard body?["bundleId"]?.string == "com.example.chat" else {
+                return (400, ["value": ["error": "unknown error", "message": "app not installed"]])
+            }
+            wda.set("GET /wda/activeAppInfo") { _ in
+                (200, ["value": ["bundleId": "com.example.chat", "name": "A.I.Chat"]])
+            }
+            wda.tree([Node("Button", "Open chats", [16, 100, 358, 44])], app: "A.I.Chat")
+            return (200, ["value": .null])
+        }
+
+        let result = await core.call("do", ["actions": [["launch": "A.I.Chat"]]])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertTrue(result.text.contains("Open chats"), result.text)
+        XCTAssertEqual(launched(wda), ["A.I.Chat", "com.example.chat"])
+
+        let pathResult = await core.call("do", ["actions": [["path": ["steps": [
+            ["launch": ["app": "A.I.Chat"], "expect": "Open chats"],
+        ]]]], "full": true])
+        XCTAssertFalse(pathResult.isError, pathResult.text)
+        XCTAssertTrue(pathResult.text.contains("Open chats"), pathResult.text)
+        XCTAssertEqual(launched(wda), ["A.I.Chat", "com.example.chat", "A.I.Chat", "com.example.chat"])
+    }
+
+    func testALaunchFailureReportsWhichBatchActionsWereSent() async throws {
+        let catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(PokiCore.toolCatalogJSON(includeScreenHistory: false).utf8)) as? [[String: Any]])
+        let actionTool = try XCTUnwrap(catalog.first { $0["name"] as? String == "do" })
+        let instructions = try XCTUnwrap(actionTool["description"] as? String)
+        let (core, wda) = core()
+        _ = await core.call("look", [:])
+        wda.set("POST /wda/apps/activate") { _ in
+            (400, ["value": ["error": "unknown error", "message": "app not installed"]])
+        }
+
+        let result = await core.call("do", ["actions": [
+            ["button": "volume_up"], ["launch": "com.example.missing"], ["button": "volume_down"],
+        ]])
+
+        XCTAssertTrue(instructions.contains("Earlier actions may already have run"), instructions)
+        XCTAssertTrue(result.isError, result.text)
+        XCTAssertTrue(result.text.contains("button volume_up (sent"), result.text)
+        XCTAssertTrue(result.text.contains("action 2 was refused"), result.text)
+        XCTAssertTrue(result.text.contains("the actions after it were not sent"), result.text)
+        XCTAssertTrue(result.text.contains("Do not repeat the actions marked sent"), result.text)
+        XCTAssertEqual(wda.bodies("POST /wda/pressButton").compactMap { $0["name"]?.string }, ["volumeUp"])
+
+        let pathResult = await core.call("do", ["actions": [["path": ["steps": [
+            ["button": "volume_up"], ["launch": "com.example.missing"], ["button": "volume_down"],
+        ]]]]])
+        XCTAssertTrue(pathResult.isError, pathResult.text)
+        XCTAssertTrue(pathResult.text.contains("action 1 stopped after sending input: path stopped at step 2"), pathResult.text)
+        XCTAssertTrue(pathResult.text.contains("steps 1 to 1 were sent"), pathResult.text)
+        XCTAssertEqual(wda.bodies("POST /wda/pressButton").compactMap { $0["name"]?.string }, ["volumeUp", "volumeUp"])
     }
 
     func testWithNamesOffALaunchIsSentAsGiven() async {

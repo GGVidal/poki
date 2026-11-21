@@ -52,6 +52,10 @@ struct SimulatorApps: Sendable {
 
     func resolve(_ given: String) -> String? {
         if bundleIDs.contains(given) { return given }
+        return resolve(named: given)
+    }
+
+    func resolve(named given: String) -> String? {
         let key = Self.nameKey(given)
         guard !key.isEmpty, let matches = byName[key], matches.count == 1 else { return nil }
         return matches.first
@@ -111,6 +115,7 @@ let simulatorApps = SimulatorApps(sh(["xcrun", "simctl", "listapps", udid]))
 let core: PokiCore = {
     var config = CoreConfig(runnerURL: url)
     config.resolveInstalledApp = { simulatorApps.resolve($0) }
+    config.resolveInstalledAppByName = { simulatorApps.resolve(named: $0) }
     return PokiCore(config: config, host: Host())
 }()
 var session: String?

@@ -81,7 +81,10 @@ extension KnownApps {
            let installedID = proxy.perform(identifier)?.takeUnretainedValue() as? String, installedID == given {
             return installedID
         }
+        return installedLaunchID(named: given)
+    }
 
+    static func installedLaunchID(named given: String) -> String? {
         let name = given.trimmingCharacters(in: .whitespacesAndNewlines)
         if let id = byName[name.lowercased()], let app = byID[id.lowercased()],
            let installed = app.ids.first(where: isInstalledOnPhone) {
