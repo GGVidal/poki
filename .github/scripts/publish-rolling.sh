@@ -119,7 +119,7 @@ if "$VERSIONED"; then
   fi
   count="$(find dist -maxdepth 1 -type f | wc -l)"
   test "$(gh release view "$TAG" --json assets --jq '.assets | length')" -eq "$count"
-  gh release edit "$TAG" --draft=false --prerelease --latest=false
+  gh release edit "$TAG" --notes-file notes.md --draft=false --prerelease --latest=false
   echo "Published Poki v$VERSION ($BUILD) to $TAG: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
 else
   publish_to "$ROLLING"

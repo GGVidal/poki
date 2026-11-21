@@ -8,6 +8,7 @@
 # Tag: app-<VERSION>-prealpha.<count>; release: the rolling app-prealpha-latest, mirrored to the old
 # ios-prealpha-latest for Poki Setup 0.2.2 and earlier (docs/release-channels.md).
 name: Pre-alpha
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Hotfix Pre-alpha {0} ({1})', inputs.version, inputs.build) || '' }}
 
 on:
   push:
@@ -155,6 +156,7 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 90
+          overwrite: true
 
   publish-hotfix:
     needs: [resolve-hotfix, build-hotfix]
@@ -198,6 +200,7 @@ jobs:
           path: ${{ runner.temp }}/poki-hotfix-source.json
           if-no-files-found: error
           retention-days: 90
+          overwrite: true
       - name: Publish the versioned hotfix Pre-alpha
         working-directory: source
         env:

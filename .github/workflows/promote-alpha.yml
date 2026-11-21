@@ -13,11 +13,11 @@ on:
         type: string
         required: false
         default: ''
-      prealpha_run:
-        description: "Pre-alpha workflow run ID for a hotfix build (also provide its tag)"
-        type: string
+      hotfix:
+        description: "Promote a versioned hotfix Pre-alpha (also provide its tag)"
+        type: boolean
         required: false
-        default: ''
+        default: false
 
 concurrency:
   group: promote-alpha
@@ -44,11 +44,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           WANT: ${{ inputs.prealpha }}
-          HOTFIX_RUN: ${{ inputs.prealpha_run }}
+          HOTFIX: ${{ inputs.hotfix }}
         run: |
           set -euo pipefail
-          if [ -n "$HOTFIX_RUN" ] && [ -z "$WANT" ]; then
-            echo "::error::a hotfix run requires its explicit Pre-alpha tag"; exit 1
+          if [ "$HOTFIX" = true ] && [ -z "$WANT" ]; then
+            echo "::error::a hotfix promotion requires its explicit Pre-alpha tag"; exit 1
           fi
           if [ -z "$WANT" ]; then
             ipa="$(gh release view app-prealpha-latest --json assets --jq '.assets[].name' | grep -E '^Poki-external-.*\.ipa$' | head -1)"
@@ -59,23 +59,31 @@ jobs:
           version="${BASH_REMATCH[1]}" build="${BASH_REMATCH[2]}"
           sha="$(gh api "repos/$GH_REPO/commits/$WANT" --jq .sha)"
           ipa_sha=""
-          if [ -n "$HOTFIX_RUN" ]; then
-            [[ "$HOTFIX_RUN" =~ ^[1-9][0-9]*$ ]] || { echo "::error::prealpha_run must be a run ID"; exit 1; }
-            run="$HOTFIX_RUN"
-            workflow="$(gh api "repos/$GH_REPO/actions/workflows/prealpha.yml" --jq .id)"
-            gh api "repos/$GH_REPO/actions/runs/$run" | jq -e --arg workflow "$workflow" '
-              (.workflow_id | tostring) == $workflow and .head_branch == "main"
-              and .event == "workflow_dispatch" and .conclusion == "success"
-            ' >/dev/null || { echo "::error::expected a successful manual Pre-alpha run from main"; exit 1; }
-            gh run download "$run" --repo "$GH_REPO" --name Poki-hotfix-source --dir provenance
-            ipa_sha="$(jq -er --arg sha "$sha" --arg version "$version" --arg build "$build" '
-              select(.sha == $sha and .version == $version and .build == $build)
-              | .ipa_sha256 | select(test("^[0-9a-f]{64}$"))
-            ' provenance/poki-hotfix-source.json)" || { echo "::error::Pre-alpha run does not match the requested tag"; exit 1; }
+          if [ "$HOTFIX" = true ]; then
+            # The run title narrows the search. The source artifact proves what it built.
+            candidates="$(gh api --paginate "repos/$GH_REPO/actions/workflows/prealpha.yml/runs?branch=main&event=workflow_dispatch&status=success&per_page=100" |
+              jq -sr --arg title "Hotfix Pre-alpha $version ($build)" '
+                [.[].workflow_runs[] | select(.head_branch == "main" and .event == "workflow_dispatch"
+                  and .conclusion == "success" and .display_title == $title)]
+                | sort_by(.run_number) | reverse | .[].id
+              ')"
+            run=""
+            while IFS= read -r candidate; do
+              [[ "$candidate" =~ ^[1-9][0-9]*$ ]] || continue
+              gh run download "$candidate" --repo "$GH_REPO" --name Poki-hotfix-source --dir "provenance/$candidate"
+              if ipa_sha="$(jq -er --arg sha "$sha" --arg version "$version" --arg build "$build" '
+                  select(.sha == $sha and .version == $version and .build == $build)
+                  | .ipa_sha256 | select(test("^[0-9a-f]{64}$"))
+                ' "provenance/$candidate/poki-hotfix-source.json")"; then
+                run="$candidate"
+                break
+              fi
+            done <<< "$candidates"
+            [ -n "$run" ] || { echo "::error::no successful hotfix Pre-alpha run matches $WANT ($sha)"; exit 1; }
           else
             # A manual hotfix run's workflow head is main, even though it built a different commit.
             run="$(gh run list --workflow prealpha.yml --branch main --event push --commit "$sha" --status success --json databaseId --jq '.[0].databaseId')"
-            [ -n "$run" ] || { echo "::error::no successful automatic Pre-alpha run built $sha; for a hotfix, specify its run ID"; exit 1; }
+            [ -n "$run" ] || { echo "::error::no successful automatic Pre-alpha run built $sha; for a hotfix, enable the hotfix input"; exit 1; }
           fi
           if gh api "repos/$GH_REPO/git/ref/tags/app-$version-alpha.$build" >/dev/null 2>&1; then
             echo "::error::app-$version-alpha.$build already exists"; exit 1

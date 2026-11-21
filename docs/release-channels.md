@@ -51,11 +51,14 @@ testers on Alpha run the file that was tried on Pre-alpha, and Beta runs the fil
    `app-prealpha-latest`. Its artifact is kept 90 days for later promotions.
    Re-run a failed main build from its existing Actions run.
    To build a hotfix, dispatch Pre-alpha from `main` with a `hotfix/` branch, version, and build
-   number. Its files go to the versioned Pre-alpha release. Ordinary promotions continue to use
+   number. Its files go to the versioned Pre-alpha release. If publishing stops at a draft,
+   retry with the same branch, version, and build number. The successful run publishes its
+   files and notes together. Ordinary promotions continue to use
    the rolling `app-prealpha-latest` release and look up artifacts from pushes to `main`.
 2. **Alpha, after approval.** Actions > Promote to Alpha > Run workflow (`promote-alpha.yml`), with a
-   pre-alpha tag or empty for the current main build. For a hotfix, supply both its versioned
-   pre-alpha tag and its run ID from that release's notes. It runs the alpha tests on that commit (`ios-app.yml`:
+   pre-alpha tag or empty for the current main build. For a hotfix, provide its versioned
+   pre-alpha tag and enable **Promote a versioned hotfix Pre-alpha**. The workflow selects the
+   newest successful run for that commit, version, and build. It runs the alpha tests on that commit (`ios-app.yml`:
    PokiCore and loopback tests, in-process field, apps and idle-cycle checks, simulator smoke test,
    agent chat end to end; Poki Setup's core tests), then waits for approval in `alpha`, tags `app-<VERSION>-alpha.<N>` and puts the
    pre-alpha's IPA and Poki Setup files into `app-alpha-latest`.

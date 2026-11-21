@@ -12,24 +12,46 @@ const sha = '1234567890abcdef1234567890abcdef12345678';
 const tag = 'app-0.4.7-prealpha.9969';
 const gh = [
   '#!/usr/bin/env node',
-  'const { appendFileSync, copyFileSync, mkdirSync } = require("node:fs");',
+  'const { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");',
   'const a = process.argv.slice(2);',
+  'const { RELEASE_STATE } = process.env;',
+  'const records = JSON.parse(process.env.RUN_RECORDS || "[]");',
   'appendFileSync(process.env.CALLS, "gh " + a.join(" ") + "\\n");',
-  'if (a[0] === "api" && a[1].includes("/commits/")) console.log(process.env.SOURCE_SHA);',
+  'const endpoint = a.find(arg => arg.startsWith("repos/")) ?? "";',
+  'if (a[0] === "api" && endpoint.includes("/actions/workflows/prealpha.yml/runs?")) {',
+  '  console.log(JSON.stringify({ workflow_runs: records.slice(0, 2) }));',
+  '  console.log(JSON.stringify({ workflow_runs: records.slice(2) }));',
+  '} else if (a[0] === "api" && endpoint.endsWith("/actions/workflows/prealpha.yml")) console.log(123);',
+  'else if (a[0] === "api" && endpoint.includes("/actions/runs/")) console.log(JSON.stringify(records.find(run => run.id === Number(endpoint.split("/").pop()))));',
+  'else if (a[0] === "api" && endpoint.includes("/commits/")) console.log(process.env.SOURCE_SHA);',
   'else if (a[0] === "api" && a[1].includes("/releases/tags/")) console.log(process.env.SIGNING_DIGEST);',
   'else if (a[0] === "api") process.exit(1);',
   'else if (a[0] === "release" && a[1] === "view") {',
   '  if (a.includes(".assets | length")) console.log(4);',
   '  else if (a.includes(".assets[].name")) console.log("Poki-external-0.4.7-1926.ipa");',
+  '  else if (RELEASE_STATE && existsSync(RELEASE_STATE) && a.includes("isDraft")) console.log(JSON.parse(readFileSync(RELEASE_STATE)).draft);',
   '  else if (a[2] === process.env.HOTFIX_TAG && a.includes("isDraft")) console.log(false);',
   '  else process.exit(1);',
+  '} else if (a[0] === "release" && RELEASE_STATE && ["create", "upload", "edit"].includes(a[1])) {',
+  '  if (a[1] === "edit" && process.env.FAIL_DRAFT_PUBLISH) process.exit(1);',
+  '  const state = a[1] === "create" ? { draft: true } : JSON.parse(readFileSync(RELEASE_STATE));',
+  '  if (a.includes("--notes-file")) state.notes = readFileSync(a[a.indexOf("--notes-file") + 1], "utf8");',
+  '  if (a[1] === "create" || a[1] === "upload") state.ipa = readFileSync(a.find(arg => arg.endsWith(".ipa")), "utf8");',
+  '  if (a.includes("--draft=false")) state.draft = false;',
+  '  writeFileSync(RELEASE_STATE, JSON.stringify(state));',
   '} else if (a[0] === "run" && a[1] === "list") {',
   '  if (a.includes("prealpha.yml")) console.log(a[a.indexOf("--event") + 1] === "push" && a[a.indexOf("--branch") + 1] === "main" ? "700" : "800");',
   '} else if (a[0] === "run" && a[1] === "download") {',
   '  const dir = a[a.indexOf("--dir") + 1];',
   '  mkdirSync(dir, { recursive: true });',
-  '  copyFileSync(process.env.FIXTURE_IPA, dir + "/Poki-external-unsigned.ipa");',
-  '  if (process.env.FIXTURE_SIGNING) copyFileSync(process.env.FIXTURE_SIGNING, dir + "/Poki-signing.zip");',
+  '  if (a.includes("Poki-hotfix-source")) {',
+  '    const record = records.find(run => run.id === Number(a[2]));',
+  '    if (!record?.provenance) process.exit(1);',
+  '    writeFileSync(dir + "/poki-hotfix-source.json", JSON.stringify(record.provenance));',
+  '  } else {',
+  '    copyFileSync(process.env.FIXTURE_IPA, dir + "/Poki-external-unsigned.ipa");',
+  '    if (process.env.FIXTURE_SIGNING) copyFileSync(process.env.FIXTURE_SIGNING, dir + "/Poki-signing.zip");',
+  '  }',
   '} else if (a[0] === "release" && a[1] === "download" && a[2] === process.env.HOTFIX_TAG) {',
   '  const dir = a[a.indexOf("--dir") + 1];',
   '  for (const name of ["Poki-external-0.4.7-9969.ipa", "Poki-signing.zip", "SHA256SUMS"]) copyFileSync(process.env.HOTFIX_FILES + "/" + name, dir + "/" + name);',
@@ -66,7 +88,7 @@ function mock(t) {
           ...process.env, GITHUB_REPOSITORY: 'example/poki', GITHUB_RUN_ID: '861', GH_REPO: 'example/poki',
           GITHUB_OUTPUT: outputs, GITHUB_STEP_SUMMARY: join(dir, 'summary'),
           CALLS: calls, SOURCE_SHA: sha, PATH: join(dir, 'bin') + ':' + process.env.PATH,
-          WANT: '', RUN_ID: '861', VERSION: '0.4.7', BUILD: '9969', ...options.env,
+          WANT: '', HOTFIX: 'false', RUN_ID: '861', VERSION: '0.4.7', BUILD: '9969', ...options.env,
         },
       });
     },
@@ -92,8 +114,7 @@ function makeIpa(path, version, build) {
   ].join('\n'), path, version, build]);
 }
 
-test('a hotfix publishes only its versioned pre-alpha and leaves both rolling releases alone', t => {
-  const { dir, run, calls } = mock(t);
+function hotfixPublisher(dir) {
   mkdirSync(join(dir, 'app'));
   mkdirSync(join(dir, 'source/deploy/cf-relay'), { recursive: true });
   symlinkSync(root, join(dir, 'pipeline'), 'dir');
@@ -101,8 +122,12 @@ test('a hotfix publishes only its versioned pre-alpha and leaves both rolling re
   writeFileSync(join(dir, 'app/Poki-external-unsigned.ipa'), 'fixture ipa');
   writeFileSync(join(dir, 'app/Poki-signing.zip'), 'fixture signing archive');
   const publishJob = workflow('prealpha').split('\n  publish-hotfix:\n')[1];
-  const step = publishJob.slice(publishJob.lastIndexOf('\n      - name: Publish'));
-  const result = run(commands(step), { cwd: join(dir, 'source') });
+  return commands(publishJob.slice(publishJob.lastIndexOf('\n      - name: Publish')));
+}
+
+test('a hotfix publishes only its versioned pre-alpha and leaves both rolling releases alone', t => {
+  const { dir, run, calls } = mock(t);
+  const result = run(hotfixPublisher(dir), { cwd: join(dir, 'source') });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const released = calls().filter(line => /^gh release create /.test(line)).map(line => line.split(' ')[3]);
   assert.deepEqual(released, [tag]);
@@ -110,12 +135,57 @@ test('a hotfix publishes only its versioned pre-alpha and leaves both rolling re
   assert.ok(calls().every(line => !/app-prealpha-latest|ios-prealpha-latest/.test(line)));
 });
 
-test('fast Alpha defaults to the main push artifact when a hotfix dispatch has the same workflow head', t => {
+test('a hotfix retry publishes its own run in the notes and Alpha selects the newest successful matching run', t => {
+  const { dir, run, outputs } = mock(t);
+  const publish = hotfixPublisher(dir);
+  const stateFile = join(dir, 'release.json');
+  const sourceDir = join(dir, 'source');
+  const failed = run(publish, { cwd: sourceDir, env: { RELEASE_STATE: stateFile, FAIL_DRAFT_PUBLISH: '1' } });
+  assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
+  assert.equal(JSON.parse(readFileSync(stateFile)).draft, true);
+  const retryIpa = 'IPA from the successful retry';
+  writeFileSync(join(dir, 'app/Poki-external-unsigned.ipa'), retryIpa);
+  const retry = run(publish, { cwd: sourceDir, env: { RELEASE_STATE: stateFile, GITHUB_RUN_ID: '862' } });
+  assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+  const release = JSON.parse(readFileSync(stateFile));
+  assert.equal(release.draft, false);
+  assert.equal(release.ipa, retryIpa);
+
+  const ipaHash = createHash('sha256').update(retryIpa).digest('hex');
+  const provenance = { sha, version: '0.4.7', build: '9969', ipa_sha256: ipaHash };
+  const workflowRun = (id, conclusion, record = provenance) => ({
+    id, conclusion, run_number: id, head_branch: 'main', event: 'workflow_dispatch',
+    workflow_id: 123, display_title: 'Hotfix Pre-alpha 0.4.7 (9969)', provenance: record,
+  });
+  const records = [
+    workflowRun(860, 'success', { ...provenance, ipa_sha256: 'a'.repeat(64) }),
+    workflowRun(861, 'failure'),
+    workflowRun(864, 'success', { ...provenance, sha: 'f'.repeat(40) }),
+    workflowRun(862, 'success'),
+    workflowRun(863, 'failure'),
+    workflowRun(865, 'success', { ...provenance, build: '9970' }),
+    workflowRun(866, 'success', { ...provenance, version: '0.4.6' }),
+  ];
+  const notedRun = release.notes.match(/actions\/runs\/(\d+)/)[1];
+  const step = workflow('promote-alpha').split('\n      - id: r\n')[1].split('\n  # The alpha tests')[0];
+  const selected = run(commands(step), {
+    env: { WANT: tag, HOTFIX: 'true', HOTFIX_RUN: '861', RUN_RECORDS: JSON.stringify(records) },
+  });
+  assert.deepEqual({ notedRun, alphaStatus: selected.status }, { notedRun: '862', alphaStatus: 0 },
+    selected.stdout + selected.stderr);
+  assert.match(readFileSync(outputs, 'utf8'), /^run=862$/m);
+  assert.ok(readFileSync(outputs, 'utf8').includes('ipa_sha256=' + ipaHash));
+});
+
+test('ordinary Alpha defaults to the main push artifact when a hotfix dispatch has the same workflow head', t => {
   const { run, outputs } = mock(t);
-  const step = workflow('promote-alpha-fast').split('\n      - id: r\n')[1].split('\n  publish:')[0];
-  const result = run(commands(step));
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(readFileSync(outputs, 'utf8'), /^run=700$/m);
+  for (const name of ['promote-alpha', 'promote-alpha-fast']) {
+    writeFileSync(outputs, '');
+    const step = workflow(name).split('\n      - id: r\n')[1].split(/\n  (?:# The alpha tests|publish:)/)[0];
+    const result = run(commands(step));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(readFileSync(outputs, 'utf8'), /^run=700$/m);
+  }
 });
 
 test('Alpha rejects a version or build mismatch even when the IPA matches the recorded checksum', t => {
