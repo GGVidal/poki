@@ -1021,6 +1021,58 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertTrue(context.contains("Latest task: Open Safari"), context)
     }
 
+    func testAnUpgradedConversationDoesNotResendSpeechOnRetryOrContinue() async throws {
+        let id = UUID().uuidString
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(id, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let suite = "ChatHarnessTests.upgrade.\(id)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        defaults.set(true, forKey: SessionStore.archivedEarlierKey)
+
+        let started = Date(timeIntervalSince1970: 1_700_000_000)
+        let spoken = "Text Mom on my way"
+        var marker = ChatEntry(.time(started))
+        marker.at = started
+        let voice = ChatEntry(.you(spoken, delivered: true))
+        let problem = ChatEntry(.note(.problem("Connection lost. Nothing is sent again.")))
+        let old = SavedSession(id: id, kind: .poki, title: spoken, started: started, updated: started,
+                               live: false, outcome: .failed,
+                               entries: [marker, voice, ChatEntry(.step("Using the phone", ok: true)), problem], calls: [])
+        try JSONEncoder().encode(old).write(to: folder.appendingPathComponent(id + ".json"))
+
+        let store = SessionStore.launchStore(folder: folder, defaults: defaults)
+        await store.waitUntilLoaded()
+        let server = try FakeCompletions(replies: [FakeCompletions.text("Done."), FakeCompletions.text("Done."),
+                                                   FakeCompletions.text("Safari is open.")])
+        let chat = chat(on: server, kind: .poki, store: store)
+        let restored = try XCTUnwrap(store.session(id))
+        chat.restore(restored)
+        XCTAssertTrue(chat.endedOnProblem)
+        XCTAssertFalse(chat.canRetry)
+        chat.retry()
+        try await waitForTask(chat)
+        XCTAssertTrue(server.requests.isEmpty, "Retry forwarded speech from the old conversation")
+
+        chat.send("Continue \(spoken)")
+        try await waitForTask(chat)
+        XCTAssertTrue(server.requests.isEmpty, "Named Continue forwarded speech from the old conversation")
+
+        var mixed = restored
+        mixed.entries += [ChatEntry(.you("Open Safari", delivered: true)),
+                          ChatEntry(.note(.problem("The text model did not answer.")))]
+        chat.restore(mixed)
+        XCTAssertTrue(chat.canRetry)
+        chat.retry()
+        try await waitForTask(chat)
+        let request = try XCTUnwrap(server.requests.last)
+        let userMessages = (request["messages"] as? [[String: Any]] ?? []).filter { $0["role"] as? String == "user" }.map(Self.messageText)
+        XCTAssertEqual(userMessages.last, "Open Safari")
+    }
+
     private func approvalUserMessage(in server: FakeCompletions) throws -> String {
         let request = try XCTUnwrap(server.requests.last)
         let messages = try XCTUnwrap(request["messages"] as? [[String: Any]])
