@@ -343,8 +343,9 @@ async function describeScreen(image) {
   if (!response.ok) {
     throw upstreamError(response.status, upstreamErrorMessage(body, `Screen description failed (${response.status})`));
   }
-  const text = body.output?.flatMap(item => item.type === 'message' ? item.content : [])
-    .filter(part => part.type === 'output_text').map(part => part.text).join('\n').trim();
+  const outputItems = Array.isArray(body.output) ? body.output : [];
+  const text = outputItems.flatMap(item => item?.type === 'message' && Array.isArray(item.content) ? item.content : [])
+    .filter(part => part?.type === 'output_text' && typeof part.text === 'string').map(part => part.text).join('\n').trim();
   if (!text) throw upstreamError(502, 'OpenAI returned no screen description');
   return { text };
 }

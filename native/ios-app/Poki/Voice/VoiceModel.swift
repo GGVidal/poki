@@ -1757,15 +1757,17 @@ final class VoiceModel {
     private static func summarizeToolOutput(tool: String, rawOutput: String, outputChars: Int, state: VoiceCall.State,
                                             screenBytes: Int?, screenOutcome: ScreenAttachmentOutcome) -> String {
         let lines = rawOutput.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        let elementCount = lines.filter { line in
+        let isElementLine: (String) -> Bool = { line in
             guard let space = line.firstIndex(of: " "), space != line.startIndex else { return false }
             return line[..<space].allSatisfy(\.isASCII) && line[..<space].allSatisfy(\.isNumber)
-        }.count
+        }
+        let elementCount = lines.filter(isElementLine).count
         var metrics = ["chars=\(outputChars)", "elements=\(elementCount)", "screen=\(screenBytes.map { "\($0)B" } ?? "none")"]
         if let tag = screenOutcome.logTag { metrics.append(tag) }
 
         var headers: [String] = []
         for line in lines {
+            if isElementLine(line) { break }
             if line.hasPrefix("app: ") {
                 let appHeader = line.components(separatedBy: "   read:").first ?? line
                 headers.append(sanitizeLogText(appHeader, limit: 100))

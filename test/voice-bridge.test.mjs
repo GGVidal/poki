@@ -202,6 +202,18 @@ test('Live screenshot description failures distinguish upstream 404, non-string 
   assert.equal(networkPayload.source, 'upstream');
   assert.equal(networkPayload.upstream_status, 502);
   assert.match(networkPayload.error, /Could not reach OpenAI for screen description/);
+
+  const malformedOutput = await sessionBridge(t, {
+    screenError: { status: 200, body: { output: { unexpected: true } } },
+  });
+  const malformedRes = await fetch(`${malformedOutput.base}/screen`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: url }),
+  });
+  assert.equal(malformedRes.status, 502);
+  const malformedPayload = await malformedRes.json();
+  assert.equal(malformedPayload.source, 'upstream');
+  assert.equal(malformedPayload.upstream_status, 502);
+  assert.match(malformedPayload.error, /OpenAI returned no screen description/);
 });
 
 // The voice bridge in front of a fixture daemon and phone, as the Poki app reaches it.

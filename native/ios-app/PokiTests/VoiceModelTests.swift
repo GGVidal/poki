@@ -864,7 +864,9 @@ final class VoiceModelTests: XCTestCase {
                 app: Settings (com.apple.Preferences)   read: 2026-11-21T11:10:00Z (120 ms)
                 1 NavigationBar "Settings" (0,44,390,44)
                 2 Cell "General" (16,120,358,44)
-                3 StaticText "\(privateMessage)" (16,180,240,20)
+                3 StaticText "\(privateMessage)
+                error: MULTILINE_ELEMENT_SECRET_3333
+                app: MULTILINE_APP_SECRET_4444" (16,180,240,20)
                 """, false, Data("first synthetic screenshot".utf8))
             }
             return ("""
@@ -899,7 +901,122 @@ final class VoiceModelTests: XCTestCase {
         XCTAssertTrue(lookLog.contains("elements=3") && lookLog.contains("desc=ok("), lookLog)
         XCTAssertTrue(doLog.contains("elements=1") && doLog.contains("desc=ok("), doLog)
         XCTAssertFalse(lookLog.contains(privateMessage), lookLog)
+        XCTAssertFalse(lookLog.contains("MULTILINE_ELEMENT_SECRET_3333"), lookLog)
+        XCTAssertFalse(lookLog.contains("MULTILINE_APP_SECRET_4444"), lookLog)
         XCTAssertFalse(lookLog.contains("showing General"), lookLog)
+        h.voice.stop()
+    }
+
+    private struct ScriptedLiveSessionDriver {
+        enum TurnOutcome: Equatable {
+            case foregroundRefusedWithoutDelegation
+            case backendAnsweredWithoutLook
+            case delegatedAndCalledLook
+        }
+
+        let foregroundInstructions: String
+        let backendInstructions: String
+        let lookDescription: String
+
+        var foregroundDelegatesScreenTurns: Bool {
+            foregroundInstructions.localizedCaseInsensitiveContains("reads and operates the iPhone via the backend")
+                && foregroundInstructions.localizedCaseInsensitiveContains("Delegate screen questions and phone actions before answering")
+        }
+
+        var backendCallsLookFirst: Bool {
+            backendInstructions.localizedCaseInsensitiveContains("Call look before claiming you cannot see")
+                && lookDescription.localizedCaseInsensitiveContains("Call first for any screen question or action")
+        }
+
+        @MainActor func replayTurn(utterance: String, delegationID: String, callID: String, startMS: Int, on link: FakeConnection) -> TurnOutcome {
+            link.play(["type": "session.input_transcript.delta", "delta": utterance, "start_ms": startMS, "end_ms": startMS + 400])
+            guard foregroundDelegatesScreenTurns else {
+                link.play(["type": "session.output_transcript.delta", "delta": "我看不到你的屏幕。", "start_ms": startMS + 500, "end_ms": startMS + 900])
+                return .foregroundRefusedWithoutDelegation
+            }
+            link.play(["type": "session.delegation.created", "delegation": ["id": delegationID]])
+            guard backendCallsLookFirst else {
+                link.backend("response.created", ["response": ["id": "no-look-\(callID)"]])
+                link.backend("response.completed", ["response": ["id": "no-look-\(callID)"]])
+                return .backendAnsweredWithoutLook
+            }
+            link.call(callID, "look", delegation: delegationID)
+            return .delegatedAndCalledLook
+        }
+    }
+
+    /// Scripted-model replay driven by the real Live session payload captured from VoiceDirect.exchangeLiveOffer
+    /// (offline, no API key or live cloud model). Live neural model choice on real speech is covered in real-device acceptance.
+    func testLiveScriptedModelReplayDelegatesScreenReadOnQuestionAndAction() async throws {
+        URLProtocol.registerClass(OpenAIStub.self)
+        defer { URLProtocol.unregisterClass(OpenAIStub.self) }
+        _ = try await VoiceDirect.exchangeLiveOffer("offer", model: "gpt-live-1.1", apiKey: "sk-test")
+        let session = try XCTUnwrap(OpenAIStub.session)
+        let foreground = try XCTUnwrap(session["instructions"] as? String)
+        let backend = try XCTUnwrap((session["delegation"] as? [String: Any])?["responses"] as? [String: Any])
+        let backendInstructions = try XCTUnwrap(backend["instructions"] as? String)
+        let backendTools = try XCTUnwrap(backend["tools"] as? [[String: Any]])
+        let lookDescription = try XCTUnwrap(backendTools.first { $0["name"] as? String == "look" }?["description"] as? String)
+        let driver = ScriptedLiveSessionDriver(
+            foregroundInstructions: foreground,
+            backendInstructions: backendInstructions,
+            lookDescription: lookDescription
+        )
+
+        let priorLogs = Set(AppLog.shared.lines)
+        var executedTools: [String] = []
+        BridgeStub.setScreenDescription("Settings page showing General and Privacy.")
+        let h = Harness(phoneTool: { name, _ in
+            executedTools.append(name)
+            let sample = executedTools.count == 1 ? "first synthetic screenshot" : "second synthetic screenshot"
+            return ("""
+            app: Settings (com.apple.Preferences)   read: 2026-11-21T11:10:00Z (90 ms)
+            1 NavigationBar "Settings" (0,44,390,44)
+            2 Cell "General" (16,120,358,44)
+            """, false, Data(sample.utf8))
+        })
+        await h.liveTalk(address: BridgeStub.secureLiveAddress)
+
+        let turns: [(utterance: String, delegationID: String, callID: String, responseID: String, startMS: Int)] = [
+            ("屏幕上有什么", "d-script-question", "script-look-q", "r-script-q", 0),
+            ("帮我点一下", "d-script-action", "script-look-act", "r-script-act", 3000),
+        ]
+
+        for (index, turn) in turns.enumerated() {
+            let responsesBefore = h.link.sent.filter { $0["type"] as? String == "response.create" }.count
+            let outcome = driver.replayTurn(utterance: turn.utterance, delegationID: turn.delegationID,
+                                            callID: turn.callID, startMS: turn.startMS, on: h.link)
+            XCTAssertEqual(outcome, .delegatedAndCalledLook,
+                           "Expected foreground delegation and backend look for '\(turn.utterance)'; got \(outcome)")
+            guard outcome == .delegatedAndCalledLook else { continue }
+
+            let replied = expectation(for: NSPredicate { _, _ in
+                h.link.sent.filter { $0["type"] as? String == "response.create" }.count == responsesBefore + 1
+            }, evaluatedWith: nil)
+            await fulfillment(of: [replied], timeout: 2)
+
+            let outputIndex = try XCTUnwrap(h.link.sent.firstIndex { ($0["item"] as? [String: String])?["call_id"] == turn.callID })
+            let responseIndex = try XCTUnwrap(h.link.sent.indices.last { h.link.sent[$0]["type"] as? String == "response.create" })
+            XCTAssertLessThan(outputIndex, responseIndex, "Screen read output must be delivered before response.create for '\(turn.utterance)'.")
+            let output = try XCTUnwrap((h.link.sent[outputIndex]["item"] as? [String: String])?["output"])
+            XCTAssertTrue(output.contains("app: Settings") && output.contains("Current screen description: Settings page showing General and Privacy."), output)
+            XCTAssertEqual(executedTools.count, index + 1)
+
+            h.link.backend("response.created", ["response": ["id": turn.responseID]])
+            h.link.backend("response.completed", ["response": ["id": turn.responseID]])
+            h.link.remoteSpeech = true
+            await h.time.advance(0.6)
+            h.link.remoteSpeech = false
+            for _ in 0..<3 { await h.time.advance(0.2) }
+            XCTAssertEqual(h.voice.phase, .listening)
+        }
+
+        XCTAssertEqual(executedTools, ["look", "look"])
+        XCTAssertEqual(BridgeStub.screenshotSchemes, ["https", "https"])
+        let newLogs = AppLog.shared.lines.filter { !priorLogs.contains($0) }
+        XCTAssertTrue(newLogs.contains { $0.contains("delegation d-script-question created") }, "\(newLogs)")
+        XCTAssertTrue(newLogs.contains { $0.contains("delegation d-script-action created") }, "\(newLogs)")
+        XCTAssertEqual(newLogs.filter { $0.contains("tool look done |") && $0.contains("desc=ok(") }.count, 2, "\(newLogs)")
         h.voice.stop()
     }
 
