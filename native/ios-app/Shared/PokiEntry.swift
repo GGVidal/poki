@@ -45,10 +45,10 @@ final class PokiEntry {
     func advanceEpoch() { epoch += 1 }
 }
 
-/// Opens Poki's chat and starts voice there. A task Poki is already doing is shown, not interrupted.
+/// Opens Poki's chat to start or return to a talk.
 struct TalkToPokiIntent: AppIntent {
     static let title = LocalizedStringResource("Talk to Poki", table: "Entry")
-    static let description = IntentDescription(LocalizedStringResource("Opens Poki and starts talking. If Poki is doing a task, it shows that task and leaves it running.", table: "Entry"))
+    static let description = IntentDescription(LocalizedStringResource("Opens Poki to start or return to a talk. If Poki is doing a task, it shows the task and leaves it running.", table: "Entry"))
     static let openAppWhenRun = true
     @available(iOS 26.0, *)
     static var supportedModes: IntentModes { .foreground(.immediate) }

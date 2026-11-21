@@ -12,6 +12,6 @@ struct TalkToPokiControl: ControlWidget {
             }
         }
         .displayName(LocalizedStringResource("Talk to Poki", table: "Entry"))
-        .description(LocalizedStringResource("Opens Poki and starts talking.", table: "Entry"))
+        .description(LocalizedStringResource("Opens Poki to start or return to a talk.", table: "Entry"))
     }
 }

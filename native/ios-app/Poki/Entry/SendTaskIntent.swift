@@ -76,7 +76,7 @@ struct SendTaskToPokiIntent: ForegroundContinuableIntent {
 struct PokiShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: TalkToPokiIntent(),
-                    phrases: ["Talk to \(.applicationName)", "Start talking to \(.applicationName)"],
+                    phrases: ["Talk to \(.applicationName)", "Start talking to \(.applicationName)", "Return to my call in \(.applicationName)"],
                     shortTitle: LocalizedStringResource("Talk to Poki", table: "Entry"), systemImageName: "waveform.circle")
         AppShortcut(intent: TalkHereIntent(),
                     phrases: ["\(.applicationName) Anytime", "Talk to \(.applicationName) without leaving this app"],
