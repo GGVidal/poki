@@ -6,7 +6,7 @@ import WebRTC
 protocol VoiceConnection: AnyObject, Sendable {
     @MainActor func connect(secret: String, base: URL?, microphone: Bool, direct: Bool) async throws
     @MainActor func connectLive(microphone: Bool, direct: Bool, exchange: (String) async throws -> String) async throws
-    @MainActor func startOpeningCapture() throws -> OpeningVoiceCapture?
+    @MainActor func startOpeningCapture(session: Int) throws -> OpeningVoiceCapture?
     @MainActor func useOpeningCapture(_ capture: OpeningVoiceCapture?)
     func hasRemoteSpeech() async -> Bool
     @discardableResult func send(_ event: [String: Any]) -> Bool
@@ -17,7 +17,7 @@ protocol VoiceConnection: AnyObject, Sendable {
 
 extension VoiceConnection {
     func connectLive(microphone: Bool, direct: Bool, exchange: (String) async throws -> String) async throws { throw VoiceError.noWebRTC }
-    func startOpeningCapture() throws -> OpeningVoiceCapture? { nil }
+    func startOpeningCapture(session: Int) throws -> OpeningVoiceCapture? { nil }
     func useOpeningCapture(_ capture: OpeningVoiceCapture?) {}
     func hasRemoteSpeech() async -> Bool { false }
 }
@@ -72,8 +72,10 @@ final class VoiceLink: NSObject, VoiceConnection, RTCPeerConnectionDelegate, RTC
         self.onClosed = onClosed
     }
 
-    @MainActor func startOpeningCapture() throws -> OpeningVoiceCapture? {
-        let capture = try OpeningVoiceCapture()
+    @MainActor func startOpeningCapture(session: Int) throws -> OpeningVoiceCapture? {
+        let audio = OpeningVoiceAudio(session: session)
+        try audio.startCapture()
+        let capture = OpeningVoiceCapture(audio: audio)
         useOpeningCapture(capture)
         diagnostics?("opening microphone started; \(Self.audioSession())")
         return capture

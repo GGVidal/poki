@@ -8,9 +8,7 @@ struct OpeningVoiceCapture {
     let audio: OpeningVoiceAudio
     let factory: RTCPeerConnectionFactory
 
-    init() throws {
-        let audio = OpeningVoiceAudio()
-        try audio.startCapture()
+    init(audio: OpeningVoiceAudio) {
         self.audio = audio
         factory = RTCPeerConnectionFactory(encoderFactory: nil, decoderFactory: nil, audioDevice: audio)
     }
@@ -20,25 +18,36 @@ struct OpeningVoiceCapture {
 /// audio engine supplies WebRTC after connect, so there is no second microphone or audio upload.
 final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     private static let sampleRate = 48_000.0
-    private static let maxOpeningFrames = Int(sampleRate) * 30
+    // Enough speech for both bridge attempts, including token, offer and ICE timeouts.
+    private static let maxOpeningFrames = Int(sampleRate) * 210
+    private static let pauseFrames = Int(sampleRate * 1.25)
+    private static let noSpeechFrames = Int(sampleRate * 5)
     private static let channelFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true
     )!
 
     private let engine = AVAudioEngine()
+    @MainActor private var engineRunning = false
     private let lock = NSLock()
+    // Revocation waits only for an audio delivery already in progress. The SDK is never
+    // called with the device state lock held.
+    private let sendLock = NSLock()
+    private let session: Int
+    private enum State {
+        case buffering, sending, listeningForQuiet(AsyncStream<Void>.Continuation), readyForDictation, stopped
+    }
     private var delegate: RTCAudioDeviceDelegate?
     private var recording = false
     private var playing = false
     private var recordingInitialized = false
     private var playoutInitialized = false
-    private var canSend = false
+    private var state = State.buffering
     private var sentAudio = false
-    private var finished = false
     private var overflow = false
     private var queued = [Int16]()
     private var readIndex = 0
     private var quietFrames = 0
+    private var heardSpeech = false
 
     let deviceInputSampleRate = OpeningVoiceAudio.sampleRate
     let deviceOutputSampleRate = OpeningVoiceAudio.sampleRate
@@ -53,6 +62,14 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     var isPlayoutInitialized: Bool { lock.withLock { playoutInitialized } }
     var isRecording: Bool { lock.withLock { recording } }
     var isPlaying: Bool { lock.withLock { playing } }
+    var bufferedDuration: Duration {
+        lock.withLock { .seconds(Double(queued.count - readIndex) / Self.sampleRate) }
+    }
+
+    init(session: Int) {
+        self.session = session
+        super.init()
+    }
 
     @MainActor func startCapture() throws {
         let session = AVAudioSession.sharedInstance()
@@ -75,6 +92,7 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
             tapInstalled = true
             engine.prepare()
             try engine.start()
+            engineRunning = true
         } catch {
             engine.stop()
             if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
@@ -84,35 +102,68 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     }
 
     /// The media track drains the opening audio after session readiness, in front of any live input.
-    func allowSending() -> Bool {
+    func allowSending(session: Int) -> Bool {
         lock.withLock {
-            guard !overflow, !finished else { return false }
-            canSend = true
-            return true
+            guard session == self.session, !overflow else { return false }
+            switch state {
+            case .buffering, .sending:
+                state = .sending
+                return true
+            case .listeningForQuiet, .readyForDictation, .stopped:
+                return false
+            }
         }
     }
 
-    func keepForDictation() -> Bool {
+    func finishUtterance(session: Int) -> AsyncStream<Void>? {
         lock.withLock {
-            guard !sentAudio, !finished else { return false }
-            canSend = false
-            return true
+            guard session == self.session, !sentAudio else { return nil }
+            switch state {
+            case .buffering, .sending:
+                let (finished, continuation) = AsyncStream<Void>.makeStream()
+                state = .listeningForQuiet(continuation)
+                finishIfQuiet()
+                return finished
+            case .listeningForQuiet, .readyForDictation, .stopped:
+                return nil
+            }
         }
     }
 
-    /// Takes unsent audio only. After any media has gone out, a fallback must not repeat the task.
-    @MainActor func stopCapture() -> AVAudioPCMBuffer? {
-        let stopped: (wasRunning: Bool, completeRecording: [Int16]?) = lock.withLock {
-            guard !finished else { return (false, nil) }
-            finished = true
-            let samples = sentAudio || overflow ? nil : queued
-            queued.removeAll()
-            return (true, samples)
+    func timeOutUtterance(session: Int) {
+        lock.withLock {
+            guard session == self.session, case .listeningForQuiet = state else { return }
+            overflow = true
+            finishIfQuiet()
+        }
+    }
+
+    /// Revokes the media callback before stopping the engine or waiting for the peer to close.
+    /// Only the local fallback may take the recording, once the utterance has finished.
+    @MainActor func stopCapture(session: Int, forDictation: Bool = false) -> AVAudioPCMBuffer? {
+        guard session == self.session else { return nil }
+        let stopped: (wasRunning: Bool, completeRecording: [Int16]?) = sendLock.withLock {
+            lock.withLock {
+                if case .stopped = state { return (false, nil) }
+                let samples: [Int16]?
+                if forDictation, case .readyForDictation = state, !overflow { samples = queued }
+                else { samples = nil }
+                let previous = state
+                state = .stopped
+                delegate = nil
+                queued.removeAll()
+                readIndex = 0
+                if case .listeningForQuiet(let completion) = previous { completion.finish() }
+                return (true, samples)
+            }
         }
         guard stopped.wasRunning else { return nil }
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if engineRunning {
+            engineRunning = false
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         guard let samples = stopped.completeRecording, !samples.isEmpty,
               let audio = AVAudioPCMBuffer(pcmFormat: Self.channelFormat, frameCapacity: AVAudioFrameCount(samples.count)),
               let data = audio.int16ChannelData?[0] else { return nil }
@@ -136,47 +187,82 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
         }
     }
 
-    private func input(_ pcm: AVAudioPCMBuffer, at time: AVAudioTime) {
+    func input(_ pcm: AVAudioPCMBuffer, at time: AVAudioTime) {
         guard let source = pcm.int16ChannelData?[0] else { return }
         let count = Int(pcm.frameLength)
         let sourceFrames = UnsafeBufferPointer(start: source, count: count)
-        let (delegate, audio): (RTCAudioDeviceDelegate?, [Int16]?) = lock.withLock {
-            guard !finished else { return (nil, nil) }
-            if !canSend || !recording {
-                let remaining = max(0, Self.maxOpeningFrames - queued.count)
-                queued.append(contentsOf: sourceFrames.prefix(remaining))
-                if count > remaining { overflow = true }
-                return (nil, nil)
+        sendLock.withLock {
+            let (delegate, audio): (RTCAudioDeviceDelegate?, [Int16]?) = lock.withLock {
+                switch state {
+                case .buffering, .listeningForQuiet:
+                    buffer(sourceFrames)
+                    finishIfQuiet()
+                    return (nil, nil)
+                case .sending:
+                    guard recording, let delegate else {
+                        buffer(sourceFrames)
+                        return (nil, nil)
+                    }
+                    guard !overflow else { return (nil, nil) }
+                    sentAudio = true
+                    guard readIndex < queued.count else { return (delegate, nil) }
+                    return (delegate, drain(with: sourceFrames))
+                case .readyForDictation, .stopped:
+                    return (nil, nil)
+                }
             }
-            guard let delegate, !overflow else { return (nil, nil) }
-            sentAudio = true
-            guard readIndex < queued.count else { return (delegate, nil) }
+            guard let delegate else { return }
+            if let audio {
+                audio.withUnsafeBufferPointer { deliver($0, to: delegate, at: time) }
+            } else {
+                deliver(sourceFrames, to: delegate, at: time)
+            }
+        }
+    }
 
-            // Catch up during a pause. Keep a full second of quiet to separate utterances, then
-            // omit additional quiet frames until the opening audio has caught up to the live mic.
-            let isQuiet = sourceFrames.allSatisfy { abs(Int($0)) < 100 }
-            quietFrames = isQuiet ? quietFrames + count : 0
-            if quietFrames <= Int(Self.sampleRate) {
-                queued.append(contentsOf: sourceFrames)
-            }
-            let end = min(readIndex + count, queued.count)
-            let audio = Array(queued[readIndex..<end])
-            readIndex = end
-            if readIndex == queued.count {
-                queued.removeAll()
-                readIndex = 0
-            } else if readIndex >= Int(Self.sampleRate) {
-                queued.removeFirst(readIndex)
-                readIndex = 0
-            }
-            return (delegate, audio)
-        }
-        guard let delegate else { return }
-        if let audio {
-            audio.withUnsafeBufferPointer { deliver($0, to: delegate, at: time) }
+    private func buffer(_ frames: UnsafeBufferPointer<Int16>, duringReplay: Bool = false) {
+        let quiet = frames.reduce(Int64(0)) { $0 + Int64($1) * Int64($1) } < Int64(frames.count) * 10_000
+        let retainedCount: Int
+        if quiet {
+            // Keep a natural pause next to speech. Time spent waiting in silence must not
+            // fill the buffer or delay delivery of the user's first words.
+            retainedCount = min(frames.count, max(0, Self.pauseFrames - quietFrames))
+            quietFrames = min(Self.noSpeechFrames, quietFrames + frames.count)
         } else {
-            deliver(sourceFrames, to: delegate, at: time)
+            quietFrames = 0
+            heardSpeech = true
+            retainedCount = frames.count
         }
+        let available = duringReplay ? frames.count : Self.maxOpeningFrames - (queued.count - readIndex)
+        queued.append(contentsOf: frames.prefix(min(retainedCount, available)))
+        if retainedCount > available { overflow = true }
+    }
+
+    private func finishIfQuiet() {
+        guard case .listeningForQuiet(let completion) = state,
+              overflow || quietFrames >= (heardSpeech ? Self.pauseFrames : Self.noSpeechFrames) else { return }
+        state = .readyForDictation
+        completion.finish()
+    }
+
+    private func drain(with frames: UnsafeBufferPointer<Int16>) -> [Int16] {
+        // The same microphone stays on. Append new input behind the opening before draining
+        // the next packet, so speech that crosses the handoff cannot overlap or disappear.
+        buffer(frames, duringReplay: true)
+        let end = min(readIndex + frames.count, queued.count)
+        var packet = Array(queued[readIndex..<end])
+        if packet.count < frames.count {
+            packet.append(contentsOf: frames.suffix(frames.count - packet.count))
+        }
+        readIndex = end
+        if readIndex == queued.count {
+            queued.removeAll(keepingCapacity: true)
+            readIndex = 0
+        } else if readIndex >= Int(Self.sampleRate) {
+            queued.removeFirst(readIndex)
+            readIndex = 0
+        }
+        return packet
     }
 
     private func deliver(_ samples: UnsafeBufferPointer<Int16>, to delegate: RTCAudioDeviceDelegate, at time: AVAudioTime) {
@@ -194,7 +280,10 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
             guard let self, let destination = output.pointee.mBuffers.mData?.assumingMemoryBound(to: Float.self) else {
                 return kAudio_ParamError
             }
-            let delegate = self.lock.withLock { self.playing && !self.finished ? self.delegate : nil }
+            let delegate = self.lock.withLock {
+                if case .stopped = self.state { return nil as RTCAudioDeviceDelegate? }
+                return self.playing ? self.delegate : nil
+            }
             guard let delegate else {
                 silent.pointee = true
                 destination.update(repeating: 0, count: Int(count))

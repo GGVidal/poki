@@ -1,3 +1,4 @@
+import AVFAudio
 import Foundation
 import Observation
 import PokiCore
@@ -506,17 +507,20 @@ final class VoiceModel {
     private let connection: @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection
     private var connectionAttempt: Int?
     private let time: VoiceClock
+    private let transcribeOpening: @MainActor (AVAudioPCMBuffer) async throws -> String
 
     init(clearTap: @escaping @MainActor (String, String?, String?) async -> TapClearance,
          phoneTool: @escaping @MainActor (String, String, PhoneOperationCancellation?) async -> PhoneAnswer,
          holdMicrophone: @escaping @MainActor (Bool) -> Void = { _ in },
          connection: @escaping @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection = { VoiceLink(onEvent: $0, onClosed: $1) },
-         time: VoiceClock = VoiceClock()) {
+         time: VoiceClock = VoiceClock(),
+         transcribeOpening: @escaping @MainActor (AVAudioPCMBuffer) async throws -> String = { try await Dictation.transcribeLocally($0) }) {
         self.clearTap = clearTap
         self.phoneTool = phoneTool
         self.holdMicrophone = holdMicrophone
         self.connection = connection
         self.time = time
+        self.transcribeOpening = transcribeOpening
         // Poki in the background goes on with the talk (the owner, 2026-11-13): you speak to it from the
         // app you went to, and the Live Activity says what it is doing and carries End. It ends there as
         // it does in front, when nobody speaks for `followUp` after an answer. Only the wait for a server
@@ -726,7 +730,7 @@ final class VoiceModel {
             let openingLink = captureOpening && microphone ? makeLink(attempt: 1, direct: false) : nil
             if let openingLink {
                 holdingMicrophone = true
-                openingCapture = try openingLink.startOpeningCapture()
+                openingCapture = try openingLink.startOpeningCapture(session: number)
             }
             var token = try await configuration()
             // Ended (End, or the button again) while the key was exchanged.
@@ -768,9 +772,8 @@ final class VoiceModel {
                 return
             }
             transcript = nil
+            _ = releaseOpeningCapture(session: number)
             closeConnection("could not connect")
-            _ = openingCapture?.audio.stopCapture()
-            openingCapture = nil
             holdingMicrophone = false
             phase = .lost(captureOpening ? Self.openingAudioUnsent : VoiceError.reason(for: error))
             log.add("voice", "could not connect: \(error.localizedDescription)")
@@ -783,26 +786,34 @@ final class VoiceModel {
 
     private func sendOpeningAudioIfReady() -> Bool {
         guard ready, connectionOpen, let capture = openingCapture else { return true }
-        if capture.audio.allowSending() { return true }
+        if capture.audio.allowSending(session: session) { return true }
         return !startOpeningDictation()
     }
 
     @discardableResult
     private func startOpeningDictation() -> Bool {
-        guard let capture = openingCapture, capture.audio.keepForDictation() else { return false }
+        let number = session
+        guard let capture = openingCapture, let finished = capture.audio.finishUtterance(session: number) else { return false }
         trace("voice connection failed before opening audio was sent")
         closeConnection("switching to on-device dictation")
-        openingCapture = nil
-        let audio = capture.audio.stopCapture()
         transcript = nil
-        endSession()
-        phase = .thinking
-        let number = session
+        endVoiceConnection()
+        phase = .listening
         openingDictation = Task { [weak self] in
             guard let self else { return }
             defer { if session == number { openingDictation = nil } }
+            let deadline = Task { [time, weak audio = capture.audio] in
+                await time.sleep(.seconds(45))
+                guard !Task.isCancelled else { return }
+                audio?.timeOutUtterance(session: number)
+            }
+            for await _ in finished {}
+            deadline.cancel()
+            guard session == number, !Task.isCancelled else { return }
+            let audio = releaseOpeningCapture(session: number, forDictation: true)
+            phase = .thinking
             let text: String?
-            if let audio { text = try? await Dictation.transcribeLocally(audio) }
+            if let audio { text = try? await transcribeOpening(audio) }
             else { text = nil }
             guard session == number, !Task.isCancelled else { return }
             guard let text, !text.isEmpty, let chat = AskPoki.chat, !chat.running else {
@@ -818,6 +829,15 @@ final class VoiceModel {
             if session == number { phase = .off }
         }
         return true
+    }
+
+    @discardableResult
+    private func releaseOpeningCapture(session number: Int, forDictation: Bool = false) -> AVAudioPCMBuffer? {
+        guard number == session, let capture = openingCapture else { return nil }
+        openingCapture = nil
+        let audio = capture.audio.stopCapture(session: number, forDictation: forDictation)
+        holdingMicrophone = false
+        return audio
     }
 
     private func trace(_ event: String) {
@@ -860,6 +880,7 @@ final class VoiceModel {
     /// Ends the conversation. Calls already running keep running; the next session hears how they ended.
     func stop() {
         guard liveCloseTimeout == nil else { return }
+        releaseOpeningCapture(session: session)
         if let dictation {
             dictation.cancel()
             self.dictation = nil
@@ -905,6 +926,14 @@ final class VoiceModel {
     /// Drops the connection and the state of its turns; calls already running keep running. The lines of
     /// the conversation are kept for one opened soon after, before the chat takes them.
     private func endSession() {
+        releaseOpeningCapture(session: session)
+        openingDictation?.cancel()
+        openingDictation = nil
+        endVoiceConnection()
+        holdingMicrophone = false
+    }
+
+    private func endVoiceConnection() {
         keepOpen()
         livePlayback?.cancel()
         livePlayback = nil
@@ -933,13 +962,8 @@ final class VoiceModel {
         liveCloseTimeout?.cancel()
         liveCloseTimeout = nil
         closeConnection("session ended")
-        _ = openingCapture?.audio.stopCapture()
-        openingCapture = nil
-        openingDictation?.cancel()
-        openingDictation = nil
         usesLive = false
         screenItem = nil
-        holdingMicrophone = false
         ready = false
         activeResponse = nil
         wantsResponse = false
@@ -1006,8 +1030,9 @@ final class VoiceModel {
     /// lets go of the microphone. The same in front and in the background.
     private func endIfDone() {
         guard idle, endWindow == nil else { return }
+        let openingDelay = openingCapture?.audio.bufferedDuration ?? .zero
         endWindow = Task { [weak self, time] in
-            await time.sleep(Self.followUp)
+            await time.sleep(Self.followUp + openingDelay)
             guard let self, !Task.isCancelled else { return }
             endWindow = nil
             guard idle else { return }
@@ -1216,7 +1241,7 @@ final class VoiceModel {
             finishLiveClose(reason, confirmed: confirmed)
             return
         }
-        if startOpeningDictation() { return }
+        if !confirmed && (!ready || !connectionOpen), startOpeningDictation() { return }
         if usesLive && ready { logLiveClose(reason, confirmed: confirmed) }
         endSession()
         session += 1
