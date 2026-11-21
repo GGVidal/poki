@@ -216,10 +216,12 @@ final class AutomationWatermarkStopTests: XCTestCase {
             FakeCompletions.text("Second task done."),
         ])
         let (chat, transport) = try await makeHarness(server: server)
+        let closeBeforeFirst = model.lastInProcessClose?.number ?? 0
 
         chat.send("Open Settings.")
-        await waitFor("first task finished and tore down") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+        await waitFor("first task finished and closed automation") {
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeFirst
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertTrue(chat.entries.contains { $0.kind == .poki("Done opening Settings.") })
         XCTAssertEqual(transport.currentFrontBundle, pokiBundle, "normal completion returns to Poki")
@@ -227,9 +229,11 @@ final class AutomationWatermarkStopTests: XCTestCase {
         XCTAssertFalse(model.hasOpenInProcessSession)
 
         // Start the next task directly from the chat entry without pre-injecting runner state.
+        let closeBeforeSecond = model.lastInProcessClose?.number ?? 0
         chat.send("Open Settings again.")
-        await waitFor("second task finished and tore down") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+        await waitFor("second task finished and closed automation") {
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeSecond
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertTrue(chat.entries.contains { $0.kind == .poki("Second task done.") })
         XCTAssertEqual(transport.currentFrontBundle, pokiBundle)
@@ -258,14 +262,21 @@ final class AutomationWatermarkStopTests: XCTestCase {
         model.wentToBackground()
 
         // User switches back to Poki to see what is happening; Poki closes automation on foreground.
+        let closeBeforeForeground = model.lastInProcessClose?.number ?? 0
         model.becameActive()
-        await waitFor("becameActive closed session") { !self.session.isOpen && self.model.runnerPaused }
+        await waitFor("becameActive closed session") {
+            (self.model.lastInProcessClose?.number ?? 0) > closeBeforeForeground
+                && !self.session.isOpen && self.model.runnerPaused
+        }
 
         // Now the model request fails.
         server.release()
-        await waitFor("failed task finished and teardown settled") {
-            !chat.running && self.model.isTaskTeardownIdle && self.hasProblemNote(in: chat)
+        await waitFor("failed task recorded failure") {
+            !chat.running && self.hasProblemNote(in: chat) && self.model.activityText == "Idle"
         }
+        // Drain any teardown task queued on the runner without sleeping.
+        await Task.yield()
+        _ = await model.phoneSettles(within: 2)
 
         XCTAssertFalse(session.isOpen, "task failure after returning to Poki must not leave automation reopened")
         XCTAssertTrue(model.runnerPaused)
@@ -290,10 +301,12 @@ final class AutomationWatermarkStopTests: XCTestCase {
         }
         // Poki is now in the background while the model fails.
         model.wentToBackground()
+        let closeBefore = model.lastInProcessClose?.number ?? 0
         server.release()
 
         await waitFor("background failure finished and closed automation") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBefore
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertTrue(hasProblemNote(in: chat), "model error must be recorded as a failure")
         XCTAssertGreaterThanOrEqual(transport.screenReads, 1)
@@ -322,8 +335,9 @@ final class AutomationWatermarkStopTests: XCTestCase {
 
         // Live Activity Stop handler (`StopRunnerIntent` posts to `stopFromOutside`).
         model.stopFromOutside(AppModel.liveActivityStop)
-        await waitFor("task stopped and teardown completed") {
-            !chat.running && self.model.isTaskTeardownIdle && (self.model.lastInProcessClose?.number ?? 0) > closeBefore
+        await waitFor("task stopped and received close receipt") {
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBefore
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
 
         XCTAssertFalse(session.isOpen, "Dynamic Island stop must close automation and never reopen it during teardown")
@@ -359,8 +373,11 @@ final class AutomationWatermarkStopTests: XCTestCase {
         // hits the pre-dispatch 404 generation check and retries `POST /session` before teardown closes it.
         gate.release()
         await waitFor("stopped in-flight step finished teardown") {
-            !chat.running && self.model.isTaskTeardownIdle && chat.entries.contains { $0.kind == .poki("Stopped.") }
+            !chat.running && chat.entries.contains { $0.kind == .poki("Stopped.") }
+                && self.model.activityText == "Idle"
         }
+        await Task.yield()
+        _ = await model.phoneSettles(within: 2)
 
         XCTAssertFalse(session.isOpen, "Dynamic Island stop during an in-flight step must not leave automation open")
         XCTAssertTrue(model.runnerPaused)
@@ -387,13 +404,18 @@ final class AutomationWatermarkStopTests: XCTestCase {
         model.wentToBackground()
 
         // User switches back to Poki App, then taps Stop button in ChatView.
+        let closeBeforeForeground = model.lastInProcessClose?.number ?? 0
         model.becameActive()
-        await waitFor("becameActive closed session") { !self.session.isOpen && self.model.runnerPaused }
-        let closeBefore = model.lastInProcessClose?.number ?? 0
+        await waitFor("becameActive closed session") {
+            (self.model.lastInProcessClose?.number ?? 0) > closeBeforeForeground
+                && !self.session.isOpen && self.model.runnerPaused
+        }
+        let closeBeforeStop = model.lastInProcessClose?.number ?? 0
 
         chat.stop()
         await waitFor("in-app stop finished teardown") {
-            !chat.running && self.model.isTaskTeardownIdle && (self.model.lastInProcessClose?.number ?? 0) > closeBefore
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeStop
+                && self.model.activityText == "Idle"
         }
 
         XCTAssertFalse(session.isOpen, "In-app stop after switching back to Poki must not reopen automation")
@@ -417,12 +439,14 @@ final class AutomationWatermarkStopTests: XCTestCase {
         model.wentToBackground()
 
         // User switches back to Poki App while the step is in flight, then taps Stop in ChatView.
+        let closeBefore = model.lastInProcessClose?.number ?? 0
         model.becameActive()
         chat.stop()
 
         gate.release()
         await waitFor("in-app stop during in-flight step finished teardown") {
-            !chat.running && self.model.isTaskTeardownIdle && chat.entries.contains { $0.kind == .poki("Stopped.") }
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBefore
+                && chat.entries.contains { $0.kind == .poki("Stopped.") } && self.model.activityText == "Idle"
         }
 
         XCTAssertFalse(session.isOpen, "In-app stop during an in-flight step must close automation and not reopen it")
@@ -445,22 +469,30 @@ final class AutomationWatermarkStopTests: XCTestCase {
         await waitFor("task opened Settings and waiting on model") {
             self.session.isOpen && server.requests.count == 2
         }
+        let closeBefore = model.lastInProcessClose?.number ?? 0
 
         // User taps Stop inside Poki App while the session is still open.
         chat.stop()
         await waitFor("automation closed after in-app stop") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBefore
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertFalse(model.hasOpenInProcessSession)
     }
 
     func testInAppStopDuringInFlightStepFollowedImmediatelyByNextTaskClosesOldSession() async throws {
         let gate = StepHoldGate()
-        let server = try FakeCompletions(replies: [
-            launchSettingsTool(),
-            FakeCompletions.tool("look", [:]),
-            FakeCompletions.text("Four."),
-        ])
+        // Hold request #3 (the next task's first model request) so we inspect session state at
+        // the exact moment the next task starts — before the next task can end and mask a leak.
+        let server = try FakeCompletions(
+            replies: [
+                launchSettingsTool(),
+                FakeCompletions.tool("look", [:]),
+                FakeCompletions.text("Four."),
+            ],
+            holdAfter: 2
+        )
+        defer { server.release() }
         let (chat, _) = try await makeHarness(server: server, beforeScreen: { callIndex in
             if callIndex == 2 { await gate.wait() }
         })
@@ -471,18 +503,32 @@ final class AutomationWatermarkStopTests: XCTestCase {
 
         // User switches back to Poki, taps Stop, and immediately sends the next (pure-chat) task
         // while the stopped task's in-flight phone step has not yet returned.
+        let closeBefore = model.lastInProcessClose?.number ?? 0
         model.becameActive()
         chat.stop()
         chat.send("What is two plus two?")
         XCTAssertTrue(chat.running, "next task is queued immediately behind the stopped task")
 
         gate.release()
-        await waitFor("next pure-chat task finished after old task closed automation") {
-            !chat.running && self.model.isTaskTeardownIdle && chat.entries.contains { $0.kind == .poki("Four.") }
+        await waitFor("next task reached the model after the stopped task exited") {
+            server.requests.count == 3
         }
 
-        XCTAssertFalse(session.isOpen, "old stopped task must fully close automation even when a new task was queued immediately")
-        XCTAssertGreaterThanOrEqual(session.closes, 1)
+        // Check at the exact moment the next task begins (its reply is still held): the old
+        // stopped task must already have closed its automation session.
+        XCTAssertTrue(chat.running, "next task must still be running when verifying old-session closure")
+        XCTAssertFalse(session.isOpen, "old stopped task must have closed automation before the next task starts")
+        XCTAssertGreaterThanOrEqual(session.closes, 1, "old stopped task must have recorded a real close before the next task starts")
+        XCTAssertGreaterThan(model.lastInProcessClose?.number ?? 0, closeBefore)
+        XCTAssertTrue(model.runnerPaused)
+        XCTAssertFalse(model.hasOpenInProcessSession)
+
+        // Release the next pure-chat task and confirm it completes with automation still closed.
+        server.release()
+        await waitFor("next pure-chat task finished") {
+            !chat.running && chat.entries.contains { $0.kind == .poki("Four.") } && self.model.activityText == "Idle"
+        }
+        XCTAssertFalse(session.isOpen)
         XCTAssertTrue(model.runnerPaused)
         XCTAssertFalse(model.hasOpenInProcessSession)
     }
@@ -504,15 +550,18 @@ final class AutomationWatermarkStopTests: XCTestCase {
         await waitFor("task opened Settings and waiting on model") {
             self.session.isOpen && server.requests.count == 2
         }
+        let closeBeforeStop = model.lastInProcessClose?.number ?? 0
 
         chat.stop()
         await waitFor("iOS 26 owner stop fully closes automation") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeStop
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertGreaterThanOrEqual(session.closes, 1)
         XCTAssertEqual(session.pauses, 0)
 
         // Start the follow-up task directly from the chat entry without pre-injecting runner state.
+        let closeBeforeNext = model.lastInProcessClose?.number ?? 0
         let nextServer = try FakeCompletions(replies: [
             launchSettingsTool(),
             FakeCompletions.text("Next task done."),
@@ -520,7 +569,8 @@ final class AutomationWatermarkStopTests: XCTestCase {
         ModelKeys.customURL = "http://127.0.0.1:\(nextServer.port)/v1"
         chat.send("Open Settings again.")
         await waitFor("next task finished and stood by on iOS 26") {
-            !chat.running && self.model.isTaskTeardownIdle && self.model.runnerPaused && self.session.pauses >= 1
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeNext
+                && self.model.runnerPaused && self.session.pauses >= 1 && self.model.activityText == "Idle"
         }
         XCTAssertTrue(chat.entries.contains { $0.kind == .poki("Next task done.") })
         XCTAssertGreaterThanOrEqual(transport.screenReads, 2)
@@ -542,13 +592,16 @@ final class AutomationWatermarkStopTests: XCTestCase {
             self.session.isOpen && server.requests.count == 2
         }
         model.wentToBackground()
+        let closeBeforeStop = model.lastInProcessClose?.number ?? 0
 
         model.stopFromOutside(AppModel.liveActivityStop)
         await waitFor("task stopped and automation closed") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeStop
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
 
         // Start the next task directly from the chat entry without pre-injecting runner state.
+        let closeBeforeNext = model.lastInProcessClose?.number ?? 0
         let nextServer = try FakeCompletions(replies: [
             launchSettingsTool(),
             FakeCompletions.text("Second task done."),
@@ -556,7 +609,8 @@ final class AutomationWatermarkStopTests: XCTestCase {
         ModelKeys.customURL = "http://127.0.0.1:\(nextServer.port)/v1"
         chat.send("Open Settings again.")
         await waitFor("second task finished and closed automation") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeNext
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertTrue(chat.entries.contains { $0.kind == .poki("Second task done.") })
         XCTAssertGreaterThanOrEqual(transport.screenReads, 2)
@@ -567,10 +621,8 @@ final class AutomationWatermarkStopTests: XCTestCase {
             replies: [
                 launchSettingsTool(),
                 #"{"error":{"message":"simulated upstream failure"}}"#,
-                launchSettingsTool(),
-                FakeCompletions.text("Recovered on retry."),
             ],
-            responseStatuses: ["200 OK", "500 Internal Server Error", "200 OK", "200 OK"],
+            responseStatuses: ["200 OK", "500 Internal Server Error"],
             holdAfter: 1
         )
         defer { server.release() }
@@ -581,16 +633,19 @@ final class AutomationWatermarkStopTests: XCTestCase {
             self.session.isOpen && server.requests.count == 2
         }
         model.wentToBackground()
+        let closeBeforeFailure = model.lastInProcessClose?.number ?? 0
         server.release()
 
         await waitFor("failed task finished and closed automation") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeFailure
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertTrue(hasProblemNote(in: chat))
         let readsAfterFailure = transport.screenReads
         XCTAssertGreaterThanOrEqual(readsAfterFailure, 1)
 
         // Start the retry task directly from the chat entry without pre-injecting runner state.
+        let closeBeforeRetry = model.lastInProcessClose?.number ?? 0
         let retryServer = try FakeCompletions(replies: [
             launchSettingsTool(),
             FakeCompletions.text("Recovered on retry."),
@@ -598,7 +653,8 @@ final class AutomationWatermarkStopTests: XCTestCase {
         ModelKeys.customURL = "http://127.0.0.1:\(retryServer.port)/v1"
         chat.send("Try again.")
         await waitFor("retry task finished and closed automation") {
-            !chat.running && self.model.isTaskTeardownIdle && !self.session.isOpen && self.model.runnerPaused
+            !chat.running && (self.model.lastInProcessClose?.number ?? 0) > closeBeforeRetry
+                && !self.session.isOpen && self.model.runnerPaused && self.model.activityText == "Idle"
         }
         XCTAssertTrue(chat.entries.contains { $0.kind == .poki("Recovered on retry.") })
         XCTAssertGreaterThan(transport.screenReads, readsAfterFailure)

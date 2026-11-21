@@ -1543,11 +1543,6 @@ final class AppModel {
     /// `.approvalEnded`) to drain onto the main actor.
     private var pendingTaskClose: (why: String, forceClose: Bool)?
 
-    var isTaskTeardownIdle: Bool {
-        if case .closing = inProcessSession { return false }
-        return endingTasks == 0 && pendingTaskClose == nil && !chatTaskActive && stepUnderWay == nil && activityText == "Idle"
-    }
-
     private func closeAfterTask(_ why: String, forceClose: Bool = false, then: (@MainActor () -> Void)? = nil) {
         guard automationPath == .inProcess, sessionOn else {
             pendingTaskClose = nil
