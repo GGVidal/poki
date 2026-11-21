@@ -170,3 +170,94 @@ test('a voice tap_text on an element known only by its identifier shows the phon
   assert.match(check.target.says, /\bSend\b/);
   assert.equal((await f.events()).filter(e => e.op === 'tap').length, 0);
 });
+
+test('Mac bridge tools annotate action host, observation source, effective action, and confirmation without changing prompts', async t => {
+  const f = await fixture(t);
+  await f.set({ label: 'Send' });
+  await copyFile(join(root, 'bin/voice-bridge.mjs'), join(f.dir, 'bin/voice-bridge.mjs'));
+  const child = spawn(process.execPath, [join(f.dir, 'bin/voice-bridge.mjs'), '--port', '0', '--host', '127.0.0.1', '--mac-tools', '--test-dir', f.dir], {
+    env: { ...f.env, OPENAI_API_KEY: 'unused' }, stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const exited = once(child, 'exit');
+  t.after(async () => { child.kill(); await exited; });
+  const events = [];
+  const lines = createInterface({ input: child.stdout });
+  lines.on('line', line => { try { events.push(JSON.parse(line)); } catch {} });
+  const ready = await new Promise((resolve, reject) => {
+    const checkReady = line => {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.event === 'ready') { lines.off('line', checkReady); resolve(parsed); }
+      } catch {}
+    };
+    lines.on('line', checkReady);
+    exited.then(() => reject(new Error('bridge exited before ready')));
+  });
+  assert.equal(ready.voice_host, 'voice_bridge');
+  assert.equal(ready.action_host, 'mac_tools');
+  const { secret } = JSON.parse(await readFile(join(f.env.POKI_MCP_STATE_DIR, 'voice-bridge.json'), 'utf8'));
+  const base = `http://127.0.0.1:${ready.port}/voice/${secret}`;
+  const callTool = body => fetch(`${base}/tool`, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
+
+  const read = await callTool({ call_id: 'r1', name: 'read_screen', arguments: {} });
+  assert.equal(read.state, 'done', JSON.stringify(read));
+  assert.equal(read.action_host, 'mac_tools');
+  assert.equal(read.observation_source, 'mac_mcp_accessibility');
+  assert.equal(read.effective_action, false);
+  assert.equal(read.target_confirmed, true);
+
+  const checkUnchanged = await callTool({ call_id: 't0', name: 'tap_text', arguments: { text: 'Send' } });
+  assert.equal(checkUnchanged.state, 'check');
+  assert.equal(checkUnchanged.action_host, 'mac_tools');
+  assert.equal(checkUnchanged.observation_source, 'mac_mcp_accessibility');
+  assert.equal(checkUnchanged.effective_action, false);
+  assert.equal(checkUnchanged.target_confirmed, false);
+
+  const unchangedTap = await callTool({ call_id: 't0', name: 'tap_text', arguments: { text: 'Send' }, checked: { app: checkUnchanged.app.bundle_id, text: checkUnchanged.target.text } });
+  assert.equal(unchangedTap.state, 'done', JSON.stringify(unchangedTap));
+  assert.equal(unchangedTap.action_host, 'mac_tools');
+  assert.equal(unchangedTap.effective_action, true);
+  assert.equal(unchangedTap.target_confirmed, false, 'unchanged screen must not confirm the target');
+
+  await f.set({ label: 'Send', afterInput: { label: 'Sent' } });
+  const check = await callTool({ call_id: 't1', name: 'tap_text', arguments: { text: 'Send' } });
+  assert.equal(check.state, 'check');
+  const tapped = await callTool({ call_id: 't1', name: 'tap_text', arguments: { text: 'Send' }, checked: { app: check.app.bundle_id, text: check.target.text } });
+  assert.equal(tapped.state, 'done', JSON.stringify(tapped));
+  assert.equal(tapped.action_host, 'mac_tools');
+  assert.equal(tapped.effective_action, true);
+  assert.equal(tapped.target_confirmed, true, 'changed screen readback confirms the target');
+  assert.equal(tapped.observation_source, 'mac_mcp_action_readback');
+
+  const ledgerLines = (await readFile(join(f.env.POKI_MCP_STATE_DIR, 'voice-ledger.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  const tapLedger = ledgerLines.find(entry => entry.call_id === 't1');
+  assert.equal(tapLedger.voice_host, 'voice_bridge');
+  assert.equal(tapLedger.action_host, 'mac_tools');
+  assert.equal(tapLedger.effective_action, true);
+  assert.equal(tapLedger.target_confirmed, true);
+  assert.equal(typeof tapLedger.ms, 'number');
+
+  const reportPayload = {
+    n: 1,
+    ok: true,
+    entry_route: 'voice_bridge',
+    voice_host: 'voice_bridge',
+    action_host: 'mac_tools',
+    observation_source: 'mac_mcp_action_readback',
+    host_ms: { phone_local: 0, mac_tools: tapped.ms },
+    calls: ['tap_text'],
+    ms: { said: 0, heard: 20, call: 60, first_effective_action: 80, toolDone: 180, target_confirmed: 180, delivered: 185, spoken: 240 },
+  };
+  const reportRes = await fetch(`${base}/report`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(reportPayload) });
+  assert.equal(reportRes.status, 200);
+  const reported = JSON.parse((await readFile(join(f.env.POKI_MCP_STATE_DIR, 'voice-test-report.jsonl'), 'utf8')).trim().split('\n').at(-1));
+  assert.equal(reported.entry_route, 'voice_bridge');
+  assert.equal(reported.voice_host, 'voice_bridge');
+  assert.equal(reported.action_host, 'mac_tools');
+  assert.equal(reported.observation_source, 'mac_mcp_action_readback');
+  assert.equal(reported.host_ms.phone_local, 0);
+  assert.equal(reported.ms.first_effective_action, 80);
+  assert.equal(reported.ms.target_confirmed, 180);
+  assert.ok(events.some(event => event.event === 'tool' && event.call_id === 't1' && event.action_host === 'mac_tools' && event.voice_host === 'voice_bridge'));
+  assert.ok(events.some(event => event.event === 'test-turn' && event.action_host === 'mac_tools' && event.ms?.target_confirmed === 180));
+});

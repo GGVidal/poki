@@ -168,15 +168,15 @@ Keep speaking through brief acknowledgments such as “嗯” and “好的”. 
 const text = result => result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
 const clip = (s, n = 1800) => s.length > n ? `${s.slice(0, n)}…` : s;
 
-// Voice tool → Poki MCP call. Each returns the string the model reads.
+// Voice tool → Poki MCP call. Each returns the raw string; runTool classifies metadata before clipping for the model.
 const runners = {
   async get_ios_version(mcp) {
     const info = JSON.parse(text(await mcp.call('get_device_info', {})));
     return JSON.stringify({ model: info.model, ios_version: info.osVersion });
   },
-  open_settings: async (mcp, a) => clip(text(await mcp.call('open_settings', a.page ? { page: a.page } : {}))),
-  read_screen: async mcp => clip(text(await mcp.call('list_elements', { max_elements: 60 }))),
-  open_app: async (mcp, a) => clip(text(await mcp.call('launch_app', { name: a.name }))),
+  open_settings: async (mcp, a) => text(await mcp.call('open_settings', a.page ? { page: a.page } : {})),
+  read_screen: async mcp => text(await mcp.call('list_elements', { max_elements: 60 })),
+  open_app: async (mcp, a) => text(await mcp.call('launch_app', { name: a.name })),
   // Only with `checked`, the app and element text the phone cleared (see runTool).
   async tap_text(mcp, a, checked) {
     if (isPoki(checked.app)) throw new Error(ownAppRefusal);
@@ -185,10 +185,47 @@ const runners = {
     // The owner may have opened Poki to allow it; the tap belongs to the app that was checked.
     if (checked.app && front?.bundle_id !== checked.app) await mcp.call('launch_app', { bundle_id: checked.app });
     else if (!checked.app && isPoki(front?.bundle_id)) throw new Error(ownAppRefusal);
-    return clip(text(await mcp.call('tap_text', { text: checked.text, exact: true })));
+    return text(await mcp.call('tap_text', { text: checked.text, exact: true }));
   },
-  go_home: async mcp => clip(text(await mcp.call('press_button', { button: 'home' }))),
+  go_home: async mcp => text(await mcp.call('press_button', { button: 'home' })),
 };
+
+const defaultActionHost = macTools ? 'mac_tools' : 'phone_local';
+
+function parseJSONObject(raw) {
+  try {
+    const value = JSON.parse(raw);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function classifyMacTool(name, raw, state) {
+  const parsed = parseJSONObject(raw);
+  let observation_source = 'none';
+  if (state === 'done') {
+    const source = parsed?.post_action_observation?.source ?? parsed?.source;
+    if (name === 'get_ios_version') observation_source = 'mac_mcp_device_info';
+    else if (source === 'ocr') observation_source = 'mac_mcp_ocr';
+    else if (source === 'accessibility') observation_source = 'mac_mcp_accessibility';
+    else if (parsed?.screen_change_verified === true || parsed?.foreground_verified === true) observation_source = 'mac_mcp_action_readback';
+    else if (name === 'read_screen') observation_source = 'mac_mcp_accessibility';
+    else observation_source = 'mac_mcp_action';
+  }
+  const readOnly = name === 'read_screen' || name === 'get_ios_version';
+  const notSent = parsed?.outcome === 'not_sent' || parsed?.launched === false || parsed?.sent === false;
+  const effective_action = state === 'done' && !readOnly && !notSent;
+  let target_confirmed = false;
+  if (state === 'done') {
+    if (name === 'read_screen') target_confirmed = Array.isArray(parsed?.elements) || raw.trim().length > 0;
+    else if (name === 'get_ios_version') target_confirmed = Boolean(parsed?.ios_version || parsed?.model);
+    else if (typeof parsed?.screen_change === 'string') target_confirmed = parsed.screen_change === 'changed';
+    else if (typeof parsed?.foreground_verified === 'boolean') target_confirmed = parsed.foreground_verified;
+    else target_confirmed = parsed?.launched === true || Boolean(parsed?.opened);
+  }
+  return { action_host: 'mac_tools', observation_source, effective_action, target_confirmed };
+}
 
 class Mcp {
   async connect() {
@@ -222,7 +259,11 @@ async function tapTarget(mcp, wanted) {
   if (!found.length) throw new Error(`nothing on screen reads ${JSON.stringify(wanted)}; nothing was tapped. Read the screen first.`);
   if (found.length > 1) throw new Error(`${found.length} elements match ${JSON.stringify(wanted)}: ${found.map(e => JSON.stringify(names(e)[0] ?? '')).join(', ')}; nothing was tapped. Name one exactly.`);
   const [first, ...rest] = names(found[0]);
-  return { app: { bundle_id: screen.foreground?.bundle_id ?? null, name: screen.foreground?.name ?? null }, target: { text: first ?? wanted, says: [first, ...rest].filter(Boolean).join(' = ') } };
+  return {
+    app: { bundle_id: screen.foreground?.bundle_id ?? null, name: screen.foreground?.name ?? null },
+    target: { text: first ?? wanted, says: [first, ...rest].filter(Boolean).join(' = ') },
+    observation_source: screen.source === 'ocr' ? 'mac_mcp_ocr' : 'mac_mcp_accessibility',
+  };
 }
 
 async function bridgeSecret() {
@@ -245,22 +286,53 @@ async function runTool(mcp, { call_id, name, arguments: args = {}, checked }) {
   // A tap the phone has not checked yet: say what it would tap. Nothing runs, so it is not in the ledger.
   if (name === 'tap_text' && !(typeof checked?.text === 'string' && checked.text)) {
     const started = Date.now();
-    try { return { state: 'check', ...await tapTarget(mcp, args.text), started, finished: Date.now() }; }
-    catch (error) { return { state: 'failed', output: `error: ${error.message}`, started, finished: Date.now() }; }
+    try {
+      const preview = await tapTarget(mcp, args.text);
+      return {
+        state: 'check',
+        app: preview.app,
+        target: preview.target,
+        action_host: 'mac_tools',
+        observation_source: preview.observation_source,
+        effective_action: false,
+        target_confirmed: false,
+        started,
+        finished: Date.now(),
+      };
+    } catch (error) {
+      return {
+        state: 'failed',
+        output: `error: ${error.message}`,
+        action_host: 'mac_tools',
+        observation_source: 'none',
+        effective_action: false,
+        target_confirmed: false,
+        started,
+        finished: Date.now(),
+      };
+    }
   }
   const entry = { call_id, name, args, ...(checked ? { checked } : {}), state: 'running', started: Date.now() };
   const done = (async () => {
     const runner = runners[name];
+    let raw = '';
     try {
       if (!runner) throw new Error(`unknown voice tool ${name}`);
-      entry.output = await runner(mcp, args, checked);
+      raw = await runner(mcp, args, checked);
+      entry.output = clip(raw);
       entry.state = 'done';
     } catch (error) {
       entry.output = `error: ${error.message}`;
       entry.state = 'failed';
     }
+    Object.assign(entry, classifyMacTool(name, raw, entry.state));
     entry.finished = Date.now();
-    await appendFile(ledgerFile, JSON.stringify({ call_id, name, args, state: entry.state, started: entry.started, finished: entry.finished, output: clip(entry.output, 300) }) + '\n', { mode: 0o600 });
+    await appendFile(ledgerFile, JSON.stringify({
+      call_id, name, args, state: entry.state, started: entry.started, finished: entry.finished,
+      ms: entry.finished - entry.started, voice_host: 'voice_bridge', action_host: entry.action_host,
+      observation_source: entry.observation_source, effective_action: entry.effective_action,
+      target_confirmed: entry.target_confirmed, output: clip(entry.output, 300),
+    }) + '\n', { mode: 0o600 });
   })();
   ledger.set(call_id, { entry, done });
   await done;
@@ -345,19 +417,25 @@ const server = http.createServer(async (req, res) => {
   if (!ok) return reply(404, { error: 'not found' });
   try {
     if (req.method === 'GET' && action === 'token') {
-      if (usesLive && url.searchParams.get('transport') === 'live') return reply(200, { model, live: true, local_tools: localTools });
+      if (usesLive && url.searchParams.get('transport') === 'live') {
+        console.log(JSON.stringify({ event: 'token', ms: 0, entry_route: 'voice_bridge', voice_host: 'voice_bridge', action_host: defaultActionHost, transport: 'live' }));
+        return reply(200, { model, live: true, local_tools: localTools });
+      }
       const options = Object.fromEntries(['effort', 'vad', 'voice', 'language'].map(k => [k, url.searchParams.get(k) ?? undefined]).filter(([, v]) => v));
       options.manualTurns = url.searchParams.get('turns') === 'committed';
       const started = Date.now();
       const token = await mintToken(options);
-      console.log(JSON.stringify({ event: 'token', ms: Date.now() - started, options }));
+      console.log(JSON.stringify({ event: 'token', ms: Date.now() - started, entry_route: 'voice_bridge', voice_host: 'voice_bridge', action_host: defaultActionHost, transport: 'realtime', options }));
       return reply(200, token);
     }
     if (req.method === 'POST' && action === 'session' && usesLive) {
       const { sdp } = await readJSON(req) ?? {};
       if (typeof sdp !== 'string' || !sdp.trim()) return reply(400, { error: 'SDP offer is required' });
       const options = Object.fromEntries(['effort', 'voice', 'language'].map(key => [key, url.searchParams.get(key) || undefined]));
-      return reply(200, await exchangeOffer(sdp, options));
+      const started = Date.now();
+      const answer = await exchangeOffer(sdp, options);
+      console.log(JSON.stringify({ event: 'session', ms: Date.now() - started, entry_route: 'voice_bridge', voice_host: 'voice_bridge', action_host: defaultActionHost, transport: 'live', options }));
+      return reply(200, answer);
     }
     if (req.method === 'POST' && action === 'screen' && usesLive) {
       const { image } = await readJSON(req) ?? {};
@@ -370,8 +448,19 @@ const server = http.createServer(async (req, res) => {
       const call = await readJSON(req);
       if (typeof call.call_id !== 'string' || typeof call.name !== 'string') return reply(400, { error: 'call_id and name are required' });
       const entry = await runTool(mcp, call);
-      console.log(JSON.stringify({ event: 'tool', call_id: call.call_id, name: call.name, state: entry.state, ms: entry.finished - entry.started, replayed: !!entry.replayed }));
-      return reply(200, { call_id: call.call_id, state: entry.state, output: entry.output, ...(entry.state === 'check' ? { app: entry.app, target: entry.target } : {}), ms: entry.finished - entry.started, replayed: !!entry.replayed });
+      const ms = entry.finished - entry.started;
+      console.log(JSON.stringify({
+        event: 'tool', call_id: call.call_id, name: call.name, state: entry.state, ms,
+        voice_host: 'voice_bridge', action_host: entry.action_host, observation_source: entry.observation_source,
+        effective_action: entry.effective_action, target_confirmed: entry.target_confirmed, replayed: !!entry.replayed,
+      }));
+      return reply(200, {
+        call_id: call.call_id, state: entry.state, output: entry.output,
+        ...(entry.state === 'check' ? { app: entry.app, target: entry.target } : {}),
+        ms, action_host: entry.action_host, observation_source: entry.observation_source,
+        effective_action: entry.effective_action, target_confirmed: entry.target_confirmed,
+        replayed: !!entry.replayed,
+      });
     }
     if (testDir && req.method === 'GET' && action === 'utterance') {
       const n = url.searchParams.get('n') ?? '';
@@ -383,7 +472,12 @@ const server = http.createServer(async (req, res) => {
     if (testDir && req.method === 'POST' && action === 'report') {
       const turn = await readJSON(req);
       await appendFile(join(stateDir, 'voice-test-report.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...turn }) + '\n', { mode: 0o600 });
-      console.log(JSON.stringify({ event: 'test-turn', n: turn.n, ok: turn.ok, calls: turn.calls, ms: turn.ms }));
+      console.log(JSON.stringify({
+        event: 'test-turn', n: turn.n, ok: turn.ok, entry_route: turn.entry_route ?? null,
+        voice_host: turn.voice_host ?? null, action_host: turn.action_host ?? null,
+        observation_source: turn.observation_source ?? null, host_ms: turn.host_ms ?? null,
+        calls: turn.calls, ms: turn.ms,
+      }));
       return reply(200, {});
     }
     return reply(404, { error: 'not found' });
@@ -394,5 +488,5 @@ const server = http.createServer(async (req, res) => {
 });
 server.listen(port, host, () => {
   const addresses = Object.values(networkInterfaces()).flat().filter(a => a.family === 'IPv4' && !a.internal).map(a => a.address);
-  console.log(JSON.stringify({ event: 'ready', port: server.address().port, addresses, model, secretFile: file, device: device ?? null }));
+  console.log(JSON.stringify({ event: 'ready', port: server.address().port, addresses, model, voice_host: 'voice_bridge', action_host: defaultActionHost, secretFile: file, device: device ?? null }));
 });
