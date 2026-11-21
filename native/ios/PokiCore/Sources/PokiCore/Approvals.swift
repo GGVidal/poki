@@ -72,7 +72,7 @@ public struct OwnerApprovalIntent: Decodable, Sendable {
         init?(reason: String) {
             if reason.hasPrefix("a payment (") { self = .payment }
             else if reason.hasPrefix("deleting (") { self = .deletion }
-            else if reason.hasPrefix("sending a message ("), !reason.contains("screen not read yet") { self = .message }
+            else if reason.hasPrefix("sending a message ("), !reason.hasPrefix(SensitivityRules.unverifiedMessageTap) { self = .message }
             else { return nil }
         }
     }
@@ -185,6 +185,7 @@ public struct SensitivityRules: Sendable, Equatable {
     private static let transferAmount = #"^(?:转账|轉帳|轉賬|transfer)\s*"# + currencyAmount + #"\s*$"#
     private static let clearStatus = #"(?:库存|名额|积分|余额|额度|庫存|名額|積分|餘額|額度)\s*(?:已经|已被|已|即将|即將|将被|將被|将|將|会被|會被)\s*(?:自动|自動)?\s*(?:清空)(?=$|[\s，。！；、,.!;])"#
     static let unclearConfirmation = "a confirmation button whose effect is unclear"
+    static let unverifiedMessageTap = "sending a message (a tap in "
 
     static func isSubmission(_ reason: String) -> Bool {
         OwnerApprovalIntent.Kind(reason: reason) != nil || reason == unclearConfirmation

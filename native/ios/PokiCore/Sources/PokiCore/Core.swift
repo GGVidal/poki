@@ -442,12 +442,18 @@ public final class PokiCore: @unchecked Sendable {
                                                               frame: Rect(x: 0, y: 0, width: 0, height: 0), depth: 0)
         let button = evidence?.button?.element ?? (element.type == "Button" ? element : nil)
         let labels = evidence?.pressed == nil ? legacyLabels : evidence?.buttonLabels ?? []
+        let hasTargetEvidence = evidence?.snapshot?.count == 64
         // No readable text: the rules cannot tell what it does, so the owner is asked.
         let unreadable = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         func check(_ rules: SensitivityRules) -> String? {
             if unreadable && rules.enabled { return "a tap on something with no readable text" }
-            return rules.reason(touching: element, typing: false, app: app, secureOnScreen: false,
-                                paymentButton: button, buttonLabels: labels)
+            if let reason = rules.reason(touching: element, typing: false, app: app, secureOnScreen: false,
+                                         paymentButton: button, buttonLabels: labels) { return reason }
+            // OCR can read a transfer amount without establishing whether it is a button or a receipt.
+            if rules.enabled, !hasTargetEvidence, let word = SensitivityRules.matches(text, rules.payments) {
+                return "a payment (\"\(word)\")"
+            }
+            return nil
         }
         guard let reason = check(config.rules) else { return .clear }
         if let evidence, let bundleID, await computer.authorizeVoiceTap(evidence, reason: reason, bundleID: bundleID) {

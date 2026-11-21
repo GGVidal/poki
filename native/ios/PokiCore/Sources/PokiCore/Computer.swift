@@ -2103,14 +2103,19 @@ final class Computer: @unchecked Sendable {
         return Self.navigationConfirmationRefusal
     }
 
-    private func pressReason(_ press: (element: Element?, atPoint: Bool, judged: Press), in scan: SensitiveScan, rules: SensitivityRules) -> String? {
+    private func pressReason(_ press: (element: Element?, atPoint: Bool, judged: Press), in scan: SensitiveScan, rules: SensitivityRules, targetWasRead: Bool = true) -> String? {
         let tree = scan.tree ?? scan.elements ?? lastAll
         let button = press.element.flatMap { element in
             element.type == "Button" ? element : tree.last { $0.type == "Button" && $0.contains(element) }
         }
         let labels = button.map { button in tree.filter { button.contains($0) && !$0.isSecure }.map(\.text) } ?? []
-        return rules.reason(touching: press.element, typing: false, app: press.judged == .stroke ? nil : scan.front,
-                            secureOnScreen: scan.secureOnScreen, paymentButton: button, buttonLabels: labels)
+        if let reason = rules.reason(touching: press.element, typing: false, app: press.judged == .stroke ? nil : scan.front,
+                                     secureOnScreen: scan.secureOnScreen, paymentButton: button, buttonLabels: labels) { return reason }
+        if targetWasRead, press.judged == .tap, press.element?.text.isEmpty != false,
+           let front = scan.front, let bundle = front.bundleID, rules.messagingApps.contains(bundle) {
+            return "\(SensitivityRules.unverifiedMessageTap)\(front.describe) whose target could not be identified)"
+        }
+        return nil
     }
 
     /// Where an action puts a finger down and lifts it on one element, which a control takes as a press
@@ -2178,9 +2183,9 @@ final class Computer: @unchecked Sendable {
            destination != "com.apple.mobilenotes" { return "dropping content into \(destination)" }
         if kind == .tap { scan.typingTarget = unread ? nil : target(spec, in: scan.elements) }
         for press in presses(kind, action, scan, unread: unread) {
-            if let r = pressReason(press, in: scan, rules: rules) { return r }
+            if let r = pressReason(press, in: scan, rules: rules, targetWasRead: !unread) { return r }
             guard press.judged == .tap else { continue }
-            if unread, messaging, config.ownerApprovalIntent == nil { return "sending a message (a tap in \(app) on a screen not read yet)" }
+            if unread, messaging, config.ownerApprovalIntent == nil { return "\(SensitivityRules.unverifiedMessageTap)\(app) on a screen not read yet)" }
             // After a launch or a run nothing of the app's screen was read: a Delete there reads as nothing.
             // The home screen after Home opens apps, which ask for themselves.
             if !scan.read, scan.front != nil { return "a tap on a screen not read yet (in \(app))" }
