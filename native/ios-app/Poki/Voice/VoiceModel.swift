@@ -312,6 +312,7 @@ final class VoiceModel {
     private(set) var clock = TurnClock()
 
     private var link: VoiceConnection?
+    private var startupMode: VoiceStartupMode?
     private var usesLive = false
     private var liveCloseTimeout: Task<Void, Never>?
     private var liveUsageSeconds: Double?
@@ -687,6 +688,15 @@ final class VoiceModel {
             guard let bridge else { throw VoiceError.noBridge }
             return try await bridge.token(preferLive: microphone)
         }
+        func resolveStartupMode(for token: VoiceBridge.Token?) -> VoiceStartupMode {
+            if rehearsing { return .rehearsal }
+            if let account, key != nil {
+                let live = token?.live ?? (microphone && account == .openai && ModelCatalog.voiceModelID(for: account).hasPrefix("gpt-live-"))
+                return live ? .liveDirect : .realtimeDirect
+            }
+            return token?.live == true ? .liveBridge : .realtimeBridge
+        }
+        startupMode = resolveStartupMode(for: nil)
         func connect(_ token: VoiceBridge.Token, attempt: Int, direct: Bool) async throws {
             connectionAttempt = attempt
             let link = connection({ [weak self] event in
@@ -703,6 +713,9 @@ final class VoiceModel {
             }
             usesLive = token.live == true
             localTools = Set(token.local_tools)
+            let mode = resolveStartupMode(for: token)
+            startupMode = mode
+            log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: mode, commitState: rehearsing ? .queued : .submitted))
             if usesLive {
                 if let key { liveScreenDescription = { try await VoiceDirect.describeLiveScreen($0, apiKey: key) } }
                 else { liveScreenDescription = bridge?.liveScreenReader }
@@ -743,6 +756,10 @@ final class VoiceModel {
             // Ended while connecting: stop() already put everything back.
             guard number == session, liveCloseTimeout == nil else { return }
             transcript = nil
+            if let mode = startupMode, !ready {
+                log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: mode, commitState: .failed))
+            }
+            startupMode = nil
             closeConnection("could not connect")
             holdingMicrophone = false
             phase = .lost(VoiceError.reason(for: error))
@@ -862,6 +879,7 @@ final class VoiceModel {
         liveCloseTimeout?.cancel()
         liveCloseTimeout = nil
         closeConnection("session ended")
+        startupMode = nil
         usesLive = false
         screenItem = nil
         holdingMicrophone = false
@@ -1079,6 +1097,7 @@ final class VoiceModel {
         do {
             try dictation.listen()
             phase = .hearing
+            log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: .dictation, commitState: .confirmed))
             log.add("voice", "dictation to the chat (no Realtime key or bridge)")
         } catch {
             self.dictation = nil
@@ -1171,6 +1190,9 @@ final class VoiceModel {
                 let audio = (event["session"] as? [String: Any])?["audio"] as? [String: Any]
                 let detection = (audio?["input"] as? [String: Any])?["turn_detection"] as? [String: Any]
                 manualRealtimeTurns = detection?["create_response"] as? Bool == false
+            }
+            if !ready, let mode = startupMode {
+                log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: mode, commitState: .confirmed))
             }
             trace("model session ready")
             ready = true

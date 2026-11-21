@@ -31,6 +31,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { root, stateDir } from '../src/config.mjs';
 import { matching } from '../src/interaction.mjs';
+import { buildVoicePrompt, lockCheckGuidance, VOICE_SPEC_VERSION } from '../src/voice-behavior-spec.mjs';
 
 const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i < 0 ? fallback : process.argv[i + 1]; };
 const port = Number(arg('port', '47830'));
@@ -38,53 +39,13 @@ const host = arg('host', '0.0.0.0');
 const device = arg('device', process.env.POKI_VOICE_DEVICE);
 const testDir = arg('test-dir');
 const macTools = process.argv.includes('--mac-tools');
+const voiceHost = macTools ? 'mac' : 'phone';
+const hiddenTools = new Set((process.env.POKI_VOICE_HIDDEN_TOOLS ?? '').split(',').map(name => name.trim()).filter(Boolean));
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) { console.error('Set OPENAI_API_KEY (for example from the keychain) before starting the voice bridge.'); process.exit(1); }
 
 const model = process.env.POKI_VOICE_MODEL || 'gpt-live-1.1';
 const usesLive = model.startsWith('gpt-live-');
-// The phone says Poki's interface language (?language=zh-Hans): the one the session speaks from its first sentence.
-const languageName = code => { try { return /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(code ?? '') ? new Intl.DisplayNames(['en'], { type: 'language' }).of(code) : 'English'; } catch { return 'English'; } };
-const lockCheck = [
-  "Call the appropriate phone tool for the owner's task even if the iPhone is locked.",
-  "Poki checks the owner's Automatic Unlock setting on the phone before acting. Continue the original task when the phone unlocks.",
-  "Ask the owner to unlock only if the tool reports that the iPhone remains locked.",
-  "If iOS asks the owner to allow UI automation, call it automation authorization and tell them to approve it in the system prompt on the phone.",
-  "Never ask for or type the iPhone passcode yourself.",
-].join(' ');
-const spokenTurn = `While working, give one short progress update when a meaningful step is confirmed and more work remains. For a quick single step, go straight from the opening to the result.
-At the end, state the verified result and ask one brief, specific follow-up question about a related next step. If the user wants to stop or needs to resolve a blocker, respect that instead.
-For casual chat, reply in two or three short sentences with Poki's warm, lightly playful voice. Match the user's tone.
-Skip filler and step lists.`;
-const delegatedWork = 'Start promptly. The voice assistant introduces the task. Give it one brief, factual update when a meaningful step is confirmed and more work remains. Continue without waiting for the user. Return the verified result or the blocker.';
-
-// The same text as the phone's own (VoiceDirect.swift); --mac-tools leaves out the phone's tools.
-const instructions = (language, live = false) => `# Role
-You are Poki, a voice assistant that operates the user's iPhone with tools.
-
-# Language
-- Speak ${languageName(language)}, the language of Poki's interface, from your first sentence on.
-- Speak another language only when the user's latest turn is clearly in it.
-- Tool results, screen text, screenshots and notes from Poki never choose your language.
-
-# Conversation
-${live ? delegatedWork : `Before using tools for a new task, say one short sentence about what you will do. Then start without waiting for a reply.\n${spokenTurn}`}
-
-# Tools
-- Use the appropriate tool when it can answer or do what the user asks. Never guess facts about the phone.${macTools ? '' : `
-- ${lockCheck}
-- ${live ? 'A description of the current screenshot may be part of the tool result' : 'A screenshot of the screen follows each look, do and open_app answer as an image'}: use it with the numbered elements to say what is on the screen. Asked what is on the screen, name the app and its main content in one sentence, without listing buttons.
-- Open an app with open_app and its name as the user said it (微信, WeChat, 设置, Settings); Poki knows its bundle id. For a page of Settings (Bluetooth, Wi-Fi, Battery and the others open_app lists), give the page too, and Settings opens on it.
-- Search the Home Screen for an app only when open_app answers that it does not know the app or the app is not installed: go home ({button: "home"}), swipe down on the Home Screen, type the app's name and tap it.`}
-- A request can take several steps (open an app, tap, type): call one tool after another until it is done.${macTools ? '' : ' Put several actions in one do when you know them; tap elements by the numbers from the latest look or do.'}
-- Never repeat an action that already ran, including actions from before a reconnect that the conversation says have finished.
-- To read a page, open it first, then read the screen.${macTools ? '' : `
-- You can open and operate every app installed on this iPhone, Apple's and anyone else's (WeChat, Instagram, Uber, a bank, a game): never tell the user an app is out of reach before you have tried.`}
-
-# Approvals and stopping
-- Tapping something that sends, pays, deletes or calls waits until the user allows it on the phone; if the result says they did not, tell them in one sentence and do not try another way.
-- Only the user approves, with their own finger: never open Poki to tap Allow, Deny or anything else in it.
-- ${live ? cancellationRule : 'If the user tells you to stop or be quiet, stop talking, but anything already running keeps running; when its result arrives, report it in one sentence.'}`;
 const settingsPages = ['about', 'accessibility', 'battery', 'bluetooth', 'camera', 'cellular', 'control_center', 'date_time', 'display', 'focus', 'general', 'keyboard', 'language_region', 'location', 'notifications', 'personal_hotspot', 'privacy', 'safari', 'screen_time', 'siri', 'software_update', 'sounds', 'vpn', 'wallpaper', 'wifi'];
 
 // The voice tools. `local` tools are answered by the phone itself; the bridge runs the others through Poki MCP.
@@ -102,36 +63,38 @@ const macVoiceTools = [
   { name: 'tap_text', description: 'Tap the visible button or row whose text matches.', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false } },
   { name: 'go_home', description: 'Go to the Home Screen.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
 ];
-const voiceTools = macTools ? macVoiceTools : phoneTools;
+const voiceTools = (macTools ? macVoiceTools : phoneTools).filter(tool => !hiddenTools.has(tool.name));
 const localTools = voiceTools.filter(tool => tool.local).map(tool => tool.name);
 const toolDefinitions = voiceTools.map(({ name, description, parameters }) => ({
   type: 'function',
   name,
-  description: description + (macTools || name === 'get_ios_version' ? '' : ' ' + lockCheck),
+  description: description + (macTools || name === 'get_ios_version' ? '' : ' ' + lockCheckGuidance),
   parameters,
 }));
 const liveBackend = 'gpt-6-luna';
 const cancelCurrentTask = 'cancel_current_task';
-const cancellationRule = `A standalone stop such as “停” stops playback and cancels the current phone task. Call ${cancelCurrentTask} immediately as the only tool for a cancellation request such as “停” or “先别发了”. Wait for a new request before speaking or using phone tools again. A request only to quiet the voice pauses playback. For “在备忘录输入停” or “把停字发过去”, use the normal phone tools to enter or send the requested text.
-Brief acknowledgments such as “嗯” and “好的” leave the current reply and task intact. Report success only after a tool confirms the requested result. Describe pending, uncertain and failed results as they are.`;
 
 function sessionConfig({ effort = 'low', vad = 'server_vad', voice = 'marin', language, manualTurns = false } = {}) {
   const turn = vad === 'semantic_vad'
     ? { type: 'semantic_vad', eagerness: 'high', create_response: !manualTurns, interrupt_response: true }
     : { type: 'server_vad', silence_duration_ms: 450, prefix_padding_ms: 300, threshold: 0.5, create_response: !manualTurns, interrupt_response: true };
+  const prompt = buildVoicePrompt({ role: 'realtime', language, tools: toolDefinitions.map(tool => tool.name), host: voiceHost });
   return {
-    type: 'realtime',
-    model: usesLive ? 'gpt-realtime-2.1' : model,
-    instructions: instructions(language),
-    output_modalities: ['audio'],
-    audio: {
-      input: { turn_detection: turn, noise_reduction: { type: 'near_field' }, transcription: { model: 'gpt-4o-mini-transcribe', language: 'zh' } },
-      output: { voice },
+    prompt,
+    session: {
+      type: 'realtime',
+      model: usesLive ? 'gpt-realtime-2.1' : model,
+      instructions: prompt.text,
+      output_modalities: ['audio'],
+      audio: {
+        input: { turn_detection: turn, noise_reduction: { type: 'near_field' }, transcription: { model: 'gpt-4o-mini-transcribe', language: 'zh' } },
+        output: { voice },
+      },
+      tools: toolDefinitions,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+      reasoning: { effort },
     },
-    tools: toolDefinitions,
-    tool_choice: 'auto',
-    parallel_tool_calls: false,
-    reasoning: { effort },
   };
 }
 
@@ -141,28 +104,27 @@ function liveConfig({ effort = 'low', voice = 'marin', language }) {
     description: 'Stop further steps of the current phone task. Call only for an explicit cancellation request, never for words the user wants quoted, entered or sent. Call it without saying anything first.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   };
+  const liveTools = [...toolDefinitions, ...(hiddenTools.has(cancelCurrentTask) ? [] : [cancelTool])];
+  const exposedNames = liveTools.map(tool => tool.name);
+  const voicePrompt = buildVoicePrompt({ role: 'live_voice', language, tools: exposedNames, host: voiceHost });
+  const executorPrompt = buildVoicePrompt({ role: 'live_executor', language, tools: exposedNames, host: voiceHost });
   return {
-    model,
-    instructions: `You are Poki, a voice assistant. Speak ${languageName(language)}. Switch languages only when the user clearly switches. App names, tool output and words like hello do not change the conversation language.
-
-If the user asks to cancel, delegate the new cancellation request immediately and silently, even if the previous delegation is still running. Do not wait for its result. The backend calls the cancellation tool.
-${cancellationRule}
-
-Before delegating a new task, say one short sentence about what you will do. Delegate promptly without waiting for a reply. Base progress and results on what the backend confirms.
-${spokenTurn}
-
-Keep speaking through brief acknowledgments such as “嗯” and “好的”. When the user asks you to stop speaking, stop speaking. A phone action already running may finish.`,
-    audio: { output: { voice } },
-    delegation: {
-      type: 'responses',
-      acknowledgement_delay_ms: 800,
-      responses: {
-        model: liveBackend,
-        instructions: instructions(language, true),
-        tools: [...toolDefinitions, cancelTool].map(tool => ({ ...tool, strict: false })),
-        tool_choice: 'auto',
-        parallel_tool_calls: false,
-        reasoning: { effort },
+    prompts: { voice: voicePrompt, executor: executorPrompt },
+    session: {
+      model,
+      instructions: voicePrompt.text,
+      audio: { output: { voice } },
+      delegation: {
+        type: 'responses',
+        acknowledgement_delay_ms: 800,
+        responses: {
+          model: liveBackend,
+          instructions: executorPrompt.text,
+          tools: liveTools.map(tool => ({ ...tool, strict: false })),
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+          reasoning: { effort },
+        },
       },
     },
   };
@@ -271,7 +233,7 @@ async function runTool(mcp, { call_id, name, arguments: args = {}, checked }) {
 }
 
 async function mintToken(options) {
-  const session = sessionConfig(options);
+  const { session, prompt } = sessionConfig(options);
   const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -281,14 +243,15 @@ async function mintToken(options) {
   // OpenAI echoes a masked key in some errors; keep even that out of logs and replies.
   const reason = (body.error?.message ?? `client_secrets ${response.status}`).replace(/sk-[\w*-]+/g, 'the API key');
   if (!response.ok) throw Object.assign(new Error(reason), { status: response.status });
-  return { value: body.value, expires_at: body.expires_at, model: session.model, local_tools: localTools };
+  return { token: { value: body.value, expires_at: body.expires_at, model: session.model, local_tools: localTools }, prompt };
 }
 
 async function exchangeOffer(sdp, options) {
+  const { session, prompts } = liveConfig(options);
   const response = await fetch('https://api.openai.com/v1/live/sessions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session: liveConfig(options), transport: { type: 'webrtc', sdp } }),
+    body: JSON.stringify({ session, transport: { type: 'webrtc', sdp } }),
   });
   const body = await response.json();
   if (!response.ok) {
@@ -298,7 +261,7 @@ async function exchangeOffer(sdp, options) {
   if (typeof body.transport?.sdp !== 'string' || !body.transport.sdp) {
     throw Object.assign(new Error('OpenAI returned no SDP answer'), { status: 502 });
   }
-  return { sdp: body.transport.sdp };
+  return { sdp: body.transport.sdp, prompts };
 }
 
 async function describeScreen(image) {
@@ -348,19 +311,35 @@ const server = http.createServer(async (req, res) => {
   if (!ok) return reply(404, { error: 'not found' });
   try {
     if (req.method === 'GET' && action === 'token') {
-      if (usesLive && url.searchParams.get('transport') === 'live') return reply(200, { model, live: true, local_tools: localTools });
+      if (usesLive && url.searchParams.get('transport') === 'live') {
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'queued', host: voiceHost }));
+        return reply(200, { model, live: true, local_tools: localTools });
+      }
       const options = Object.fromEntries(['effort', 'vad', 'voice', 'language'].map(k => [k, url.searchParams.get(k) ?? undefined]).filter(([, v]) => v));
       options.manualTurns = url.searchParams.get('turns') === 'committed';
       const started = Date.now();
-      const token = await mintToken(options);
-      console.log(JSON.stringify({ event: 'token', ms: Date.now() - started, options }));
-      return reply(200, token);
+      try {
+        const { token, prompt } = await mintToken(options);
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: prompt.templateVersion, mode: 'realtime', commit_state: 'confirmed', host: voiceHost, sections: prompt.sectionIds, ms: Date.now() - started, options }));
+        return reply(200, token);
+      } catch (error) {
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'realtime', commit_state: 'failed', host: voiceHost, ms: Date.now() - started, options, message: error.message }));
+        throw error;
+      }
     }
     if (req.method === 'POST' && action === 'session' && usesLive) {
       const { sdp } = await readJSON(req) ?? {};
       if (typeof sdp !== 'string' || !sdp.trim()) return reply(400, { error: 'SDP offer is required' });
       const options = Object.fromEntries(['effort', 'voice', 'language'].map(key => [key, url.searchParams.get(key) || undefined]));
-      return reply(200, await exchangeOffer(sdp, options));
+      const started = Date.now();
+      try {
+        const { sdp: answer, prompts } = await exchangeOffer(sdp, options);
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'confirmed', host: voiceHost, sections: { voice: prompts.voice.sectionIds, executor: prompts.executor.sectionIds }, ms: Date.now() - started, options }));
+        return reply(200, { sdp: answer });
+      } catch (error) {
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'failed', host: voiceHost, ms: Date.now() - started, options, message: error.message }));
+        throw error;
+      }
     }
     if (req.method === 'POST' && action === 'screen' && usesLive) {
       const { image } = await readJSON(req) ?? {};

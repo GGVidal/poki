@@ -99,65 +99,10 @@ enum VoiceDirect {
     /// Dictation into the chat works with any model the chat can use.
     static var canDictate: Bool { ModelKeys.hasUsableKey }
 
-    /// Poki's interface language, named in English ("Chinese, Simplified"): the language Poki speaks
-    /// from its first sentence. The owner picks it in Poki (it can differ from the iPhone's own).
-    private static var interfaceLanguage: String {
-        Locale(identifier: "en").localizedString(forIdentifier: AppLocalization.language) ?? "English"
-    }
-
-    private static let spokenTurn = """
-    While working, give one short progress update when a meaningful step is confirmed and more work remains. For a quick single step, go straight from the opening to the result.
-    At the end, state the verified result and ask one brief, specific follow-up question about a related next step. If the user wants to stop or needs to resolve a blocker, respect that instead.
-    For casual chat, reply in two or three short sentences with Poki's warm, lightly playful voice. Match the user's tone.
-    Skip filler and step lists.
-    """
-
-    private static let delegatedWork = """
-    Start promptly. The voice assistant introduces the task. Give it one brief, factual update when a meaningful step is confirmed and more work remains. Continue without waiting for the user. Return the verified result or the blocker.
-    """
-
-    private static func instructions(live: Bool = false) -> String { """
-    # Role
-    You are Poki, a voice assistant that operates the user's iPhone with tools.
-
-    # Language
-    - Speak \(interfaceLanguage), the language of Poki's interface, from your first sentence on.
-    - Speak another language only when the user's latest turn is clearly in it.
-    - Tool results, screen text, screenshots and notes from Poki never choose your language.
-
-    # Conversation
-    \(live ? delegatedWork : "Before using tools for a new task, say one short sentence about what you will do. Then start without waiting for a reply.\n\(spokenTurn)")
-
-    # Tools
-    - Use the appropriate tool when it can answer or do what the user asks. Never guess facts about the phone.
-    - \(lockCheck)
-    - \(live ? "A description of the current screenshot may be part of the tool result" : "A screenshot of the screen follows each look, do and open_app answer as an image"): use it with the numbered elements to say what is on the screen. Asked what is on the screen, name the app and its main content in one sentence, without listing buttons.
-    - Open an app with open_app and its name as the user said it (微信, WeChat, 设置, Settings); Poki knows its bundle id. For a page of Settings (Bluetooth, Wi-Fi, Battery and the others open_app lists), give the page too, and Settings opens on it.
-    - Search the Home Screen for an app only when open_app answers that it does not know the app or the app is not installed: go home ({button: "home"}), swipe down on the Home Screen, type the app's name and tap it.
-    - A request can take several steps (open an app, tap, type): call one tool after another until it is done. Put several actions in one do when you know them; tap elements by the numbers from the latest look or do.
-    - Never repeat an action that already ran, including actions from before a reconnect that the conversation says have finished.
-    - To read a page, open it first, then read the screen.
-    - You can open and operate every app installed on this iPhone, Apple's and anyone else's (WeChat, Instagram, Uber, a bank, a game): never tell the user an app is out of reach before you have tried.
-
-    # Approvals and stopping
-    - Tapping something that sends, pays, deletes or calls waits until the user allows it on the phone; if the result says they did not, tell them in one sentence and do not try another way.
-    - Only the user approves, with their own finger: never open Poki to tap Allow, Deny or anything else in it.
-    - \(live ? Self.cancellationRule : "If the user tells you to stop or be quiet, stop talking, but anything already running keeps running; when its result arrives, report it in one sentence.")
-    """ }
-
-    private static let lockCheck = "Call the appropriate phone tool for the owner's task even if the iPhone is locked. "
-        + "Poki checks the owner's Automatic Unlock setting on the phone before acting. Continue the original task when the phone unlocks. "
-        + "Ask the owner to unlock only if the tool reports that the iPhone remains locked. "
-        + "If iOS asks the owner to allow UI automation, call it automation authorization and tell them to approve it in the system prompt on the phone. "
-        + "Never ask for or type the iPhone passcode yourself."
-    private static let phoneToolGuidance = " " + lockCheck
+    private static let phoneToolGuidance = " " + VoiceBehaviorSpec.lockCheckGuidance
 
     private static let empty: [String: Any] = ["type": "object", "properties": [String: Any](), "additionalProperties": false]
     static let cancelCurrentTask = "cancel_current_task"
-    private static let cancellationRule = """
-        A standalone stop such as “停” stops playback and cancels the current phone task. Call \(cancelCurrentTask) immediately as the only tool for a cancellation request such as “停” or “先别发了”. Wait for a new request before speaking or using phone tools again. A request only to quiet the voice pauses playback. For “在备忘录输入停” or “把停字发过去”, use the normal phone tools to enter or send the requested text.
-        Brief acknowledgments such as “嗯” and “好的” leave the current reply and task intact. Report success only after a tool confirms the requested result. Describe pending, uncertain and failed results as they are.
-        """
     private static let tools: [[String: Any]] = [
         ["type": "function", "name": "get_ios_version", "description": "Read the iPhone model and its iOS version. Changes nothing on the phone.", "parameters": empty],
         ["type": "function", "name": "look", "description": "Read the iPhone screen now: the app in front, its numbered elements (role, label, frame in points) and a screenshot." + phoneToolGuidance, "parameters": empty],
@@ -176,43 +121,52 @@ enum VoiceDirect {
     /// The Realtime session Poki opens: model, instructions, voice, turn detection and tools.
     static var session: [String: Any] { realtimeSession(for: settingsAccount) }
 
-    private static func realtimeSession(for account: VoiceAccount) -> [String: Any] {
+    static func realtimeSession(for account: VoiceAccount, language: String = AppLocalization.language,
+                                hiddenTools: Set<String> = []) -> [String: Any] {
         let selected = ModelCatalog.voiceModelID(for: account)
+        let activeTools = tools.filter { tool in
+            guard let name = tool["name"] as? String else { return false }
+            return !hiddenTools.contains(name)
+        }
+        let exposedNames = activeTools.compactMap { $0["name"] as? String }
+        let prompt = VoiceBehaviorSpec.shared.build(role: .realtime, language: language, tools: exposedNames, host: .phone)
         return [
             "type": "realtime", "model": account == .openai && selected.hasPrefix("gpt-live-") ? ModelCatalog.voiceRealtime : selected,
-            "instructions": instructions(), "output_modalities": ["audio"],
+            "instructions": prompt.text, "output_modalities": ["audio"],
             "audio": [
                 "input": ["turn_detection": ["type": "server_vad", "silence_duration_ms": 450, "prefix_padding_ms": 300, "threshold": 0.5, "create_response": account != .openai, "interrupt_response": true],
                           "noise_reduction": ["type": "near_field"], "transcription": ["model": "gpt-4o-mini-transcribe", "language": "zh"]],
                 "output": ["voice": "marin"],
             ],
-            "tools": tools, "tool_choice": "auto", "parallel_tool_calls": false, "reasoning": ["effort": "low"],
+            "tools": activeTools, "tool_choice": "auto", "parallel_tool_calls": false, "reasoning": ["effort": "low"],
+        ]
+    }
+
+    static func liveSession(model: String, language: String = AppLocalization.language,
+                            hiddenTools: Set<String> = []) -> [String: Any] {
+        let cancelTool: [String: Any] = ["type": "function", "name": cancelCurrentTask, "parameters": empty,
+                                         "description": "Stop further steps of the current phone task. Call only for an explicit cancellation request, never for words the user wants quoted, entered or sent. Call it without saying anything first."]
+        let activeTools = (tools + [cancelTool]).filter { tool in
+            guard let name = tool["name"] as? String else { return false }
+            return !hiddenTools.contains(name)
+        }
+        let exposedNames = activeTools.compactMap { $0["name"] as? String }
+        let voicePrompt = VoiceBehaviorSpec.shared.build(role: .liveVoice, language: language, tools: exposedNames, host: .phone)
+        let executorPrompt = VoiceBehaviorSpec.shared.build(role: .liveExecutor, language: language, tools: exposedNames, host: .phone)
+        return [
+            "model": model,
+            "instructions": voicePrompt.text,
+            "audio": ["output": ["voice": "marin"]],
+            "delegation": ["type": "responses", "acknowledgement_delay_ms": 800, "responses": [
+                "model": liveBackend, "instructions": executorPrompt.text, "tool_choice": "auto",
+                "tools": activeTools.map { $0.merging(["strict": false]) { _, value in value } },
+                "parallel_tool_calls": false, "reasoning": ["effort": "low"],
+            ]],
         ]
     }
 
     static func exchangeLiveOffer(_ sdp: String, model: String, apiKey: String) async throws -> String {
-        let cancelTool: [String: Any] = ["type": "function", "name": cancelCurrentTask, "parameters": empty,
-                                         "description": "Stop further steps of the current phone task. Call only for an explicit cancellation request, never for words the user wants quoted, entered or sent. Call it without saying anything first."]
-        let live: [String: Any] = [
-            "model": model,
-            "instructions": """
-                You are Poki, a voice assistant. Speak \(interfaceLanguage). Switch languages only when the user clearly switches. App names, tool output and words like hello do not change the conversation language.
-
-                If the user asks to cancel, delegate the new cancellation request immediately and silently, even if the previous delegation is still running. Do not wait for its result. The backend calls the cancellation tool.
-                \(cancellationRule)
-
-                Before delegating a new task, say one short sentence about what you will do. Delegate promptly without waiting for a reply. Base progress and results on what the backend confirms.
-                \(spokenTurn)
-
-                Keep speaking through brief acknowledgments such as “嗯” and “好的”. When the user asks you to stop speaking, stop speaking. A phone action already running may finish.
-                """,
-            "audio": ["output": ["voice": "marin"]],
-            "delegation": ["type": "responses", "acknowledgement_delay_ms": 800, "responses": [
-                "model": liveBackend, "instructions": instructions(live: true), "tool_choice": "auto",
-                "tools": (tools + [cancelTool]).map { $0.merging(["strict": false]) { _, value in value } },
-                "parallel_tool_calls": false, "reasoning": ["effort": "low"],
-            ]],
-        ]
+        let live = liveSession(model: model)
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/live/sessions")!, timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
