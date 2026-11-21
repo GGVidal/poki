@@ -1,0 +1,44 @@
+{"sample":"noise","round":1,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":1,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":1,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":1,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":2,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":2,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"address","round":2,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"address","round":2,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"correction","round":2,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"correction","round":2,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":2,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":2,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":2,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":2,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":3,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":3,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"address","round":3,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"address","round":3,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"correction","round":3,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"correction","round":3,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":3,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":3,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":3,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":3,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":4,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":4,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"address","round":4,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"address","round":4,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"correction","round":4,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"correction","round":4,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":4,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":4,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":4,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":4,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":5,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"short","round":5,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"address","round":5,"mode":"semantic_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}
+{"sample":"address","round":5,"mode":"server_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}
+{"sample":"correction","round":5,"mode":"server_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}
+{"sample":"correction","round":5,"mode":"semantic_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}
+{"sample":"noise","round":5,"mode":"semantic_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}
+{"sample":"noise","round":5,"mode":"server_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}
+{"sample":"english","round":5,"mode":"server_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}
+{"sample":"english","round":5,"mode":"semantic_vad","failed":"CoreSimulatorService interrupted (NSPOSIXErrorDomain 53)"}

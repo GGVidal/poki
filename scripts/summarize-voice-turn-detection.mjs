@@ -58,6 +58,7 @@ function stats(group) {
     trials: group.length,
     measured: observed.length,
     successes: successful.length,
+    targetsReached: observed.filter(row => row.result.final === row.result.expected).length,
     trialsCut: count('earlyCutCount'),
     cuts: sum('earlyCutCount'),
     trialsGapCut: observed.filter(gapCut).length,
@@ -68,6 +69,8 @@ function stats(group) {
     duplicateEffects: sum('duplicateEffectCount'),
     missingVadStop: observed.filter(row => !row.events.some(event => event.type === 'input_audio_buffer.speech_stopped')).length,
     failed: group.filter(row => row.failed || row.errors.length).length,
+    toolErrorTrials: observed.filter(row => row.actions.some(action =>
+      action.error || action.toolState === 'failed' || action.previewState === 'failed')).length,
     canceledResponses: events.filter(event => event.type === 'response.done' && event.status === 'cancelled').length,
     responses: events.filter(event => event.type === 'response.created').length,
     vadMs: distribution(observed.map(row => row.result.finalVadWaitMs)),
