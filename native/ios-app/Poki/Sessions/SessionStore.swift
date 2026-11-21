@@ -52,40 +52,45 @@ struct SavedSession: Codable, Identifiable, Equatable {
         }
         guard kind == .poki else { return }
 
-        // The voice writer copied the exact start date into both fields; the text writer read
-        // the clock twice. Second-precision backups still require evidence inside the block.
+        // Old calls copied their start into both fields. Backups may round text markers to the
+        // same second, so keep requests with evidence of text. Treat the remaining voice-shaped
+        // history as handled, including when another block follows it.
         var start: Int?
-        var preciseTalkStart = false
+        var lastRequest: Int?
         for index in entries.indices {
             let entry = entries[index]
             if case .time(let date) = entry.kind {
-                start = entry.spoken == nil && entry.at == date ? index : nil
-                let seconds = date.timeIntervalSinceReferenceDate
-                preciseTalkStart = start != nil && seconds != seconds.rounded(.towardZero)
+                if let start, lastRequest != nil { mark(start..<index) }
+                start = entry.spoken != false && entry.at == date ? index : nil
+                lastRequest = nil
                 continue
             }
-            guard let voiceStart = start, entry.spoken == nil else {
-                start = nil
-                continue
-            }
+            guard let voiceStart = start else { continue }
             switch entry.kind {
-            case .you(_, true) where entry.attachments == nil && entry.textDocuments == nil
-                && entry.continuedTask == nil && entry.countedScrollRequestID == nil:
-                continue
-            case .poki where entry.continuationChoices == nil:
-                if index == entries.count - 1, preciseTalkStart, !live, outcome == nil {
-                    mark(voiceStart..<(index + 1))
-                }
-            case .step(_, true):
-                mark(voiceStart..<(index + 1))
-                start = index + 1
             case .note(.problem(let text)) where Self.voiceClosingNotes.contains(text):
                 mark(voiceStart..<(index + 1))
                 start = nil
+            case _ where entry.spoken == true:
+                continue
+            case .you(_, true) where entry.attachments == nil && entry.textDocuments == nil
+                && entry.continuedTask == nil && entry.countedScrollRequestID == nil && entry.spoken == nil:
+                lastRequest = index
+            case .you:
+                if lastRequest != nil { mark(voiceStart..<index) }
+                start = nil
+            case .poki where entry.continuationChoices == nil:
+                continue
+            case .step(_, true):
+                mark(voiceStart..<(index + 1))
+                start = index + 1
+                lastRequest = nil
             default:
+                // A plan, a text error, or a choice belongs to the request that precedes it.
+                if let lastRequest { mark(voiceStart..<lastRequest) }
                 start = nil
             }
         }
+        if let start, lastRequest != nil { mark(start..<entries.endIndex) }
     }
 
     private static let voiceClosingNotes: Set<String> = {
