@@ -1038,10 +1038,10 @@ final class ChatHarnessTests: XCTestCase {
         var marker = ChatEntry(.time(started))
         marker.at = started
         let voice = ChatEntry(.you(spoken, delivered: true))
-        let problem = ChatEntry(.note(.problem("Connection lost. Nothing is sent again.")))
+        let problem = ChatEntry(.note(.problem("Connection lost. Nothing is sent again. Talk again to hear how running steps ended.")))
         let old = SavedSession(id: id, kind: .poki, title: spoken, started: started, updated: started,
                                live: false, outcome: .failed,
-                               entries: [marker, voice, ChatEntry(.step("Using the phone", ok: true)), problem], calls: [])
+                               entries: [marker, voice, problem], calls: [])
         try JSONEncoder().encode(old).write(to: folder.appendingPathComponent(id + ".json"))
 
         let store = SessionStore.launchStore(folder: folder, defaults: defaults)
@@ -1061,16 +1061,71 @@ final class ChatHarnessTests: XCTestCase {
         try await waitForTask(chat)
         XCTAssertTrue(server.requests.isEmpty, "Named Continue forwarded speech from the old conversation")
 
-        var mixed = restored
-        mixed.entries += [ChatEntry(.you("Open Safari", delivered: true)),
-                          ChatEntry(.note(.problem("The text model did not answer.")))]
-        chat.restore(mixed)
-        XCTAssertTrue(chat.canRetry)
-        chat.retry()
-        try await waitForTask(chat)
-        let request = try XCTUnwrap(server.requests.last)
-        let userMessages = (request["messages"] as? [[String: Any]] ?? []).filter { $0["role"] as? String == "user" }.map(Self.messageText)
-        XCTAssertEqual(userMessages.last, "Open Safari")
+    }
+
+    func testLegacyMixedDiskAndTextBackupCanRetryAndContinueTypedTasks() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for format in ["mixed disk", "text backup"] {
+            let folder = root.appendingPathComponent(format)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let suite = "ChatHarnessTests.legacy.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set(true, forKey: SessionStore.archivedEarlierKey)
+
+            let started = Date(timeIntervalSince1970: 1_700_000_000)
+            let task = "Check the train schedule"
+            var time = ChatEntry(.time(started))
+            time.at = format == "mixed disk" ? started : started.addingTimeInterval(0.4)
+            let spoken = "Turn up the brightness"
+            let speech = [ChatEntry(.you(spoken, delivered: true)),
+                          ChatEntry(.step("Using the phone", ok: true)),
+                          ChatEntry(.poki("The brightness is higher."))]
+            let typed = [ChatEntry(.you(task, delivered: true)),
+                         ChatEntry(.poki("I'll look it up.")),
+                         ChatEntry(.note(.problem("The text model did not answer.")))]
+            let id = UUID().uuidString
+            let session = SavedSession(id: id, kind: .poki, title: task, started: started, updated: started,
+                                       live: false, outcome: .failed,
+                                       entries: [time] + (format == "mixed disk" ? speech : []) + typed, calls: [])
+            let store: SessionStore
+            let encoder = JSONEncoder()
+            if format == "mixed disk" {
+                try encoder.encode(session).write(to: folder.appendingPathComponent(id + ".json"))
+                store = SessionStore.launchStore(folder: folder, defaults: defaults)
+                await store.waitUntilLoaded()
+            } else {
+                encoder.dateEncodingStrategy = .iso8601
+                store = SessionStore(folder: folder, defaults: defaults)
+                try store.restore(encoder.encode(session))
+            }
+
+            let restored = try XCTUnwrap(store.session(id))
+            let server = try FakeCompletions(replies: [FakeCompletions.text("The next train is at noon."),
+                                                       FakeCompletions.text("It leaves from platform one.")])
+            let chat = chat(on: server, kind: .poki, store: store)
+            chat.restore(restored)
+            XCTAssertTrue(chat.canRetry, format)
+            chat.retry()
+            try await waitForTask(chat)
+            if let request = server.requests.first {
+                let messages = (request["messages"] as? [[String: Any]] ?? []).filter { $0["role"] as? String == "user" }
+                XCTAssertEqual(messages.map(Self.messageText).last, task, format)
+            } else {
+                XCTFail("Retry never reached the text model for \(format)")
+            }
+
+            let beforeContinue = server.requests.count
+            chat.send("Continue \(task)")
+            try await waitForTask(chat)
+            XCTAssertGreaterThan(server.requests.count, beforeContinue, "Named Continue never reached the text model for \(format)")
+            if let request = server.requests.dropFirst(beforeContinue).first {
+                let prompt = FakeCompletions.system(request)
+                XCTAssertTrue(prompt.contains("The owner selected this saved task to resume: \(task)"), prompt)
+            }
+        }
     }
 
     private func approvalUserMessage(in server: FakeCompletions) throws -> String {
