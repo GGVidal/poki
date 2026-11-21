@@ -37,15 +37,40 @@ private struct WatchVoiceView: View {
                     } else if model.microphone == .denied {
                         Label("Allow Poki’s microphone in Watch Settings.", systemImage: "mic.slash")
                             .font(.footnote)
-                    } else if !model.hasPending {
+                    } else if model.pendingStatus == .idle {
                         recordControl
                     }
-                    if let update = model.update {
-                        Label(update.phase.title, systemImage: update.phase.symbol)
-                            .font(.headline)
-                    } else if model.hasPending {
-                        Label("Sending recording…", systemImage: "arrow.up.circle")
-                            .font(.headline)
+                    switch model.pendingStatus {
+                    case .idle:
+                        EmptyView()
+                    case .sending:
+                        VStack(spacing: 6) {
+                            ProgressView()
+                            Label("Sending recording…", systemImage: "arrow.up.circle")
+                                .font(.headline)
+                        }
+                    case .deliveryFailed(let failure):
+                        VStack(spacing: 6) {
+                            Label(failure.title, systemImage: failure.symbol)
+                                .font(.headline)
+                                .multilineTextAlignment(.center)
+                            Text(failure.detail)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                    case .tracking(let update):
+                        VStack(spacing: 6) {
+                            Label(update.phase.title, systemImage: update.phase.symbol)
+                                .font(.headline)
+                                .multilineTextAlignment(.center)
+                            if update.phase == .waitingForUnlock {
+                                Text("Unlock your iPhone to continue.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                        }
                     }
                     if let problem = model.problem {
                         Text(problem)
@@ -55,6 +80,9 @@ private struct WatchVoiceView: View {
                     }
                     if model.hasPending, !model.sending {
                         Button(model.update == nil ? "Retry delivery" : "Check iPhone") { model.sync() }
+                        if model.update == nil {
+                            Button("Cancel", role: .destructive) { model.discardPending() }
+                        }
                     }
                     if let latest = model.results.first, !model.hasPending, !model.recording {
                         NavigationLink {
