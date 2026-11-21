@@ -39,6 +39,28 @@ const onScreen = ({ width, height }) => element => {
   const box = element.frame ?? element;
   return box.x < width && box.y < height && box.x + box.width > 0 && box.y + box.height > 0;
 };
+const visibleElement = element => flagOn(element.visible ?? element.isVisible) &&
+  element.hidden !== true && element.hidden !== 1 && element.occluded !== true && element.occluded !== 1;
+
+function visibleTextElements(elements, viewport) {
+  const overlays = [];
+  for (const [index, element] of elements.entries()) {
+    if (!visibleElement(element) || !/^(?:AX|XCUIElementType)?(?:Alert|Dialog|Sheet|Popover|Keyboard|Menu)$/i.test(element.type ?? element.role ?? '')) continue;
+    const box = element.frame ?? element;
+    const depth = element.depth;
+    let end = index + 1;
+    while (Number.isInteger(depth) && elements[end]?.depth > depth) end++;
+    overlays.push({ index, end, box });
+  }
+  return elements.filter((element, index) => {
+    if (!visibleElement(element)) return false;
+    const box = element.frame ?? element;
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    if (!(box.width > 0 && box.height > 0 && x >= 0 && y >= 0 && x < viewport.width && y < viewport.height)) return false;
+    return !overlays.some(({ index: start, end, box }) => (index < start || index >= end) &&
+      x >= box.x && y >= box.y && x < box.x + box.width && y < box.y + box.height);
+  });
+}
 
 // "unknown" means the screen could not be compared, never that nothing happened. screen_change_verified and
 // screen_changed are the earlier two-field form, kept for clients that read them.
@@ -256,7 +278,7 @@ export class Devices {
       // it never masquerades as a captured frame. Known input or capture
       // invalidates this binding; old refs still expire after 30 seconds.
       const bound = this.structureViewport;
-      if (bound?.rootVerified === true && bound.device === target.id &&
+      if ((bound?.rootVerified === true || bound?.waitSignature !== undefined) && bound.device === target.id &&
           bound.revision === this.coordinator.revision(target.id) &&
           this.size?.device === target.id && this.size.width === bound.width && this.size.height === bound.height &&
           this.elements.length && Date.now() - this.elementsAt <= 30000) return this.size;
@@ -318,9 +340,9 @@ export class Devices {
     const observation = this.observation(frame);
     return { observation, source, width: frame.width, height: frame.height, units: 'points', foreground, elements: this.elements, total: count, truncated: count > this.elements.length, ...(source === 'ocr' && nativeError ? { fallback_reason: nativeError } : {}) };
   }
-  async structure(maxAge = 0, { captureViewport = true } = {}) {
+  async structure(maxAge = 0, { visibleText = false } = {}) {
     const target = await this.target();
-    if (maxAge > 0 && this.seen?.device === target.id && this.seen.revision === this.coordinator.revision(target.id) &&
+    if (!visibleText && maxAge > 0 && this.seen?.device === target.id && this.seen.revision === this.coordinator.revision(target.id) &&
         !this.seen.reusedAfterInput && performance.now() - this.seen.at <= maxAge) {
       if (this.seen.settledAfterInput) this.seen.reusedAfterInput = true;
       return this.seen;
@@ -340,24 +362,40 @@ export class Devices {
     if (rotated) {
       this.structureViewport = undefined; this.elements = []; this.elementsAt = 0; this.frame = undefined; this.size = undefined;
     }
-    if ((!previousSize || rotated) && captureViewport) await this.capture();
-    const viewport = this.size?.device === target.id ? this.size : undefined;
+    let viewportFrame;
+    if (!previousSize || rotated) {
+      if (visibleText && target.kind === 'simulator' && !rotated) {
+        try {
+          const { width, height } = await this.bridge({ op: 'info' });
+          if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 &&
+              axRootOrientation(rawElements, { width, height }) !== 'rotated') {
+            this.size = { device: target.id, width, height };
+          }
+        } catch (error) { if (stopped(error)) throw error; }
+      }
+      if (this.size?.device !== target.id) viewportFrame = await this.capture();
+    }
+    const viewport = this.size;
     const rootVerified = axRootOrientation(rawElements, viewport) === 'same';
     if (!rootVerified) this.structureViewport = undefined;
-    const elements = viewport ? rawElements.filter(onScreen(viewport)) : rawElements;
+    const screenElements = rawElements.filter(onScreen(viewport));
+    const elements = visibleText ? visibleTextElements(rawElements, viewport) : screenElements;
     // Preserve upstream foreground-based identity, including PID-only roots.
     const front = [tree.foreground?.pid ?? null, tree.foreground?.bundle_id ?? null];
-    const signature = JSON.stringify([front, ...elements.map(e => {
+    const signature = JSON.stringify([front, ...screenElements.map(e => {
       const box = e.frame ?? e;
-      return [e.type ?? e.role, e.label, e.text, e.value, e.focused, Boolean(e.selected), flagOn(e.enabled), box.x, box.y, box.width, box.height];
+      return [e.type ?? e.role, e.label, e.text, e.value, e.focused, Boolean(e.selected), flagOn(e.enabled),
+        visibleElement(e), box.x, box.y, box.width, box.height];
     })]);
     const seen = {
       device: target.id, revision: this.coordinator.revision(target.id), foreground: tree.foreground,
       elements, signature, rootVerified, viewport, at: performance.now(), startedAt: started, observedAt,
       structure_started_at: observedAt, structure_completed_at: new Date().toISOString(),
+      ...(visibleText && viewportFrame ? { viewportFrame } : {}),
       ...(served ? { served } : {}),
     };
-    if (viewport) this.seen = seen;
+    // A text wait filters covered controls, so its tree is not the tree used for normal readback.
+    if (!visibleText) this.seen = seen;
     return seen;
   }
   // A simulator's size only changes when it rotates. A physical device maps touches through its
@@ -410,8 +448,8 @@ export class Devices {
     }
   }
   // The action does not depend on this read, so a slow read only costs the comparison.
-  async readBefore(maxAge) {
-    try { return await deadline(readbackMs, () => this.structure(maxAge)); } catch { checkWork(); }
+  async readBefore(maxAge, options) {
+    try { return await deadline(readbackMs, () => this.structure(maxAge, options)); } catch { checkWork(); }
   }
   // A batch step reports only whether its touch changed the screen; the batch ends with the screen itself.
   async changedSince(before, foregroundBefore) {
@@ -431,21 +469,31 @@ export class Devices {
   observation(frame = this.frame) {
     return { id: frame.id, device: frame.device, width: frame.width, height: frame.height, units: 'points', capture_started_at: frame.capture_started_at, capture_completed_at: frame.capture_completed_at, structure_completed_at: frame.structure_completed_at, structure_source: frame.source ?? null, atomic: false, revision: frame.revision };
   }
-  observationFromStructure(seen, frame, { requireViewport = true } = {}) {
-    const size = requireViewport ? this.size : frame ?? seen.viewport;
+  observationFromStructure(seen, frame) {
+    const size = this.size;
     const revision = this.coordinator.revision(seen.device);
     // The first post-input screenshot may advance the revision because it
     // differs from the old pre-input picture. This is not a second input.
-    if ((requireViewport && !size) || (size && size.device !== seen.device) ||
+    if (!size || size.device !== seen.device ||
         (frame ? frame.revision !== revision || (frame.revision !== seen.revision && frame.revision !== seen.revision + 1)
           : seen.revision !== revision)) return null;
     return { id: randomUUID(), device: seen.device, revision,
-      ...(size ? { width: size.width, height: size.height } : {}), units: 'points', atomic: false,
+      width: size.width, height: size.height, units: 'points', atomic: false,
       structure_source: 'accessibility',
       structure_started_at: seen.structure_started_at, structure_completed_at: seen.structure_completed_at,
       ...(frame ? { capture_started_at: frame.capture_started_at,
         capture_completed_at: frame.capture_completed_at } : {}),
     };
+  }
+  bindWaitMatches(seen, matches, frame) {
+    const observation = this.observationFromStructure(seen, frame);
+    if (!observation || seen.viewport.width !== observation.width || seen.viewport.height !== observation.height) return undefined;
+    const { device, revision, width, height } = observation;
+    if (this.frame?.device !== device || this.frame?.revision !== revision) this.frame = undefined;
+    this.elements = matches.map(element => ({ ...element, ref: `e${++this.nextRef}` }));
+    this.elementsAt = Date.now();
+    this.structureViewport = { device, revision, width, height, waitSignature: seen.signature };
+    return { observation, elements: this.elements };
   }
   async input(request) {
     const target = await this.target();
@@ -652,13 +700,22 @@ export class Devices {
           // A batch step that asks for verification (verify: true) is compared even when checksStep would skip it.
           const looks = verify && reportsScreen.has(name) && !this.inBatch, touches = verify && touchesControl.has(name) && (args.verify === true || this.checksStep());
           this.beforeInput = undefined; this.expectsForeground = false;
+          const waitRef = args.ref && previousViewport?.waitSignature !== undefined;
           // The AX-only binding is valid only when this same call has just
           // performed a fresh root-verified AX read. Unverified or first-step
           // batch gestures fall back to image capture for coordinate sizing.
-          const before = looks || touches
-            ? await this.readBefore(previousViewport ? 0 : this.inBatch ? this.reuseMs() : 0)
+          const before = looks || touches || waitRef
+            ? await this.readBefore(previousViewport ? 0 : this.inBatch ? this.reuseMs() : 0, waitRef ? { visibleText: true } : undefined)
             : undefined;
-          if (previousViewport && before?.rootVerified === true &&
+          if (waitRef) {
+            if (before?.signature !== previousViewport.waitSignature || before.device !== previousViewport.device ||
+                before.revision !== previousViewport.revision || this.size?.width !== previousViewport.width ||
+                this.size?.height !== previousViewport.height) {
+              throw new Error('Element ref is stale. Use wait_for or list_elements to read the current screen.');
+            }
+            this.structureViewport = previousViewport;
+            this.beforeInput = before;
+          } else if (previousViewport && before?.rootVerified === true &&
               before.device === previousViewport.device &&
               before.revision === this.coordinator.revision(before.device) &&
               this.size?.device === before.device &&

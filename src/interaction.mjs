@@ -21,6 +21,12 @@ const cjk = '\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff';
 const betweenCjk = new RegExp(`(?<=[${cjk}])\\s+(?=[${cjk}])`, 'gu');
 const normalize = v => v.normalize('NFKC').toLocaleLowerCase().trim().replace(betweenCjk, '');
 const visible = e => flagOn(e.visible);
+const loadingRole = /^(?:AX|XCUIElementType)?(?:ActivityIndicator|ProgressIndicator|ProgressView|Skeleton|SkeletonView)$/i;
+const loadingText = /^(?:loading(?:\s+(?:page|content))?|please wait|加载中|載入中|正在加载|正在載入|请稍候|請稍候)[\s.…!?！。]*$/iu;
+const loadingElement = element => visible(element) && (element.busy === true || element.busy === 1 ||
+  loadingRole.test(element.type ?? element.role ?? '') ||
+  [element.label, element.text].some(text => typeof text === 'string' && loadingText.test(text.trim())) ||
+  /^(?:loading|skeleton|busy)(?:$|[_. -])/i.test(element.identifier ?? ''));
 // Alert and prompt text is compared against the Chinese entries in data/interaction.json, and
 // a recognizer writes spaces between those characters, so it needs the same normalisation as
 // every other comparison. Without it "允 许" never matched "允许", and a purchase prompt could
@@ -256,21 +262,30 @@ async function settledStructure(ctx, { once = false, before, foregroundBefore } 
         if (seen.settledAfterInput && before === undefined) return { seen, stable: true };
         if (!seen.elements.length) seen.frame = await ctx.capture();
         const observed = seen.frame ? began : seen.startedAt;
-        const same = last && (seen.signature !== undefined
-          ? seen.signature === last.signature
-          : last.frame?.data.equals(seen.frame.data));
+        const same = last && (seen.frame
+          ? last.frame?.data.equals(seen.frame.data)
+          : !last.frame && seen.signature === last.signature);
+        const loading = seen.elements.some(loadingElement);
+        if (loading || last?.loading) quietSince = observed;
         if (!same) quietSince = observed;
+        seen.loading = loading;
         const front = seen.foreground;
         const awaitingForeground = (foregroundBefore?.pid || foregroundBefore?.bundle_id) && (!front || (front.pid && foregroundBefore.pid
           ? front.pid === foregroundBefore.pid : front.bundle_id === foregroundBefore.bundle_id));
-        const unchanged = awaitingForeground || before !== undefined && (seen.signature === before || seen.signature === undefined);
+        const unchanged = awaitingForeground || before !== undefined && (seen.signature === before || !seen.elements.length);
         const readyAt = Math.max(inputAt + settleMinMs, quietSince + settleQuietMs,
           unchanged ? inputAt + (foregroundBefore ? foregroundUnchangedMs : unchangedMs) : 0);
         last = seen;
         const now = performance.now();
-        if (same && observed >= quietSince + settleQuietMs && now >= readyAt) {
-          if (recentInput && seen.elements.length) seen.settledAfterInput = true;
-          return { seen, stable: true };
+        if (!loading && same && observed >= quietSince + settleQuietMs && now >= readyAt) {
+          if (seen.frame) {
+            try { seen.loading = (await ctx.ocr(seen.frame)).some(loadingElement); }
+            catch (error) { if (stopped(error)) throw error; }
+          }
+          if (!seen.loading) {
+            if (recentInput && seen.elements.length) seen.settledAfterInput = true;
+            return { seen, stable: true };
+          }
         }
         // Overlap the last read with the minimum interval. Its start still
         // has to be at least 250 ms after the first read of the same state.
@@ -358,6 +373,7 @@ async function waitForText(ctx, args) {
   const started = performance.now(), timeout = (args.timeout ?? args.timeout_seconds ?? 10) * 1000;
   const timingStart = timingCount();
   const candidates = { accessibility: [], ocr: [] };
+  let absence;
   const remember = (source, elements) => {
     candidates[source] = closestTo(args.text, elements.filter(visible).flatMap(strings)).slice(0, 5)
       .map(text => ({ text, source }));
@@ -369,29 +385,43 @@ async function waitForText(ctx, args) {
   try {
     return await deadline(timeout, async () => {
       while (remaining() > 0) {
+        const sampledAt = performance.now();
         let seen;
-        try { seen = await ctx.structure(0, { captureViewport: false }); }
+        try { seen = await ctx.structure(0, { visibleText: true }); }
         catch (error) { if (stopped(error)) throw error; }
         checkWork();
         const matches = matching(seen?.elements ?? [], args.text, args.exact);
         if (matches.length && !args.gone) {
-          const frame = args.include_image === true ? await ctx.capture() : undefined;
+          const frame = seen.viewportFrame ?? (args.include_image === true ? await ctx.capture() : undefined);
           checkWork();
-          const observation = ctx.observationFromStructure(seen, frame, { requireViewport: false });
-          if (observation) return result(matches, 'accessibility', observation, frame);
+          const bound = ctx.bindWaitMatches(seen, matches, frame);
+          if (bound) return result(bound.elements, 'accessibility', bound.observation, args.include_image === true ? frame : undefined);
         } else if (!matches.length) {
           let recognized;
-          try { recognized = await ctx.recognize({ source: 'ocr', max_elements: Number.MAX_SAFE_INTEGER }); }
+          try { recognized = await ctx.recognize({ source: 'ocr', max_elements: Number.MAX_SAFE_INTEGER }, seen?.viewportFrame); }
           catch (error) { if (stopped(error)) throw error; }
           checkWork();
           if (recognized) {
             const found = matching(recognized.elements, args.text, args.exact);
             remember('ocr', recognized.elements);
-            const readable = (seen?.elements ?? []).some(visible) || recognized.elements.length > 0;
-            if (args.gone ? readable && !recognized.truncated && !found.length : found.length > 0) {
-              return result(found, 'ocr', recognized.observation, args.include_image === false ? undefined : ctx.frame);
+            const frame = ctx.frame;
+            const image = args.include_image === false ? undefined : frame;
+            if (!args.gone && found.length) return result(found, 'ocr', recognized.observation, image);
+            if (args.gone && !recognized.truncated && !found.length &&
+                !seen?.elements.some(loadingElement) && !recognized.elements.some(loadingElement)) {
+              if (absence?.signature === seen?.signature && absence?.frame.data.equals(frame.data)) {
+                if (sampledAt - absence.sampledAt >= settleQuietMs && performance.now() - started >= settleMinMs) {
+                  return result([], 'ocr', recognized.observation, image);
+                }
+              } else {
+                absence = { sampledAt, signature: seen?.signature, frame };
+              }
+            } else {
+              absence = undefined;
             }
-          }
+          } else absence = undefined;
+        } else {
+          absence = undefined;
         }
         if (seen) remember('accessibility', seen.elements);
         await phase('polling', () => pause(Math.min(400, Math.max(0, remaining()))));

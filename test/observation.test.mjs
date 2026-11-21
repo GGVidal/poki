@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { rm, writeFile } from 'node:fs/promises';
 import { Devices } from '../src/device.mjs';
 import { join } from 'node:path';
+import sharp from 'sharp';
 import { fixture, value } from './fixture.mjs';
 
 test('action readback distinguishes disabled, zero, off, empty, and unavailable control values', async t => {
@@ -26,6 +27,7 @@ test('action readback distinguishes disabled, zero, off, empty, and unavailable 
 
 test('wait_for returns a visible AX match even when screenshots are unavailable', async t => {
   const f = await fixture(t);
+  await f.call('take_screenshot');
   await f.set({ label: 'Ready', screenshotUnavailable: true });
   const reply = await f.call('wait_for', { text: 'Ready', timeout_seconds: 3 });
   assert.equal(reply.isError, undefined);
@@ -61,6 +63,80 @@ test('a delayed page change returns a stable observation of the new page', async
   assert.ok(receipt.screen.text.includes('Button: Destination'));
   assert.notEqual(receipt.screen.screen_stable, false);
   assert.equal(receipt.post_action_observation?.elements[0].label, 'Destination');
+});
+
+test('a loading screen cannot supply a stable post-action receipt', async t => {
+  const f = await fixture(t);
+  await f.set({ label: 'Open', afterInput: { label: 'Destination', staleReads: 4, staleLabel: 'Loading…' } });
+  const reply = await f.call('tap', { x: 12, y: 12, return_observation: true });
+  assert.ok(!reply.isError, reply.content[0].text);
+  const receipt = value(reply);
+  if (receipt.screen.partial) {
+    assert.equal(receipt.screen.screen_stable, false);
+    assert.equal(receipt.post_action_observation, undefined);
+  } else {
+    assert.ok(receipt.screen.text.includes('Button: Destination'), JSON.stringify(receipt.screen));
+    assert.equal(receipt.post_action_observation?.elements[0].label, 'Destination');
+  }
+});
+
+async function screenshotScenes(f, entries) {
+  return Promise.all(entries.map(async ([color, label]) => {
+    const path = join(f.dir, `${color}.png`);
+    await sharp({ create: { width: 100, height: 200, channels: 3, background: color } }).png().toFile(path);
+    return { path, elements: label ? [{ text: label, x: 10, y: 10, width: 40, height: 20 }] : [] };
+  }));
+}
+
+test('changing frames with empty accessibility do not count as settled', async t => {
+  const f = await fixture(t);
+  const scenes = await screenshotScenes(f, [['red', 'Transition'], ['gray', 'Transition'], ['blue', 'Destination']]);
+  await f.set({ axEmpty: true, afterInput: { screenshotScenes: scenes } });
+  const reply = await f.call('tap', { x: 12, y: 12 });
+  assert.ok(!reply.isError, reply.content[0].text);
+  const receipt = value(reply);
+  if (receipt.screen.partial) assert.equal(receipt.screen.screen_stable, false);
+  else assert.ok(receipt.screen.text.includes('StaticText: Destination'), JSON.stringify(receipt.screen));
+});
+
+test('wait_for excludes offscreen and covered accessibility matches on a cold screen', async t => {
+  const f = await fixture(t);
+  await f.set({ ocrElements: [], elements: [
+    { role: 'Button', label: 'Continue', identifier: 'offscreen', depth: 1, frame: { x: 10, y: 300, width: 50, height: 20 } },
+    { role: 'Button', label: 'Continue', identifier: 'under-alert', depth: 1, frame: { x: 20, y: 55, width: 50, height: 20 } },
+    { role: 'Alert', depth: 1, frame: { x: 5, y: 45, width: 90, height: 100 } },
+    { role: 'Button', label: 'Continue', identifier: 'in-alert', depth: 2, frame: { x: 20, y: 95, width: 50, height: 20 } },
+  ] });
+  const reply = await f.call('wait_for', { text: 'Continue', timeout_seconds: 5 });
+  assert.ok(!reply.isError, reply.content[0].text);
+  assert.deepEqual(value(reply).elements.map(element => element.identifier), ['in-alert']);
+});
+
+test('wait_for gone confirms an empty OCR screen after transient absence', async t => {
+  const f = await fixture(t);
+  const scenes = await screenshotScenes(f, [['red', ''], ['gray', 'Loading'], ['blue', '']]);
+  await f.set({ axEmpty: true, screenshotScenes: scenes });
+  const reply = await f.call('wait_for', { text: 'Loading', gone: true, timeout_seconds: 10 });
+  assert.ok(!reply.isError, reply.content[0].text);
+  assert.equal(value(reply).matched, true);
+  assert.deepEqual(value(reply).elements, []);
+  const image = reply.content.find(block => block.type === 'image');
+  const { channels } = await sharp(Buffer.from(image.data, 'base64')).stats();
+  assert.deepEqual(channels.slice(0, 3).map(channel => channel.mean), [0, 0, 255]);
+});
+
+test('wait_for matches provide usable tap refs with and without an attached screenshot', async t => {
+  const f = await fixture(t);
+  await f.set({ label: 'Continue' });
+  for (const include_image of [true, false]) {
+    const reply = await f.call('wait_for', { text: 'Continue', include_image, timeout_seconds: 5 });
+    assert.ok(!reply.isError, reply.content[0].text);
+    assert.equal(reply.content.some(block => block.type === 'image'), include_image);
+    const tap = await f.call('tap', { ref: value(reply).elements[0].ref, verify: false });
+    assert.ok(!tap.isError, tap.content[0].text);
+    assert.equal(value(tap).sent, true);
+  }
+  assert.equal((await f.events()).filter(event => event.op === 'tap').length, 2);
 });
 
 // A phone over a network tunnel takes seconds per accessibility read; the fixture's delay stands in for it.

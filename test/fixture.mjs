@@ -53,7 +53,9 @@ else if(tool==='xcrun') {if(args.includes('listapps')){console.log('<?xml versio
 else if(tool==='idevice') {
  if(args.includes('screenshot')) {
    if(state.screenshotUnavailable){console.error('Screenshot service unavailable');process.exit(1);}
-   copyFileSync(state.defaultScreenshot??process.env.FIXTURE_IMAGE,args.at(-1));
+   const scene=state.screenshotScenes?.[0];
+   copyFileSync(scene?.path??state.defaultScreenshot??process.env.FIXTURE_IMAGE,args.at(-1));
+   if(scene)writeState(JSON.stringify({...state,ocrElements:scene.elements,screenshotScenes:state.screenshotScenes.length>1?state.screenshotScenes.slice(1):state.screenshotScenes}));
    console.log('Screenshot saved to: fixture');
  }
  else if(args.includes('screencapture')) {if(state.failRecording)process.exit(1);if(!state.recordingBlock)process.stdout.write('frame');process.stdin.resume();setInterval(()=>{},10000);}
