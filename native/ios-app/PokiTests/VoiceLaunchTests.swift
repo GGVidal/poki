@@ -43,6 +43,10 @@ final class VoiceLaunchTests: XCTestCase {
         XCTAssertTrue(returns.allSatisfy { $0.hasSuffix(session) })
         XCTAssertTrue(returns.contains { $0.contains("source=appShortcut") })
         XCTAssertTrue(returns.contains { $0.contains("source=control") })
+        for outcome in returns {
+            let request = try XCTUnwrap(field("request", in: outcome))
+            XCTAssertEqual(stages(for: request).compactMap { field("stage", in: $0) }, ["receipt", "pageShown"])
+        }
         XCTAssertEqual(AppLog.shared.lines.dropFirst(start).filter { $0.contains("result=started") }.count, 1)
         XCTAssertTrue(voice.muted)
         XCTAssertTrue(voice.isOn)
@@ -80,8 +84,54 @@ final class VoiceLaunchTests: XCTestCase {
         entry.ask(expired)
         await fulfillment(of: [shown], timeout: 3)
 
-        XCTAssertEqual(AppLog.shared.lines.filter { $0.contains("request=\(pending.id)") }.count, 1)
+        let results = AppLog.shared.lines.filter { $0.contains("request=\(pending.id)") && $0.contains("result=") }
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(stages(for: pending.id.uuidString).compactMap { field("stage", in: $0) }, ["receipt"])
+        XCTAssertEqual(stages(for: expired.id.uuidString).compactMap { field("stage", in: $0) }, ["receipt", "pageShown"])
         XCTAssertFalse(voice.isOn)
         #endif
+    }
+
+    func testLaunchTimingFollowsOneRequestThroughRehearsal() async throws {
+        #if targetEnvironment(simulator)
+        let voice = try XCTUnwrap(AskPoki.app?.voice)
+        let defaults = UserDefaults.standard
+        let rehearsal = defaults.object(forKey: "pokiTalkRehearsal")
+        let hold = defaults.object(forKey: "pokiTalkHold")
+        defaults.set("1", forKey: "pokiTalkRehearsal")
+        defaults.set("acting", forKey: "pokiTalkHold")
+        defer {
+            voice.stop()
+            defaults.set(rehearsal, forKey: "pokiTalkRehearsal")
+            defaults.set(hold, forKey: "pokiTalkHold")
+        }
+        let start = AppLog.shared.lines.count
+        let utterance = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            AppLog.shared.lines.dropFirst(start).contains { $0.contains("stage=firstUtterance") }
+        }, object: nil)
+
+        _ = try await TalkToPokiIntent().perform()
+        await fulfillment(of: [utterance], timeout: 12)
+
+        let started = try XCTUnwrap(AppLog.shared.lines.dropFirst(start).first { $0.contains("result=started") })
+        let request = try XCTUnwrap(field("request", in: started))
+        let session = try XCTUnwrap(field("session", in: started))
+        let timing = stages(for: request)
+        XCTAssertEqual(timing.compactMap { field("stage", in: $0) }, ["receipt", "pageShown", "transportConnected", "firstUtterance"])
+        XCTAssertEqual(timing.compactMap { field("session", in: $0) }, [session, session])
+        let elapsed = timing.compactMap { field("elapsedMS", in: $0).flatMap(Int.init) }
+        XCTAssertEqual(elapsed.count, 4)
+        XCTAssertEqual(elapsed.first, 0)
+        XCTAssertEqual(elapsed, elapsed.sorted())
+        #endif
+    }
+
+    private func stages(for request: String) -> [String] {
+        AppLog.shared.lines.filter { field("request", in: $0) == request && field("stage", in: $0) != nil }
+    }
+
+    private func field(_ name: String, in line: String) -> String? {
+        let prefix = "\(name)="
+        return line.split(separator: " ").first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
     }
 }

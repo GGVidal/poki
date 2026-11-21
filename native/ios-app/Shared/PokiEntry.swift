@@ -15,6 +15,7 @@ final class PokiEntry {
         let id: UUID
         let destination: Destination
         let issuedAt: Date
+        let receivedAt = ContinuousClock.now
         let source: Source
         let epoch: Int
 
@@ -34,6 +35,9 @@ final class PokiEntry {
 
     func ask(_ request: Request) {
         guard accepted.insert(request.id).inserted else { return }
+        #if POKI_APP
+        if request.destination != .chat { request.recordStage(.receipt) }
+        #endif
         pending.append(request)
     }
 

@@ -445,6 +445,8 @@ final class VoiceModel {
     /// The server opened this session: it takes events now.
     private var ready = false
     private var session = 0
+    @ObservationIgnored private var awaitingFirstLaunchUtterance: PokiEntry.Request?
+    @ObservationIgnored private var inputReadyWatch: Task<Void, Never>?
     private var activeResponse: String?
     private var wantsResponse = false
     private var manualRealtimeTurns = false
@@ -676,6 +678,7 @@ final class VoiceModel {
         session += 1
         PokiEntry.shared.advanceEpoch()
         let number = session
+        awaitingFirstLaunchUtterance = request
         request?.record(.started, reason: "newTalk", session: number)
         let bridge = self.bridge
         func configuration() async throws -> VoiceBridge.Token {
@@ -738,6 +741,10 @@ final class VoiceModel {
             if usesLive { watchLivePlayback(link, session: number) }
             log.add("voice", "connected (\(token.model)), session \(number)")
             if microphone { link.diagnose { [log] line in log.add("voice", line) } }
+            if let request {
+                request.recordStage(.transportConnected, session: number)
+                if microphone, !rehearsing { watchForInputReady(link, request: request, session: number) }
+            }
         } catch {
             // Ended while connecting: stop() already put everything back.
             guard number == session, liveCloseTimeout == nil else { return }
@@ -745,10 +752,31 @@ final class VoiceModel {
             link?.close()
             link = nil
             holdingMicrophone = false
+            awaitingFirstLaunchUtterance = nil
             phase = .lost(VoiceError.reason(for: error))
             PokiEntry.shared.advanceEpoch()
             log.add("voice", "could not connect: \(error.localizedDescription)")
         }
+    }
+
+    private func watchForInputReady(_ connection: VoiceConnection, request: PokiEntry.Request, session number: Int) {
+        inputReadyWatch?.cancel()
+        inputReadyWatch = Task { [weak self, time] in
+            while !Task.isCancelled {
+                let sent = await connection.hasSentMicrophoneAudio()
+                guard !Task.isCancelled, self?.session == number, self?.link === connection, self?.isOn == true else { return }
+                if sent {
+                    request.recordStage(.inputReady, session: number)
+                    return
+                }
+                await time.sleep(.milliseconds(250))
+            }
+        }
+    }
+
+    private func recordFirstLaunchUtterance(session number: Int) {
+        awaitingFirstLaunchUtterance?.recordStage(.firstUtterance, session: number)
+        awaitingFirstLaunchUtterance = nil
     }
 
     private func saveTranscript() {
@@ -823,6 +851,9 @@ final class VoiceModel {
     /// the conversation are kept for one opened soon after, before the chat takes them.
     private func endSession() {
         keepOpen()
+        inputReadyWatch?.cancel()
+        inputReadyWatch = nil
+        awaitingFirstLaunchUtterance = nil
         livePlayback?.cancel()
         livePlayback = nil
         liveCaptions.removeAll()
@@ -1263,7 +1294,9 @@ final class VoiceModel {
             clock = TurnClock(said: Date())
         case "input_audio_buffer.committed":
             if usesLive {
-                liveCallerSpeech.recordInput(id: (event["item_id"] as? String) ?? (event["event_id"] as? String))
+                let id = (event["item_id"] as? String) ?? (event["event_id"] as? String)
+                liveCallerSpeech.recordInput(id: id)
+                if let id, !id.isEmpty { recordFirstLaunchUtterance(session: number) }
                 return
             }
             guard manualRealtimeTurns, let item = event["item_id"] as? String, !item.isEmpty,
@@ -1273,7 +1306,11 @@ final class VoiceModel {
         case "conversation.item.added":
             if (event["item"] as? [String: Any])?["role"] as? String == "user" { clock.heard = clock.heard ?? Date() }
         case "conversation.item.input_audio_transcription.completed":
-            if let text = event["transcript"] as? String, !text.isEmpty { lines.append(VoiceLine(role: .you, text: text.trimmingCharacters(in: .whitespacesAndNewlines))) }
+            if let text = event["transcript"] as? String, !text.isEmpty {
+                let transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !transcript.isEmpty { recordFirstLaunchUtterance(session: number) }
+                lines.append(VoiceLine(role: .you, text: transcript))
+            }
         case "response.created":
             guard !usesLive || !liveSpeechStopped else { return }
             let id = (event["response"] as? [String: Any])?["id"] as? String
@@ -1342,7 +1379,7 @@ final class VoiceModel {
         clock.spoken = start
         let elapsed = Int(start.timeIntervalSince(said) * 1000)
         lastTurnMS = elapsed
-        log.add("voice", "turn: end of speech to spoken result \(elapsed) ms (tool result in \(Int(delivered.timeIntervalSince(said) * 1000)) ms)")
+        log.add("voice", "turn: end of speech to spoken result \(elapsed) ms (tool result in \(Int(delivered.timeIntervalSince(said) * 1000)) ms) session=\(session)")
     }
 
     private func appendLiveCaption(_ text: String, role: VoiceLine.Role, start: Int, end: Int) {

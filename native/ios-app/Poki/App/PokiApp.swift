@@ -451,7 +451,7 @@ struct RootView: View {
     private func takeEntry() {
         guard scenePhase == .active else { return }
         for request in PokiEntry.shared.take() {
-            guard admitEntry(request) != nil else { continue }
+            guard admitEntry(request, markPageShown: true) != nil else { continue }
             Task {
                 await model.voice.start(admitEntry: {
                     guard let request = admitEntry(request) else { return nil }
@@ -463,7 +463,7 @@ struct RootView: View {
     }
 
     // A queued start checks again after the task hop, and after a Live call finishes closing.
-    private func admitEntry(_ request: PokiEntry.Request) -> PokiEntry.Request? {
+    private func admitEntry(_ request: PokiEntry.Request, markPageShown: Bool = false) -> PokiEntry.Request? {
         if request.destination == .talk {
             guard request.epoch == PokiEntry.shared.epoch else {
                 request.record(.invalidated, reason: "voiceEpochChanged")
@@ -482,6 +482,7 @@ struct RootView: View {
             return nil
         }
         detailsOpen = false
+        if markPageShown, request.destination != .chat { request.recordStage(.pageShown) }
         if request.destination == .voice {
             show(.chat)
             if !model.voice.isOn, !model.voice.canTalkLive { model.voice.keyAsked = true }
