@@ -15,6 +15,7 @@ import Foundation
 final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
     static var asked: Bool { UserDefaults.standard.string(forKey: "pokiTalkRehearsal") != nil }
     private static var loses: Bool { UserDefaults.standard.string(forKey: "pokiTalkRehearsal") == "lost" }
+    private static var longResult: Bool { UserDefaults.standard.string(forKey: "pokiTalkLongResult") == "1" }
     static var hold: TalkState? { UserDefaults.standard.string(forKey: "pokiTalkHold").flatMap(TalkState.named) }
 
     /// The stand-in for the key exchange, which a rehearsal skips. `do` is on the phone's list, so the
@@ -45,7 +46,10 @@ final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
         let asks = zh ? "打开设置，把屏幕调亮一点" : "Open Settings and turn the brightness up a little"
         let answer = zh ? "已经把亮度调高了。现在大约是百分之八十，还需要" : "Brightness is up. It’s at about eighty percent now, do you want"
         let stops = zh ? "够了，谢谢" : "That’s enough, thanks"
-        let closing = zh ? "好的。" : "Okay."
+        let shortClosing = zh ? "好的。" : "Okay."
+        let closing = Self.longResult
+            ? shortClosing + "\n" + String(repeating: "Watch remote chunked result line 漢字.\n", count: 520) + "END_LONG_RESULT"
+            : shortClosing
         let step: [String: Any] = ["type": "function_call", "call_id": "rehearsal-step", "name": "do", "arguments": "{}"]
         // Seconds from the connection, what OpenAI would send then, and the state the talk is in after it.
         let turn: [(Double, [String: Any], TalkState?)] = [

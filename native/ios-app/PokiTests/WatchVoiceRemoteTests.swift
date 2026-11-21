@@ -31,7 +31,7 @@ private final class RemoteTestConnection: VoiceConnection, @unchecked Sendable {
     func send(_ event: [String: Any]) -> Bool { true }
     func setRemoteVolume(_ value: Double) {}
     func setLocalAudioEnabled(_ enabled: Bool) { lock.withLock { localAudioEnabledStorage = enabled } }
-    func diagnose(_ write: @escaping @MainActor (String) -> Void) {}
+    @MainActor func diagnose(_ write: @escaping @MainActor (String) -> Void) {}
     @MainActor func close() { lock.withLock { closedStorage = true } }
 
     @MainActor func play(_ event: [String: Any]) { onEvent?(event) }
@@ -349,10 +349,19 @@ final class WatchVoiceRemoteTests: XCTestCase {
         h.toolGate = nil
         await h.time.settle()
 
-        // Long spoken answer (> 4096 UTF-8 bytes) delivers a preview with fullTextBytes in snapshot
-        // while storing the complete text for #591 chunked retrieval.
-        let longText = String(repeating: "Detailed result line 漢字 e\u{0301}.\n", count: 220) + "Final marker."
-        XCTAssertGreaterThan(longText.utf8.count, 4_096)
+        // Long spoken answer (> 32,768 UTF-8 bytes) delivers a preview with fullTextBytes in snapshot
+        // while persisting to WatchVoiceResultJournal for multi-chunk (>= 3 chunks) #591 retrieval.
+        let journalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watch-voice-journal-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        let writerJournal = WatchVoiceResultJournal(url: journalURL)
+        h.host.onResult = { [weak h] result in
+            h?.fullResults.append(result)
+            try? writerJournal.store(result)
+        }
+
+        let longText = String(repeating: "Detailed result line 漢字 e\u{0301}.\n", count: 1_150) + "Final marker."
+        XCTAssertGreaterThan(longText.utf8.count, WatchVoiceRequest.resultChunkBytes * 2)
         h.connection.play(["type": "session.output_transcript.delta", "delta": longText, "start_ms": 0, "end_ms": 900])
         h.connection.play(["type": "response.event", "delegation_id": "d1", "event": ["type": "response.completed", "response": ["id": "r1"]]])
         await h.time.settle()
@@ -367,13 +376,21 @@ final class WatchVoiceRemoteTests: XCTestCase {
         XCTAssertEqual(delivered.fullTextBytes, longText.utf8.count)
         XCTAssertNotEqual(delivered.text, longText)
 
-        let storedFull = try XCTUnwrap(h.fullResults.first(where: { $0.id == delivered.id }))
+        // Reload a fresh journal from disk and fetch via real WatchVoiceRequest.result(id:offset:) wire payloads.
+        let reloadedJournal = WatchVoiceResultJournal(url: journalURL)
         var assembled = Data()
+        var chunkSizes: [Int] = []
         while assembled.count < longText.utf8.count {
-            let chunk = storedFull.resultChunk(at: assembled.count)
+            let requestData = try JSONEncoder().encode(WatchVoiceRequest.result(id: delivered.id, offset: assembled.count))
+            let chunk = try XCTUnwrap(reloadedJournal.replyToResultRequestData(requestData))
             XCTAssertFalse(chunk.isEmpty)
+            chunkSizes.append(chunk.count)
             assembled.append(chunk)
         }
+        XCTAssertGreaterThanOrEqual(chunkSizes.count, 3)
+        XCTAssertEqual(chunkSizes[0], WatchVoiceRequest.resultChunkBytes)
+        XCTAssertEqual(chunkSizes[1], WatchVoiceRequest.resultChunkBytes)
+        XCTAssertLessThan(try XCTUnwrap(chunkSizes.last), WatchVoiceRequest.resultChunkBytes)
         XCTAssertEqual(String(data: assembled, encoding: .utf8), longText)
 
         h.connection.play(["type": "session.closed", "reason": "done"])
@@ -415,5 +432,276 @@ final class WatchVoiceRemoteTests: XCTestCase {
             XCTAssertEqual(String(decoding: data[8..<12], as: UTF8.self), "WAVE")
         }
         XCTAssertEqual(Set(buffers).count, cues.count)
+    }
+
+    func testDelayedTargetedEndStillEndsActiveMutedCallWithoutEndingNewerCall() async throws {
+        let h = Harness()
+        let start1 = h.host.handle(WatchVoiceRemoteCommand(issuedAt: h.time.now, action: .start))
+        XCTAssertEqual(start1.outcome, .accepted)
+        let callID1 = try XCTUnwrap(start1.snapshot.callID)
+        await h.time.settle()
+        h.connection.play(["type": "session.created"])
+        await h.time.settle()
+
+        let muted = h.host.handle(WatchVoiceRemoteCommand(issuedAt: h.time.now, action: .setMuted(true), targetCallID: callID1))
+        XCTAssertEqual(muted.outcome, .accepted)
+        XCTAssertEqual(muted.snapshot.state, .muted)
+
+        // Watch queues End while offline; 15 seconds pass before Phone receives it (beyond 10s command window).
+        let endIssuedAt = h.time.now
+        await h.time.advance(15)
+        let delayedEnd = h.host.handle(WatchVoiceRemoteCommand(issuedAt: endIssuedAt, action: .end, targetCallID: callID1))
+        XCTAssertEqual(delayedEnd.outcome, .accepted)
+        XCTAssertEqual(delayedEnd.snapshot.state, .idle)
+        XCTAssertFalse(h.voice.isOn)
+
+        // A delayed End targeting callID1 arriving after callID2 starts must never terminate callID2.
+        let start2 = h.host.handle(WatchVoiceRemoteCommand(issuedAt: h.time.now, action: .start))
+        XCTAssertEqual(start2.outcome, .accepted)
+        let callID2 = try XCTUnwrap(start2.snapshot.callID)
+        XCTAssertNotEqual(callID1, callID2)
+        await h.time.settle()
+        h.connection.play(["type": "session.created"])
+        await h.time.settle()
+
+        let lateOldCallEnd = h.host.handle(WatchVoiceRemoteCommand(issuedAt: endIssuedAt, action: .end, targetCallID: callID1))
+        XCTAssertEqual(lateOldCallEnd.outcome, .callChanged)
+        XCTAssertTrue(h.voice.isOn)
+        XCTAssertEqual(h.voice.callID, callID2)
+        h.voice.stop()
+    }
+
+    func testStaleRepliesDoNotOverwriteNewerReducerStateOrClearContinueOnPhone() {
+        let baseTime = Date(timeIntervalSince1970: 1_700_000_000)
+        func snap(
+            epoch: UInt64,
+            seq: UInt64,
+            state: WatchVoiceCallState,
+            callID: String?,
+            requiresForeground: Bool = false,
+            detail: String? = nil
+        ) -> WatchVoiceRemoteSnapshot {
+            WatchVoiceRemoteSnapshot(
+                epoch: epoch,
+                sequence: seq,
+                state: state,
+                callID: callID,
+                isMuted: state == .muted,
+                transportConnected: state.isActiveCall,
+                inputReady: state == .listening,
+                requiresForeground: requiresForeground,
+                updatedAt: baseTime,
+                detail: detail
+            )
+        }
+
+        // Case 1: Late requiresForeground reply with older (epoch, seq) must NOT clobber active listening state.
+        var reducer = WatchVoiceRemoteStateReducer()
+        XCTAssertTrue(reducer.apply(snapshot: snap(epoch: 2, seq: 5, state: .listening, callID: "call-1")))
+        let staleForegroundReply = WatchVoiceRemoteReply(
+            requestID: UUID(),
+            outcome: .requiresForeground,
+            snapshot: snap(epoch: 2, seq: 2, state: .idle, callID: nil, requiresForeground: true, detail: "Unlock iPhone"),
+            detail: "Unlock iPhone"
+        )
+        XCTAssertFalse(reducer.apply(reply: staleForegroundReply))
+        XCTAssertEqual(reducer.latestSnapshot?.state, .listening)
+        XCTAssertFalse(reducer.pendingContinueOnPhone)
+        XCTAssertNil(reducer.lastProblem)
+
+        // Case 2: Late .state reply with older (epoch, seq) must NOT clear newer requiresForeground / detail.
+        XCTAssertTrue(reducer.apply(snapshot: snap(
+            epoch: 2,
+            seq: 6,
+            state: .failed,
+            callID: nil,
+            requiresForeground: true,
+            detail: "Allow microphone access"
+        )))
+        let staleStateReply = WatchVoiceRemoteReply(
+            requestID: UUID(),
+            outcome: .accepted,
+            snapshot: snap(epoch: 2, seq: 1, state: .idle, callID: nil, requiresForeground: false, detail: nil),
+            detail: nil
+        )
+        XCTAssertFalse(reducer.apply(reply: staleStateReply))
+        XCTAssertEqual(reducer.latestSnapshot?.state, .failed)
+        XCTAssertTrue(reducer.pendingContinueOnPhone)
+        XCTAssertEqual(reducer.lastProblem, "Allow microphone access")
+
+        // Case 3: Same-version .state reply preserves requiresForeground and detail.
+        let sameVersionStateReply = WatchVoiceRemoteReply(
+            requestID: UUID(),
+            outcome: .accepted,
+            snapshot: snap(epoch: 2, seq: 6, state: .failed, callID: nil, requiresForeground: true, detail: nil),
+            detail: nil
+        )
+        XCTAssertTrue(reducer.apply(reply: sameVersionStateReply))
+        XCTAssertTrue(reducer.pendingContinueOnPhone)
+        XCTAssertEqual(reducer.lastProblem, "Allow microphone access")
+
+        // Case 4: Late reply targeting an older callID must NOT mutate a newer active call.
+        XCTAssertTrue(reducer.apply(snapshot: snap(epoch: 2, seq: 8, state: .listening, callID: "call-2")))
+        let wrongCallReply = WatchVoiceRemoteReply(
+            requestID: UUID(),
+            outcome: .failed,
+            snapshot: snap(epoch: 2, seq: 8, state: .listening, callID: "call-2"),
+            detail: "Stale error from call-1"
+        )
+        XCTAssertFalse(reducer.apply(reply: wrongCallReply, targetCallID: "call-1"))
+        XCTAssertEqual(reducer.latestSnapshot?.callID, "call-2")
+        XCTAssertNil(reducer.lastProblem)
+    }
+
+    func testWatchReducerKeepsEndAvailableWhileDisconnectedAndClearsOnConfirmOrCallChange() throws {
+        let baseTime = Date(timeIntervalSince1970: 1_700_000_000)
+        func snap(seq: UInt64, state: WatchVoiceCallState, callID: String?) -> WatchVoiceRemoteSnapshot {
+            WatchVoiceRemoteSnapshot(
+                epoch: 4,
+                sequence: seq,
+                state: state,
+                callID: callID,
+                isMuted: state == .muted,
+                transportConnected: state.isActiveCall,
+                inputReady: state == .listening,
+                requiresForeground: false,
+                updatedAt: baseTime,
+                detail: nil
+            )
+        }
+
+        var reducer = WatchVoiceRemoteStateReducer()
+        XCTAssertFalse(reducer.canShowEndButton)
+        XCTAssertTrue(reducer.apply(snapshot: snap(seq: 1, state: .muted, callID: "call-A")))
+        XCTAssertTrue(reducer.canShowEndButton)
+
+        // Queue End while disconnected: subsequent taps reuse the same requestID for idempotent dedupe.
+        let cmd1 = try XCTUnwrap(reducer.queueEnd(now: baseTime))
+        let cmd2 = try XCTUnwrap(reducer.queueEnd(now: baseTime.addingTimeInterval(5)))
+        XCTAssertEqual(cmd1.requestID, cmd2.requestID)
+        XCTAssertEqual(cmd1.targetCallID, "call-A")
+        XCTAssertNotNil(reducer.pendingEnd)
+        XCTAssertTrue(reducer.canShowEndButton)
+
+        // Newer snapshot still on the same active call preserves pendingEnd until Phone actually ends it.
+        XCTAssertTrue(reducer.apply(snapshot: snap(seq: 2, state: .listening, callID: "call-A")))
+        XCTAssertEqual(reducer.pendingEnd?.requestID, cmd1.requestID)
+
+        // Reconnect reply confirming idle clears pendingEnd and hides End.
+        let endReply = WatchVoiceRemoteReply(
+            requestID: cmd1.requestID,
+            outcome: .accepted,
+            snapshot: snap(seq: 3, state: .idle, callID: nil),
+            detail: nil
+        )
+        XCTAssertTrue(reducer.apply(reply: endReply, targetCallID: "call-A"))
+        XCTAssertNil(reducer.pendingEnd)
+        XCTAssertFalse(reducer.canShowEndButton)
+
+        // If Phone already moved to call-B before queued End for call-A confirms, call-B snapshot clears stale pendingEnd.
+        XCTAssertTrue(reducer.apply(snapshot: snap(seq: 4, state: .muted, callID: "call-A2")))
+        _ = try XCTUnwrap(reducer.queueEnd(now: baseTime))
+        XCTAssertNotNil(reducer.pendingEnd)
+        XCTAssertTrue(reducer.apply(snapshot: snap(seq: 5, state: .listening, callID: "call-B")))
+        XCTAssertNil(reducer.pendingEnd)
+        XCTAssertTrue(reducer.canShowEndButton)
+    }
+
+    func testOfflineConsecutiveResultsRetainedForReconnectCatchUp() async throws {
+        let h = Harness()
+        let journalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watch-voice-offline-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        let journal = WatchVoiceResultJournal(url: journalURL)
+        h.host.onResult = { [weak h] result in
+            h?.fullResults.append(result)
+            try? journal.store(result)
+        }
+
+        let start = h.host.handle(WatchVoiceRemoteCommand(issuedAt: h.time.now, action: .start))
+        XCTAssertEqual(start.outcome, .accepted)
+        let callID = try XCTUnwrap(start.snapshot.callID)
+        await h.time.settle()
+        h.connection.play(["type": "session.created"])
+        await h.time.settle()
+
+        // Turn 1 finishes (> 16 KB) while Watch is offline.
+        let firstLongText = "First offline turn.\n" + String(repeating: "Alpha line 漢字.\n", count: 1_000) + "END_FIRST"
+        XCTAssertGreaterThan(firstLongText.utf8.count, WatchVoiceRequest.resultChunkBytes)
+        h.connection.play(["type": "response.created", "response": ["id": "resp-1"]])
+        h.connection.play(["type": "output_audio_buffer.started"])
+        h.connection.play(["type": "response.output_audio_transcript.done", "transcript": firstLongText])
+        h.connection.play(["type": "response.done", "response": ["id": "resp-1"]])
+        h.connection.play(["type": "output_audio_buffer.stopped"])
+        await h.time.settle()
+        XCTAssertEqual(h.fullResults.count, 1)
+        let firstID = try XCTUnwrap(h.fullResults.first?.id)
+
+        // Turn 2 finishes while Watch is still offline.
+        h.connection.play(["type": "response.created", "response": ["id": "resp-2"]])
+        h.connection.play(["type": "output_audio_buffer.started"])
+        h.connection.play(["type": "response.output_audio_transcript.done", "transcript": "Second offline turn completed."])
+        h.connection.play(["type": "response.done", "response": ["id": "resp-2"]])
+        h.connection.play(["type": "output_audio_buffer.stopped"])
+        await h.time.settle()
+        XCTAssertEqual(h.fullResults.count, 2)
+        let secondID = try XCTUnwrap(h.fullResults.last?.id)
+        XCTAssertNotEqual(firstID, secondID)
+
+        // Watch reconnects and pulls state: BOTH offline results must be present newest-first.
+        let reconnectReply = h.host.handle(WatchVoiceRemoteCommand(issuedAt: h.time.now, action: .state))
+        XCTAssertEqual(reconnectReply.snapshot.recentResults.map(\.id), [secondID, firstID])
+        let firstPreview = try XCTUnwrap(reconnectReply.snapshot.recentResults.last)
+        XCTAssertEqual(firstPreview.fullTextBytes, firstLongText.utf8.count)
+
+        // Merging into Watch history preserves chronological newest-first order and deduplicates retries.
+        let (merged, added) = WatchVoiceRemote.mergeResults(reconnectReply.snapshot.deliveredResults, into: [])
+        XCTAssertEqual(merged.map(\.id), [secondID, firstID])
+        XCTAssertEqual(added.map(\.id), [secondID, firstID])
+        let (mergedAgain, addedAgain) = WatchVoiceRemote.mergeResults(reconnectReply.snapshot.deliveredResults, into: merged)
+        XCTAssertEqual(mergedAgain, merged)
+        XCTAssertTrue(addedAgain.isEmpty)
+
+        // Full text of the earlier (> 16 KB) offline turn remains retrievable across chunks from disk journal.
+        let reloaded = WatchVoiceResultJournal(url: journalURL)
+        var assembled = Data()
+        var chunks = 0
+        while assembled.count < firstLongText.utf8.count {
+            let req = try JSONEncoder().encode(WatchVoiceRequest.result(id: firstID, offset: assembled.count))
+            let chunk = try XCTUnwrap(reloaded.replyToResultRequestData(req))
+            XCTAssertFalse(chunk.isEmpty)
+            assembled.append(chunk)
+            chunks += 1
+        }
+        XCTAssertGreaterThanOrEqual(chunks, 2)
+        XCTAssertEqual(String(data: assembled, encoding: .utf8), firstLongText)
+
+        _ = h.host.handle(WatchVoiceRemoteCommand(issuedAt: h.time.now, action: .end, targetCallID: callID))
+    }
+
+    func testApplicationContextMergePreservesPendingOneShotTaskAcrossPhoneRestart() throws {
+        let taskUpdate = WatchVoiceUpdate(id: UUID(), phase: .finished, text: "Saved #591 task result")
+        let taskData = try JSONEncoder().encode(taskUpdate)
+        let remoteData = Data("{\"epoch\":9}".utf8)
+
+        // After iPhone restarts, latestTaskContext is nil while session.applicationContext still holds #591's task.
+        let existing: [String: Any] = [WatchVoiceRequest.contextKey: taskData]
+        let merged = WatchVoiceRemote.mergeApplicationContext(
+            existing: existing,
+            taskContext: nil,
+            remoteContext: remoteData
+        )
+        XCTAssertEqual(merged[WatchVoiceRequest.contextKey] as? Data, taskData)
+        XCTAssertEqual(merged[WatchVoiceRemote.contextKey] as? Data, remoteData)
+
+        // Updating #591 task context later preserves the remote snapshot context as well.
+        let newerTaskData = Data("{\"id\":\"newer\"}".utf8)
+        let merged2 = WatchVoiceRemote.mergeApplicationContext(
+            existing: merged,
+            taskContext: newerTaskData,
+            remoteContext: nil
+        )
+        XCTAssertEqual(merged2[WatchVoiceRequest.contextKey] as? Data, newerTaskData)
+        XCTAssertEqual(merged2[WatchVoiceRemote.contextKey] as? Data, remoteData)
     }
 }

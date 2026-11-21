@@ -104,15 +104,32 @@ def wait_for_ocr(device, ocr_bin, predicate, timeout_s, failure, save_to=None):
 
 
 def touch(session, x, y, hold_ms=80):
-    def event(phase):
+    def event(phase, px=x, py=y):
         return {
             "messageType": "IndigoDigitizerEvent",
-            "payload": {"pointOne": {"x": x, "y": y}, "eventType": phase, "edge": 0, "target": 0},
+            "payload": {"pointOne": {"x": px, "y": py}, "eventType": phase, "edge": 0, "target": 0},
         }
 
     session.stdin.write(json.dumps({"events": [event(0), {"delay_ms": hold_ms}, event(2)]}) + "\n")
     session.stdin.flush()
     assert json.loads(session.stdout.readline())["sent"], "Simulator input did not send"
+
+
+def swipe_up(session, x=0.5, y0=0.80, y1=0.22, steps=5):
+    def event(phase, py):
+        return {
+            "messageType": "IndigoDigitizerEvent",
+            "payload": {"pointOne": {"x": x, "y": py}, "eventType": phase, "edge": 0, "target": 0},
+        }
+
+    events = [event(0, y0)]
+    for i in range(1, steps):
+        py = y0 + (y1 - y0) * (i / steps)
+        events.extend([{"delay_ms": 25}, event(1, py)])
+    events.extend([{"delay_ms": 25}, event(2, y1)])
+    session.stdin.write(json.dumps({"events": events}) + "\n")
+    session.stdin.flush()
+    assert json.loads(session.stdout.readline())["sent"], "Simulator swipe did not send"
 
 
 def snapshot_version(snapshot):
@@ -163,17 +180,21 @@ def tap_label(device, ocr_bin, session, match, timeout_s=15):
     return tap_in_lines(session, lines, width, height, match)
 
 
-def configure_phone_defaults(phone, hold=None):
+def configure_phone_defaults(phone, hold=None, long_result=False):
     simctl("spawn", phone, "defaults", "write", PHONE_BUNDLE, "pokiFirstRun", "done")
     simctl("spawn", phone, "defaults", "write", PHONE_BUNDLE, "pokiTalkRehearsal", "1")
     if hold is None:
         simctl("spawn", phone, "defaults", "delete", PHONE_BUNDLE, "pokiTalkHold", check=False)
     else:
         simctl("spawn", phone, "defaults", "write", PHONE_BUNDLE, "pokiTalkHold", hold)
+    if long_result:
+        simctl("spawn", phone, "defaults", "write", PHONE_BUNDLE, "pokiTalkLongResult", "1")
+    else:
+        simctl("spawn", phone, "defaults", "delete", PHONE_BUNDLE, "pokiTalkLongResult", check=False)
 
 
 def clear_phone_defaults(phone):
-    for key in ("pokiTalkRehearsal", "pokiTalkHold"):
+    for key in ("pokiTalkRehearsal", "pokiTalkHold", "pokiTalkLongResult"):
         simctl("spawn", phone, "defaults", "delete", PHONE_BUNDLE, key, check=False)
 
 
@@ -197,11 +218,13 @@ def warmup_phone(phone):
     sleep(0.5)
 
 
-def launch_phone(phone, *extra_args, background=False, hold=None, language="en", locale="en_US"):
-    configure_phone_defaults(phone, hold=hold)
+def launch_phone(phone, *extra_args, background=False, hold=None, long_result=False, language="en", locale="en_US"):
+    configure_phone_defaults(phone, hold=hold, long_result=long_result)
     args = list(extra_args)
     if hold is not None:
         args.extend(["-pokiTalkHold", hold])
+    if long_result:
+        args.extend(["-pokiTalkLongResult", "1"])
     for attempt in range(2):
         try:
             simctl(
@@ -429,28 +452,73 @@ def run_checks(args):
                 keep_awake_watch=args.watch,
             )
 
-            # 3b. Full rehearsal turn: final spoken result delivered into shared #591 history.
-            launch_phone(args.phone, background=True)
-            data_done = tap_start_and_wait(
+            # 3b. Offline >16 KB turn completion: terminate Watch mid-call, let iPhone persist >16 KB result,
+            #     relaunch Watch to verify reconnect catch-up of preview (fullTextBytes > 16384), then tap the
+            #     result card to verify real multi-chunk (>16 KB) retrieval over WCSession.
+            launch_phone(args.phone, background=True, long_result=True)
+            snap_long_start = tap_start_and_wait(
                 args.watch,
                 ocr_bin,
                 session,
                 watch_archive,
-                lambda d: any(item.get("text") in {"Okay.", "好的。"} for item in (d.get("results") or [])),
-                50,
-                "Watch did not receive final voice result into shared history",
+                lambda d: (d.get("remoteSnapshot") or {}).get("state") in {"listening", "thinking", "speaking"}
+                and snapshot_version(d.get("remoteSnapshot")) > snapshot_version(snap_step),
+                25,
+                "Watch did not start long-result rehearsal call",
+            )["remoteSnapshot"]
+            print(f"[INFO 3b] Long-result call started (callID={snap_long_start.get('callID')}); closing Watch to simulate offline completion", flush=True)
+            simctl("terminate", args.watch, WATCH_BUNDLE, check=False)
+
+            phone_rows_long = wait_for_file(
+                phone_archive,
+                lambda rows: isinstance(rows, list)
+                and any(
+                    isinstance(item, dict)
+                    and isinstance(item.get("text"), str)
+                    and item["text"].endswith("END_LONG_RESULT")
+                    and len(item["text"].encode("utf-8")) > 16_384
+                    for item in rows[1::2]
+                ),
+                45,
+                "iPhone journal did not persist >16 KB long result while Watch was closed",
             )
-            result = next(item for item in data_done["results"] if item.get("text") in {"Okay.", "好的。"})
-            assert result["phase"] == 2, f"Expected finished phase (2), got {result}"
-            if (data_done.get("remoteSnapshot") or {}).get("state") != "idle":
+            phone_map = dict(zip(phone_rows_long[::2], phone_rows_long[1::2]))
+            long_id, phone_long_entry = next(
+                (rid, item)
+                for rid, item in phone_map.items()
+                if isinstance(item, dict)
+                and isinstance(item.get("text"), str)
+                and item["text"].endswith("END_LONG_RESULT")
+                and len(item["text"].encode("utf-8")) > 16_384
+            )
+            full_bytes = len(phone_long_entry["text"].encode("utf-8"))
+            assert full_bytes > 16_384, f"Expected >16384 bytes for multi-chunk fetch, got {full_bytes}"
+
+            # Relaunch Watch and verify offline catch-up delivers the preview into shared #591 history.
+            launch_watch(args.watch, ocr_bin, session)
+            data_caught_up = wait_for_file(
+                watch_archive,
+                lambda d: any(item.get("id") == long_id for item in (d.get("results") or [])),
+                35,
+                "Watch did not catch up offline >16 KB result after relaunch",
+                keep_awake_watch=args.watch,
+            )
+            caught_up = next(item for item in data_caught_up["results"] if item["id"] == long_id)
+            assert caught_up["phase"] == 2, f"Expected finished phase (2), got {caught_up}"
+            assert caught_up.get("fullTextBytes") == full_bytes, (
+                f"Expected preview with fullTextBytes={full_bytes}, got {caught_up}"
+            )
+            assert len(caught_up["text"].encode("utf-8")) < full_bytes
+            if (data_caught_up.get("remoteSnapshot") or {}).get("state") != "idle":
                 tap_label(args.watch, ocr_bin, session, lambda t: button_matches(t, "End"))
                 wait_for_file(
                     watch_archive,
                     lambda d: (d.get("remoteSnapshot") or {}).get("state") == "idle",
                     15,
-                    "Watch did not return to idle after full turn",
+                    "Watch did not return to idle after long-result turn",
+                    keep_awake_watch=args.watch,
                 )
-            wait_for_ocr(
+            lines_card, w_card, h_card = wait_for_ocr(
                 args.watch,
                 ocr_bin,
                 lambda rows: any("Task finished" in r["text"] for r in rows),
@@ -458,17 +526,35 @@ def run_checks(args):
                 "Watch UI did not display shared latest result card",
                 save_to=shots / "05-result.png" if shots else None,
             )
-            print(f"[PASS 3b] Final result saved in shared history: {result['text']!r} (id={result['id']})")
+            print(
+                f"[PASS 3b] Offline >16 KB result caught up on Watch reconnect "
+                f"(id={long_id}, fullTextBytes={full_bytes}, previewBytes={len(caught_up['text'].encode('utf-8'))})"
+            )
 
-            # 3c. Verify phone journal also persisted the full result for #591 chunked retrieval.
-            phone_rows = read_json(phone_archive)
-            assert phone_rows, "iPhone WatchVoice.json missing persisted result"
-            phone_map = dict(zip(phone_rows[::2], phone_rows[1::2]))
-            assert result["id"] in phone_map, "Result ID missing from iPhone WatchVoice.json"
-            assert phone_map[result["id"]]["text"] == result["text"]
-            print("[PASS 3c] iPhone journal persisted result for #591 chunk retrieval")
+            # 3c. Tap the Task finished card to trigger WatchVoiceResultView.loadFullResult(id) and verify
+            #     real multi-chunk (>16,384 bytes -> >= 2 chunks) retrieval over WCSession matches iPhone byte-for-byte.
+            tap_in_lines(session, lines_card, w_card, h_card, lambda t: "Task finished" in t)
+            data_full = wait_for_file(
+                watch_archive,
+                lambda d: any(
+                    item.get("id") == long_id
+                    and item.get("fullTextBytes") is None
+                    and item.get("text") == phone_long_entry["text"]
+                    for item in (d.get("results") or [])
+                ),
+                25,
+                "Watch did not fetch full >16 KB multi-chunk result over WCSession",
+                keep_awake_watch=args.watch,
+            )
+            fetched = next(item for item in data_full["results"] if item["id"] == long_id)
+            assert fetched["text"] == phone_long_entry["text"]
+            assert fetched.get("fullTextBytes") is None
+            print(
+                f"[PASS 3c] Multi-chunk (>16 KB) result fetched over WCSession "
+                f"({len(fetched['text'].encode('utf-8'))} bytes matched iPhone journal byte-for-byte)"
+            )
 
-            # 3d. Relaunch Watch app to confirm state query sync, history persistence, and #591 Voice Task link.
+            # 3d. Relaunch Watch app to confirm state query sync, full history persistence, and #591 Voice Task entry.
             launch_watch(args.watch, ocr_bin, session)
             wait_for_ocr(
                 args.watch,
@@ -479,8 +565,35 @@ def run_checks(args):
                 "Watch did not recover state after relaunch",
             )
             reloaded = read_json(watch_archive)
-            assert any(item["id"] == result["id"] for item in reloaded.get("results") or [])
-            print("[PASS 3d] Relaunch state sync and history persistence verified")
+            assert any(
+                item["id"] == long_id and item.get("text") == phone_long_entry["text"]
+                for item in (reloaded.get("results") or [])
+            ), "Full >16 KB result did not persist across Watch relaunch"
+
+            # Scroll down to reveal and open #591's Voice Task screen.
+            voice_task_lines = None
+            vt_w = vt_h = 0
+            for _ in range(5):
+                lines_vt, vt_w, vt_h = ocr_screen(args.watch, ocr_bin)
+                if any("Voice Task" in r["text"] for r in lines_vt):
+                    voice_task_lines = lines_vt
+                    break
+                swipe_up(session)
+                sleep(0.6)
+            assert voice_task_lines is not None, "Could not find #591 Voice Task link on Watch"
+            tap_in_lines(session, voice_task_lines, vt_w, vt_h, lambda t: "Voice Task" in t)
+            wait_for_ocr(
+                args.watch,
+                ocr_bin,
+                lambda rows: any(
+                    k in " ".join(r["text"] for r in rows)
+                    for k in ("Hold to speak", "Enable microphone", "Allow Poki")
+                )
+                and any("Voice Task" in r["text"] for r in rows),
+                15,
+                "Watch did not open #591 Voice Task screen",
+            )
+            print("[PASS 3d] Relaunch sync, full history persistence, and #591 Voice Task screen verified")
 
             # 4. Chinese localization check (Dynamic Island state wording on Watch).
             launch_phone(args.phone, hold="listening", background=True, language="zh-Hans", locale="zh_CN")
