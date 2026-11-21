@@ -917,7 +917,7 @@ test('the screen a batch ends with belongs to the device its last step used',asy
  const tapOn=device=>({tool:'tap',arguments:{x:10,y:10,...(device?{device}:{})}});
  const second=tapOn('fixture-sim-2'),selected=tapOn();
  for(const [commands,shown] of [[[second],'On second'],[[selected,second],'On second'],[[second,selected],'On first']])
-  assert.deepEqual(summaryOf(await f.call('batch_commands',{commands})).screen.text,[`Button: ${shown}`]);
+  assert.deepEqual(summaryOf(await f.call('batch_commands',{commands})).screen.text.map(line=>line.replace(/ \((?:focused|disabled|selected|adjustable)(?:, [a-z]+)*\)$/,'')),[`Button: ${shown}`]);
  await f.set({...twoSimulators,labels:{'fixture-sim':'允许粘贴','fixture-sim-2':'On second'}});
  assert.equal(summaryOf(await f.call('batch_commands',{commands:[second]})).stop_reason,null);
  await f.set({...twoSimulators,labels:{'fixture-sim':'On first','fixture-sim-2':'允许粘贴'}});

@@ -9,7 +9,7 @@ const defaultTools = new Set([
   'poki_mcp_status', 'list_devices', 'select_device', 'list_elements', 'take_screenshot',
   'get_foreground_app', 'launch_app', 'open_url', 'tap', 'tap_text', 'fill', 'type_text',
   'scroll', 'swipe', 'press_key', 'go_back', 'wait_for', 'handle_alert', 'batch_commands',
-  'long_press', 'double_tap', 'drag', 'hide_keyboard', 'press_button',
+  'long_press', 'double_tap', 'drag', 'hide_keyboard', 'press_button', 'save_screenshot',
   'scroll_to', 'terminate_app', 'pinch', 'list_apps', 'get_clipboard',
 ]);
 const instructions = 'When the request already says what to do on the device, use batch_commands for launch_app and steps whose targets are already known; use fill without field for a single visible input, and use exact observed labels when a selector is needed; it is usually the only device call needed. Tapping steps wait for their target, and the reply ends with the visible text. With one device available, skip list_devices and select_device; use them when a call reports several devices. Consecutive calls do not require an explicit device lease. Single-step tools remain for exploring an unknown screen.';

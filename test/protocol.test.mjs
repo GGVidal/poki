@@ -73,7 +73,7 @@ test('stdio reaches the authenticated local MCP service and rejects an absent de
           'get_foreground_app', 'launch_app', 'open_url', 'tap', 'tap_text', 'fill', 'type_text',
           'scroll', 'swipe', 'press_key', 'go_back', 'wait_for', 'handle_alert', 'batch_commands',
           'long_press', 'double_tap', 'drag', 'hide_keyboard', 'press_button',
-          'scroll_to', 'terminate_app', 'pinch', 'list_apps', 'get_clipboard',
+          'scroll_to', 'terminate_app', 'pinch', 'list_apps', 'get_clipboard', 'save_screenshot',
         ].sort());
         const status = await transportClient.callTool({ name: 'poki_mcp_status', arguments: {} });
         assert.ok(!status.isError);
@@ -147,7 +147,7 @@ test('an all-profile HTTP service still lets each stdio client choose its own li
   assert.equal(full.tools.length, 63);
   assert.deepEqual(await f.a.listTools(), full);
   const defaultClient = await f.connect('');
-  assert.equal((await defaultClient.listTools()).tools.length, 29);
+  assert.equal((await defaultClient.listTools()).tools.length, 30);
   assert.deepEqual(await httpClient.listTools(), full);
   assert.equal(value(await defaultClient.callTool({ name: 'wait', arguments: { seconds: 0 } })).waited, 0);
 });

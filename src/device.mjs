@@ -554,8 +554,11 @@ export class Devices {
         }
         case 'take_screenshot': {
           const frame = await this.capture();
-          const width = Math.round(args.max_width ?? frame.width);
-          const jpeg = await sharp(frame.data).resize({ width }).jpeg({ quality: 90 }).toBuffer();
+          // Past the point size the picture comes from the device's own pixels, never an upscaled copy,
+          // and no wider than they are. Saving to a file (save_screenshot) keeps the full size out of the reply.
+          const fullWidth = (await sharp(frame.original).metadata()).width ?? frame.width;
+          const width = Math.min(fullWidth, Math.round(args.max_width ?? frame.width));
+          const jpeg = await sharp(width > frame.width ? frame.original : frame.data).resize({ width }).jpeg({ quality: 90 }).toBuffer();
           let prompt;
           try { prompt = { status:'checked', source:'ocr', warning:promptWarning(await this.ocr(frame)) }; }
           catch (error) { if (stopped(error)) throw error; prompt = { status:'unavailable', instruction:'Inspect the screenshot for system prompts before continuing.' }; }

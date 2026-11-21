@@ -207,8 +207,22 @@ const describeElement = element => {
   const parts = [label, value !== label ? value : undefined].filter(part => typeof part === 'string' && part);
   if (isTextInput(element) && !value && element.placeholder) parts.push(`(empty, placeholder ${JSON.stringify(element.placeholder)})`);
   if (!parts.length) return undefined;
-  return `${element.type ?? element.role ?? 'Element'}: ${parts.join(' = ')}${element.focused ? ' (focused)' : ''}`;
+  const states = elementStates(element);
+  return `${element.type ?? element.role ?? 'Element'}: ${parts.join(' = ')}${states.length ? ` (${states.join(', ')})` : ''}`;
 };
+
+// The states an agent cannot see in a label: a greyed-out button, a picked tab, a slider it can set.
+// The bridge reports enabled and selected as attributes and the same facts as trait names; either counts.
+export function elementStates(element) {
+  const traits = Array.isArray(element.trait_names) ? element.trait_names : [];
+  const type = element.type ?? element.role ?? '';
+  const states = [];
+  if (element.focused) states.push('focused');
+  if (element.enabled === false || element.enabled === 0 || traits.includes('Not Enabled')) states.push('disabled');
+  if (element.selected === true || element.selected === 1 || traits.includes('Selected')) states.push('selected');
+  if (/^(?:XCUIElementType)?(?:Adjustable|Slider)$/i.test(type) || traits.includes('Adjustable')) states.push('adjustable');
+  return states;
+}
 
 // The reply's view of one read: what is visible, in which app, and any system prompt on it.
 export function describeScreen(seen, elements = seen.elements, source = 'accessibility') {
@@ -657,15 +671,19 @@ export async function interaction(ctx, name, args) {
     }
     case 'wait_for': {
       const started = performance.now(), timeout = (args.timeout ?? args.timeout_seconds ?? 10) * 1000;
-      return deadline(timeout, async () => {
+      // The last read may start just before the timeout; it gets the time a read takes to finish.
+      const lastRead = Math.min(3000, Math.max(1000, 1.5 * (ctx.readCost?.() ?? 0)));
+      return deadline(timeout + lastRead, async () => {
         while (performance.now() - started < timeout) {
           checkWork();
           const result = await findText(args.text, args.exact);
           checkWork();
-          if (performance.now() - started >= timeout) break;
+          // A read that began inside the timeout counts even when it answered after it: the text was on
+          // the screen it read. Throwing it away made a visible button time out (issue #609).
           const found = result.matches;
           const complete = result.truncated === false && (result.source === 'ocr' || result.source === 'accessibility' && result.elements.length > 0);
           if (args.gone ? complete && found.length === 0 : found.length > 0) return { matched: true, gone: args.gone ?? false, elapsed_seconds: (performance.now() - started) / 1000, elements: found, source: result.source, observation: result.observation };
+          if (performance.now() - started >= timeout) break;
           await pause(Math.min(400, Math.max(0, timeout - (performance.now() - started))));
         }
         throw new DOMException('Timed out waiting for the requested text condition.', 'TimeoutError');
