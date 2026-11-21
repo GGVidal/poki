@@ -50,21 +50,33 @@ struct StartIcon<Icon: View>: View {
     }
 }
 
-/// The start flow's ground: the system's grouped background in both directions, so lists and their
-/// footers read as Settings' do and nothing shows through the bottom button.
+/// The start flow's ground: Poki's blue (the owner, Nov 21 2026: blue for the setup guidance pages),
+/// a deep night blue in Dark Mode, with the rows as cards on it. The tiles hello keeps the home light.
 struct StartGround: View {
     var design: StartDesign
     var hello = false
+    /// Poki blue, #2084FD, and the docs site's night blue in Dark Mode.
+    static let blue = Color(light: 0x2084FD, dark: 0x0A2F6B)
+    /// Words straight on the blue: white, and white at reduced opacity for the quieter lines.
+    static let ink = Color.white
+    static let quietInk = Color.white.opacity(0.82)
+
     var body: some View {
         if design == .tiles && hello {
             HomeBackdrop(home: true, working: false, frozen: true).ignoresSafeArea()
         } else {
-            Color(.systemGroupedBackground).ignoresSafeArea()
+            Self.blue.ignoresSafeArea()
         }
     }
 }
 
-/// The start flow's main button: the system's prominent glass on iOS 26, bordered prominent before,
+extension View {
+    /// A sheet opened from the start flow draws on the system's ground, so it leaves the flow's look.
+    func outsideStartFlow() -> some View { environment(\.startDesign, nil) }
+}
+
+/// The start flow's main button: the system's prominent glass on iOS 26, bordered prominent before, white
+/// with Poki blue words on the blue ground,
 /// the width of the page's text, with a text button under it when there is a second choice.
 struct StartButtons: View {
     var primary: LocalizedStringKey
@@ -78,16 +90,18 @@ struct StartButtons: View {
     var body: some View {
         VStack(spacing: 8) {
             Button(action: action) {
-                Text(primary).font(.allo(.body, .semibold)).frame(maxWidth: .infinity)
+                // Poki blue on a white button: the prominent glass takes the white tint on the blue ground.
+                Text(primary).font(.allo(.body, .semibold)).foregroundStyle(StartGround.blue).frame(maxWidth: .infinity)
             }
             .controlSize(.large)
             .buttonBorderShape(.capsule)
             .glassButton(prominent: true)
+            .tint(.white)
             .disabled(primaryDisabled)
             .accessibilityIdentifier(primaryID)
             if let secondary {
                 Button(action: secondaryAction) {
-                    Text(secondary).font(.allo(.body)).frame(maxWidth: .infinity, minHeight: 44)
+                    Text(secondary).font(.allo(.body)).foregroundStyle(StartGround.ink).frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier(secondaryID)
@@ -102,9 +116,9 @@ struct StartButtons: View {
         // button (a disabled glass button is see-through).
         .background {
             VStack(spacing: 0) {
-                LinearGradient(colors: [Color(.systemGroupedBackground).opacity(0), Color(.systemGroupedBackground)],
+                LinearGradient(colors: [StartGround.blue.opacity(0), StartGround.blue],
                                startPoint: .top, endPoint: .bottom).frame(height: 24)
-                Color(.systemGroupedBackground)
+                StartGround.blue
             }
             .padding(.top, -24)
             .ignoresSafeArea(edges: .bottom)
@@ -176,11 +190,11 @@ struct StartHello: View {
         return VStack(alignment: alignment, spacing: 10) {
             Text(verbatim: headline)
                 .font(.alloRounded(.largeTitle, .bold))
-                .foregroundStyle(Color(.label))
+                .foregroundStyle(design == .plain ? StartGround.ink : Color(.label))
                 .accessibilityAddTraits(.isHeader)
             Text(verbatim: line)
                 .font(.allo(.body))
-                .foregroundStyle(Color(.secondaryLabel))
+                .foregroundStyle(design == .plain ? StartGround.quietInk : Color(.secondaryLabel))
         }
         .multilineTextAlignment(text)
         .fixedSize(horizontal: false, vertical: true)
@@ -219,16 +233,16 @@ struct StartHero: View {
                 Image(systemName: done ? "checkmark.circle.fill" : symbol)
                     .font(.system(size: min(glyph, 80), weight: .regular))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(done ? Color(.systemGreen) : Color(.systemBlue))
+                    .foregroundStyle(StartGround.ink)
                     .contentTransition(.symbolEffect(.replace))
                     .accessibilityHidden(true)
                 Text(title)
                     .font(.alloRounded(.largeTitle, .bold))
-                    .foregroundStyle(Color(.label))
+                    .foregroundStyle(StartGround.ink)
                     .accessibilityAddTraits(.isHeader)
                 Text(line)
                     .font(.allo(.body))
-                    .foregroundStyle(Color(.secondaryLabel))
+                    .foregroundStyle(StartGround.quietInk)
             }
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
@@ -242,20 +256,13 @@ struct StartHero: View {
 }
 
 /// The start flow, one pushed page at a time (the owner, Nov 21 2026: walked through step by step,
-/// as the system's own setup is): each of the iPhone's steps, the models, the features, and the list
-/// of everything at the end.
+/// as the system's own setup is): each item of the setup list (`SetupItem`) on its own page, and the
+/// list itself at the end.
 enum StartRoute: Hashable {
-    case step(SetupStep)
-    /// The Poki Loopback Shortcut, on its own page right after the loopback (the owner, Nov 21 2026).
-    case shortcut
-    case models
-    case features
+    case item(SetupItem)
     case summary
 
-    static var order: [StartRoute] {
-        SetupStep.shown.flatMap { $0 == .loopback ? [StartRoute.step($0), .shortcut] : [StartRoute.step($0)] }
-            + [.models, .features, .summary]
-    }
+    static var order: [StartRoute] { SetupItem.all.map(StartRoute.item) + [.summary] }
 
     var next: StartRoute? {
         let all = Self.order
@@ -274,15 +281,15 @@ struct StartFlowPage: View {
 
     var body: some View {
         switch route {
-        case .step(let step):
+        case .item(.step(let step)):
             SetupStepPage(step: step, hero: true)
                 .settingsPage()
                 .bottomBar(softEdge: true) { stepButtons(step) }
-        case .shortcut:
+        case .item(.shortcut):
             StartShortcutPage(goOn: goOn)
-        case .models:
+        case .item(.models):
             StartModelsPage(goOn: goOn)
-        case .features:
+        case .item(.features):
             Form {
                 StartHero(symbol: "square.stack.3d.up", title: "Features",
                           line: "All optional. Each can be changed later in Settings.")
@@ -304,7 +311,7 @@ struct StartFlowPage: View {
             .settingsPage()
             .bottomBar(softEdge: true) { StartButtons(primary: "Continue", action: goOn) }
         case .summary:
-            WelcomePanel(kind: kind, path: $path, finish: finish, summary: true)
+            WelcomePanel(kind: kind, path: $path, finish: finish)
         }
     }
 
@@ -313,6 +320,15 @@ struct StartFlowPage: View {
         let checkedByHand = [SetupStep.runner, .developerMode, .automation].contains(step)
         if done {
             StartButtons(primary: "Continue", action: goOn)
+        } else if step == .background {
+            // One button: iOS's request first, Settings once iOS answered short of Always.
+            if model.background.authorization == .notDetermined {
+                StartButtons(primary: "Allow Location", action: { model.background.requestPermission() },
+                             secondary: "Set Up Later", secondaryAction: goOn)
+            } else {
+                StartButtons(primary: "Open Settings", action: { openSettings(model, for: step) },
+                             secondary: "Set Up Later", secondaryAction: goOn)
+            }
         } else if checkedByHand {
             StartButtons(primary: "Open Settings", action: { openSettings(model, for: step) },
                          secondary: "Set Up Later", secondaryAction: goOn)
@@ -360,83 +376,27 @@ struct StartShortcutPage: View {
     }
 }
 
-/// The start flow's models page, as one question (the owner, Nov 21 2026: "simplify to the dumbest
-/// possible"): sign in with ChatGPT, or paste a key from another provider. One is enough. The model on
-/// this iPhone is a separate, optional part under it. Settings' Models page keeps every choice.
+/// The start flow's models page: Settings' Models page itself (its In Use pickers, the local model,
+/// the providers and Add Provider) under the page's hero (the owner, Nov 21 2026: the same options
+/// and features as the Models page).
 struct StartModelsPage: View {
     var goOn: () -> Void
     @State private var hasModel = ModelKeys.hasUsableKey
-    @State private var modelName = ModelKeys.selectedModelName
-    @State private var signingIn = false
-    @State private var adding = false
 
     var body: some View {
         Form {
             StartHero(symbol: "sparkles", title: "Connect a Model",
-                      line: "Poki needs an AI account to think. Pick one way below. One is enough.",
+                      line: "Poki needs an AI account to think. Add one provider below. One is enough.",
                       done: hasModel)
-            Section {
-                if hasModel {
-                    SettingsRow(title: "Connected", symbol: "checkmark.seal", value: modelName, accessory: .done)
-                        .accessibilityIdentifier("firstRun.models.connected")
-                    NavigationLink(value: DetailsRoute.model) {
-                        SettingsRow(title: "Change or Add Another", symbol: "arrow.left.arrow.right")
-                    }
-                    .accessibilityIdentifier("firstRun.models")
-                } else {
-                    Button { signingIn = true } label: {
-                        SettingsRow(title: "Sign In with ChatGPT", caption: "Use your ChatGPT plan. No key to copy.", symbol: "person.crop.circle")
-                            .contentShape(.rect)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("firstRun.models.chatgpt")
-                    Button { adding = true } label: {
-                        SettingsRow(title: "Paste an API Key", caption: "Anthropic, OpenAI, Gemini and more", symbol: "key")
-                            .contentShape(.rect)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("firstRun.models.key")
-                }
-            } header: {
-                Group {
-                    Text(hasModel ? LocalizedStringKey("Your Model") : LocalizedStringKey("Pick One Way"))
-                }
-                .settingsHeader()
-            } footer: {
-                Group {
-                    Text("Your sign in or key stays on this iPhone.")
-                }
-                .settingsFooter()
-            }
-            Section {
-                WelcomeLocalModels()
-                if LocalModels.recommends { LocalRecommendation() }
-            } header: {
-                Group {
-                    Text("Optional")
-                }
-                .settingsHeader()
-            } footer: {
-                Group {
-                    Text("A small model on this iPhone makes quick choices and writes Screen History notes. Nothing it reads leaves the phone.")
-                }
-                .settingsFooter()
-            }
+            ModelSettingsSections()
         }
         .navigationTitle(Text(verbatim: ""))
         .navigationBarTitleDisplayMode(.inline)
         .settingsPage()
-        .sheet(isPresented: $signingIn, onDismiss: refresh) { ChatGPTSignIn() }
-        .sheet(isPresented: $adding, onDismiss: refresh) { AddAccount() }
-        .onReceive(NotificationCenter.default.publisher(for: ModelKeys.changed)) { _ in refresh() }
-        .onAppear(perform: refresh)
+        .onReceive(NotificationCenter.default.publisher(for: ModelKeys.changed)) { _ in hasModel = ModelKeys.hasUsableKey }
+        .onAppear { hasModel = ModelKeys.hasUsableKey }
         .bottomBar(softEdge: true) {
             StartButtons(primary: "Continue", action: goOn, secondary: hasModel ? nil : "Set Up Later", secondaryAction: goOn)
         }
-    }
-
-    private func refresh() {
-        hasModel = ModelKeys.hasUsableKey
-        modelName = ModelKeys.selectedModelName
     }
 }
