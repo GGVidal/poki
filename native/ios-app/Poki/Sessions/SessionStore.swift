@@ -57,15 +57,20 @@ struct SavedSession: Codable, Identifiable, Equatable {
         // history as handled, including when another block follows it.
         var start: Int?
         var lastRequest: Int?
+        var ambiguousBlocks: [Range<Int>] = []
+        var hasTextRequest = false
         for index in entries.indices {
             let entry = entries[index]
             if case .time(let date) = entry.kind {
-                if let start, lastRequest != nil { mark(start..<index) }
+                if let start, lastRequest != nil { ambiguousBlocks.append(start..<index) }
                 start = entry.spoken != false && entry.at == date ? index : nil
                 lastRequest = nil
                 continue
             }
-            guard let voiceStart = start else { continue }
+            guard let voiceStart = start else {
+                if case .you = entry.kind, entry.spoken != true { hasTextRequest = true }
+                continue
+            }
             switch entry.kind {
             case .note(.problem(let text)) where Self.voiceClosingNotes.contains(text):
                 mark(voiceStart..<(index + 1))
@@ -77,6 +82,7 @@ struct SavedSession: Codable, Identifiable, Equatable {
                 lastRequest = index
             case .you:
                 if lastRequest != nil { mark(voiceStart..<index) }
+                hasTextRequest = true
                 start = nil
             case .poki where entry.continuationChoices == nil:
                 continue
@@ -86,11 +92,18 @@ struct SavedSession: Codable, Identifiable, Equatable {
                 lastRequest = nil
             default:
                 // A plan, a text error, or a choice belongs to the request that precedes it.
-                if let lastRequest { mark(voiceStart..<lastRequest) }
+                if let lastRequest {
+                    mark(voiceStart..<lastRequest)
+                    hasTextRequest = true
+                }
                 start = nil
             }
         }
-        if let start, lastRequest != nil { mark(start..<entries.endIndex) }
+        if let start, lastRequest != nil { ambiguousBlocks.append(start..<entries.endIndex) }
+        // Only a text task wrote .done in a Poki chat. A later call could have inherited it,
+        // so keep an ambiguous block searchable only if it alone accounts for that outcome.
+        if outcome == .done, !hasTextRequest, ambiguousBlocks.count == 1 { return }
+        for block in ambiguousBlocks { mark(block) }
     }
 
     private static let voiceClosingNotes: Set<String> = {
