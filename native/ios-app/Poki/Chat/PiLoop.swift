@@ -97,6 +97,22 @@ final class PiLoop {
         return endpoint.backups == CustomEndpointClient.backupAddresses(for: model)
     }
 
+    /// Only forward `sessionId` to providers confirmed to accept OpenAI's `prompt_cache_key`
+    /// and session-routing headers. Arbitrary custom gateways frequently reject unknown Responses
+    /// parameters with HTTP 400 (`unsupported_parameter`), so custom endpoints receive `sessionId`
+    /// only when targeting official `api.openai.com`.
+    nonisolated static func sessionCacheKey(for provider: ModelProvider, model: Model, sessionID: String?) -> String? {
+        guard let sessionID, !sessionID.isEmpty else { return nil }
+        switch provider {
+        case .openai, .chatgpt:
+            return sessionID
+        case .custom:
+            return URL(string: model.baseUrl)?.host?.lowercased() == "api.openai.com" ? sessionID : nil
+        case .anthropic, .deepseek, .gemini, .openrouter:
+            return nil
+        }
+    }
+
     init(provider: ModelProvider, model: Model, tools: [ToolSpec], inSplitView: Bool = false, sessionId: String? = nil,
          carrying messages: [AgentMessage] = [],
          perform: @escaping @MainActor (ToolCall) async -> PokiCore.ToolAnswer) {
@@ -193,7 +209,7 @@ final class PiLoop {
                 }
                 return try streamSimple(model: model, context: Context(messages: messages), options: options)
             },
-            sessionId: sessionId,
+            sessionId: Self.sessionCacheKey(for: provider, model: model, sessionID: sessionId),
             getApiKey: { _ in await ModelCredential.apiKey(for: provider, piProvider: model.provider) },
             toolExecution: .sequential,
             prepareToolResultMessage: { result in

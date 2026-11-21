@@ -2640,9 +2640,12 @@ final class ChatHarnessTests: XCTestCase {
 
     private func finishTaskCardKinds(in request: [String: Any]) -> [String]? {
         let tools = request["tools"] as? [[String: Any]] ?? []
-        guard let finish = tools.first(where: { (($0["function"] as? [String: Any])?["name"] as? String) == "finish_task" }),
-              let fn = finish["function"] as? [String: Any],
-              let params = fn["parameters"] as? [String: Any],
+        guard let finish = tools.first(where: {
+            let fn = ($0["function"] as? [String: Any]) ?? $0
+            return (fn["name"] as? String) == "finish_task"
+        }) else { return nil }
+        let fn = (finish["function"] as? [String: Any]) ?? finish
+        guard let params = fn["parameters"] as? [String: Any],
               let props = params["properties"] as? [String: Any],
               let card = props["card"] as? [String: Any],
               let cardProps = card["properties"] as? [String: Any],
@@ -2650,14 +2653,86 @@ final class ChatHarnessTests: XCTestCase {
         return kind["enum"] as? [String]
     }
 
-    func testResponsesSessionForwardsStablePromptCacheKey() async throws {
+    func testConfirmedOpenAIResponsesForwardsStablePromptCacheKey() async throws {
+        let openAIKeyAccount = "model-key.openai"
+        let priorKey = try Keychain.read(openAIKeyAccount)
+        defer {
+            if let priorKey { try? Keychain.write(priorKey, account: openAIKeyAccount) }
+            else { Keychain.delete(openAIKeyAccount) }
+        }
+        try Keychain.write(Data("sk-test-openai-cache-key".utf8), account: openAIKeyAccount)
+
         let server = try FakeCompletions(replies: [
             FakeCompletions.responsesText("First answer."),
             FakeCompletions.responsesText("Second answer."),
             FakeCompletions.responsesText("New session answer."),
         ])
-        let endpoint = CustomEndpoint(url: "http://127.0.0.1:\(server.port)/v1", api: .responses, found: .responses)
-        let provider = CustomProvider(name: "Responses Cache Test", endpoints: [endpoint], model: "fake-responses-model", reasoning: false)
+        let baseURL = "http://127.0.0.1:\(server.port)/v1"
+        let openAIModel = try XCTUnwrap(ModelProvider.custom.piModel("gpt-6.1-terra", customURL: baseURL, customAPI: .responses, customReasoning: false))
+
+        let firstSession = UUID().uuidString
+        let secondSession = UUID().uuidString
+        let firstLoop = PiLoop(provider: .openai, model: openAIModel, tools: Harness.tools, sessionId: firstSession) { _ in
+            PokiCore.ToolAnswer(text: "ok", jpeg: nil, isError: false)
+        }
+        let outcome1 = await firstLoop.run("First message", instructions: "Reply briefly.", maxTurns: 2) { _ in }
+        let outcome2 = await firstLoop.run("Second message", instructions: "Reply briefly.", maxTurns: 2) { _ in }
+        XCTAssertEqual(outcome1, PiLoop.Outcome.done)
+        XCTAssertEqual(outcome2, PiLoop.Outcome.done)
+
+        let secondLoop = PiLoop(provider: .openai, model: openAIModel, tools: Harness.tools, sessionId: secondSession) { _ in
+            PokiCore.ToolAnswer(text: "ok", jpeg: nil, isError: false)
+        }
+        let outcome3 = await secondLoop.run("Third message", instructions: "Reply briefly.", maxTurns: 2) { _ in }
+        XCTAssertEqual(outcome3, PiLoop.Outcome.done)
+
+        let requests = server.requests.filter { $0["tools"] != nil }
+        XCTAssertEqual(requests.count, 3)
+        guard requests.count == 3 else { return }
+        let keys = requests.map { $0["prompt_cache_key"] as? String }
+        XCTAssertEqual(keys[0], firstSession)
+        XCTAssertEqual(keys[1], firstSession)
+        XCTAssertEqual(keys[2], secondSession)
+        XCTAssertNotEqual(keys[0], keys[2])
+
+        // Provider policy: confirmed OpenAI / ChatGPT and custom api.openai.com receive the key;
+        // third-party custom gateways and unconfirmed providers do not.
+        let officialCustom = try XCTUnwrap(ModelProvider.custom.piModel("gpt-6.1-terra", customURL: "https://api.openai.com/v1", customAPI: .responses, customReasoning: false))
+        let thirdPartyCustom = try XCTUnwrap(ModelProvider.custom.piModel("my-model", customURL: "https://gateway.example.com/v1", customAPI: .responses, customReasoning: false))
+        XCTAssertEqual(PiLoop.sessionCacheKey(for: .openai, model: openAIModel, sessionID: firstSession), firstSession)
+        XCTAssertEqual(PiLoop.sessionCacheKey(for: .chatgpt, model: openAIModel, sessionID: firstSession), firstSession)
+        XCTAssertEqual(PiLoop.sessionCacheKey(for: .custom, model: officialCustom, sessionID: firstSession), firstSession)
+        XCTAssertNil(PiLoop.sessionCacheKey(for: .custom, model: thirdPartyCustom, sessionID: firstSession))
+        XCTAssertNil(PiLoop.sessionCacheKey(for: .anthropic, model: openAIModel, sessionID: firstSession))
+        XCTAssertNil(PiLoop.sessionCacheKey(for: .deepseek, model: openAIModel, sessionID: firstSession))
+        XCTAssertNil(PiLoop.sessionCacheKey(for: .gemini, model: openAIModel, sessionID: firstSession))
+        XCTAssertNil(PiLoop.sessionCacheKey(for: .openrouter, model: openAIModel, sessionID: firstSession))
+    }
+
+    func testCustomResponsesEndpointRejectingPromptCacheKeyStillCompletesTask() async throws {
+        let rejectCacheFields: @Sendable ([String: String], [String: Any]) -> (status: String, body: String)? = { headers, json in
+            if json["prompt_cache_key"] != nil {
+                return ("400 Bad Request", #"{"error":{"code":"unsupported_parameter","message":"Unknown parameter: prompt_cache_key"}}"#)
+            }
+            if headers["session_id"] != nil || headers["x-client-request-id"] != nil {
+                return ("400 Bad Request", #"{"error":{"code":"unsupported_header","message":"Unsupported session header"}}"#)
+            }
+            return nil
+        }
+        let server = try FakeCompletions(
+            replies: [
+                FakeCompletions.responsesText("OK"),
+                FakeCompletions.responsesText("First reply without cache key."),
+                FakeCompletions.responsesText("Second reply without cache key."),
+            ],
+            rejectRequest: rejectCacheFields
+        )
+        let url = "http://127.0.0.1:\(server.port)/v1"
+        let check = await ConnectionCheck.runCustom(url: url, key: "", modelID: "strict-responses-model", api: .responses, reasoning: false)
+        XCTAssertTrue(check.result.passed, "ConnectionCheck should pass on strict custom Responses server: \(check.result)")
+
+        let endpoint = CustomEndpoint(url: url, api: .responses, found: .responses)
+        let provider = CustomProvider(name: "Strict Custom Responses", endpoints: [endpoint], model: "strict-responses-model", reasoning: false)
         try ModelKeys.saveCustom(provider, typedKey: "", keepKey: false)
         ModelKeys.selectedProvider = .custom
         ModelKeys.selectedModel = CustomProviders.choiceID(provider.id, provider.model)
@@ -2667,26 +2742,96 @@ final class ChatHarnessTests: XCTestCase {
         self.app = app
         let chat = ChatModel(app: app, kind: .poki)
         chat.newConversation()
-        let firstSession = chat.sessionID
-        defer { SessionStore.shared.delete(firstSession) }
+        defer { SessionStore.shared.delete(chat.sessionID) }
 
         try await Self.ask(chat, "First message")
         try await Self.ask(chat, "Second message")
 
+        XCTAssertEqual(said(chat).suffix(2), ["First reply without cache key.", "Second reply without cache key."])
+        let chatRequests = server.requests.filter { $0["tools"] != nil }
+        XCTAssertEqual(chatRequests.count, 2)
+        for request in chatRequests {
+            XCTAssertNil(request["prompt_cache_key"], "Third-party custom Responses endpoint must not receive prompt_cache_key")
+        }
+    }
+
+    func testDirectEngineWidensResultCardSchemaWhenSwitchingAppsMidTask() async throws {
+        let openAIKeyAccount = "model-key.openai"
+        let priorKey = try Keychain.read(openAIKeyAccount)
+        let priorEngine = UserDefaults.standard.object(forKey: "chatEngine")
+        let priorOpenAIModel = UserDefaults.standard.object(forKey: "chat.model.openai")
+        defer {
+            URLProtocol.unregisterClass(OpenAIResponsesStub.self)
+            OpenAIResponsesStub.clear()
+            if let priorKey { try? Keychain.write(priorKey, account: openAIKeyAccount) }
+            else { Keychain.delete(openAIKeyAccount) }
+            UserDefaults.standard.set(priorEngine, forKey: "chatEngine")
+            UserDefaults.standard.set(priorOpenAIModel, forKey: "chat.model.openai")
+        }
+        try Keychain.write(Data("sk-test-direct-engine".utf8), account: openAIKeyAccount)
+        UserDefaults.standard.set("direct", forKey: "chatEngine")
+        ModelKeys.selectedProvider = .openai
+        ModelKeys.selectedModel = "gpt-6.1-terra"
+
+        let launchArgs = Self.json(["actions": [["launch": ["bundle": "cn.12306.rails12306"]]]])
+        let finishArgs = Self.json([
+            "success": true,
+            "summary": "Found 2 trains.",
+            "details": [["label": "G1", "value": "07:00"]],
+            "answer": ["kind": "list"],
+            "card": [
+                "app": "cn.12306.rails12306",
+                "kind": "12306.trains",
+                "recommended": "G1",
+                "items": [Self.train("G1", "07:00"), Self.train("G3", "08:00")],
+                "primary": ["label": "在 12306 查看", "say": "在 12306 打开 {title} 次"],
+                "next": ["label": "发到公司差旅群", "say": "把 {title} 次发到公司差旅群"],
+            ],
+        ])
+        let turn1 = Self.json([
+            "id": "resp_direct_1",
+            "status": "completed",
+            "output": [["type": "function_call", "call_id": "call_direct_1", "name": "do", "arguments": launchArgs]],
+        ])
+        let turn2 = Self.json([
+            "id": "resp_direct_2",
+            "status": "completed",
+            "output": [["type": "function_call", "call_id": "call_direct_2", "name": "finish_task", "arguments": finishArgs]],
+        ])
+        let turn3 = Self.json([
+            "id": "resp_direct_3",
+            "status": "completed",
+            "output": [["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "G1 is earliest."]]]],
+        ])
+
+        OpenAIResponsesStub.clear()
+        OpenAIResponsesStub.replies = [
+            (200, "application/json", turn1),
+            (200, "application/json", turn2),
+            (200, "application/json", turn3),
+        ]
+        URLProtocol.registerClass(OpenAIResponsesStub.self)
+
+        let automation = FakeAutomation()
+        _ = automation.prepare()
+        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing(), automation: automation,
+                           transport: SessionScreenTransport(session: automation))
+        app.inProcessReadyForProbe()
+        self.app = app
+        let chat = ChatModel(app: app, kind: .poki)
         chat.newConversation()
-        let secondSession = chat.sessionID
-        defer { SessionStore.shared.delete(secondSession) }
-        XCTAssertNotEqual(firstSession, secondSession)
+        defer { SessionStore.shared.delete(chat.sessionID) }
 
-        try await Self.ask(chat, "Third message")
+        try await Self.ask(chat, "打开设置看看，顺便查一下明天车次")
 
-        let requests = server.requests.filter { $0["tools"] != nil }
-        XCTAssertEqual(requests.count, 3)
-        let keys = requests.map { $0["prompt_cache_key"] as? String }
-        XCTAssertEqual(keys[0], firstSession)
-        XCTAssertEqual(keys[1], firstSession)
-        XCTAssertEqual(keys[2], secondSession)
-        XCTAssertNotEqual(keys[0], keys[2])
+        let requests = OpenAIResponsesStub.requests.filter { $0.json["tools"] != nil }
+        XCTAssertGreaterThanOrEqual(requests.count, 3)
+        XCTAssertNil(finishTaskCardKinds(in: requests[0].json),
+                     "Direct engine turn 1 in Settings should omit finish_task.card before switching apps")
+        XCTAssertEqual(Set(try XCTUnwrap(finishTaskCardKinds(in: requests[1].json))),
+                       ["12306.trains", "12306.transfers", "list"],
+                       "Direct engine turn 2 after launching 12306 must widen finish_task.card to 12306 + list")
+        XCTAssertEqual(Self.cards(in: chat).count, 1, "Direct engine widened task must render the 12306 result card")
     }
 
     func testZeroNoteTasksOmitMemoryAttributionWhilePreservingCountedScroll() async throws {
@@ -3171,6 +3316,7 @@ final class FakeCompletions: @unchecked Sendable {
     private var waiting: [(NWConnection, String)] = []
     private let holdAfter: Int?
     private let onRequest: (@Sendable ([String: Any]) -> Void)?
+    private let rejectRequest: (@Sendable ([String: String], [String: Any]) -> (status: String, body: String)?)?
 
     var port: UInt16 { listener.port?.rawValue ?? 0 }
     var requests: [[String: Any]] { lock.withLock { bodies } }
@@ -3178,12 +3324,15 @@ final class FakeCompletions: @unchecked Sendable {
     func replaceReplies(_ next: [String]) { lock.withLock { replies = next } }
 
     init(replies: [String], responseStatus: String = "200 OK", holdFirstReply: (@Sendable () -> Void)? = nil,
-         holdAfter: Int? = nil, onRequest: (@Sendable ([String: Any]) -> Void)? = nil) throws {
+         holdAfter: Int? = nil,
+         rejectRequest: (@Sendable ([String: String], [String: Any]) -> (status: String, body: String)?)? = nil,
+         onRequest: (@Sendable ([String: Any]) -> Void)? = nil) throws {
         self.replies = replies
         self.responseStatus = responseStatus
         self.holdFirstReply = holdFirstReply
         self.holdAfter = holdAfter
         self.onRequest = onRequest
+        self.rejectRequest = rejectRequest
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
@@ -3216,23 +3365,30 @@ final class FakeCompletions: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, done, error in
             guard let self else { return }
             let received = received + (data ?? Data())
-            if let body = Self.body(received) { return self.answer(connection, body) }
+            if let parsed = Self.parseHTTP(received) { return self.answer(connection, parsed.headers, parsed.body) }
             if done || error != nil { return connection.cancel() }
             self.read(connection, received)
         }
     }
 
-    /// The request's body once all of it is in.
-    private static func body(_ data: Data) -> Data? {
+    /// The request's lower-cased headers and full body once all of it is in.
+    private static func parseHTTP(_ data: Data) -> (headers: [String: String], body: Data)? {
         guard let end = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
-        let head = String(decoding: data[..<end.lowerBound], as: UTF8.self).lowercased()
-        let length = head.split(separator: "\r\n").first { $0.hasPrefix("content-length:") }
-            .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) } ?? 0
+        let head = String(decoding: data[..<end.lowerBound], as: UTF8.self)
+        var headers: [String: String] = [:]
+        for line in head.split(separator: "\r\n").dropFirst() {
+            if let colon = line.firstIndex(of: ":") {
+                let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                headers[key] = value
+            }
+        }
+        let length = headers["content-length"].flatMap(Int.init) ?? 0
         let body = data[end.upperBound...]
-        return body.count >= length ? Data(body.prefix(length)) : nil
+        return body.count >= length ? (headers, Data(body.prefix(length))) : nil
     }
 
-    private func answer(_ connection: NWConnection, _ body: Data) {
+    private func answer(_ connection: NWConnection, _ headers: [String: String], _ body: Data) {
         let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
         // The chat's own title request: answered on the side, so it takes no scripted turn.
         let responsesInstructions = (json["instructions"] as? String) ?? ""
@@ -3252,6 +3408,13 @@ final class FakeCompletions: @unchecked Sendable {
             let response = #"{"choices":[{"message":{"role":"assistant","content":"Test conversation"}}]}"#
             let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(response.utf8.count)\r\nConnection: close\r\n\r\n"
             connection.send(content: Data((head + response).utf8), completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
+        if let rejected = rejectRequest?(headers, json) {
+            lock.withLock { bodies.append(json) }
+            onRequest?(json)
+            let head = "HTTP/1.1 \(rejected.status)\r\nContent-Type: application/json\r\nContent-Length: \(rejected.body.utf8.count)\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data((head + rejected.body).utf8), completion: .contentProcessed { _ in connection.cancel() })
             return
         }
         let events = lock.withLock { () -> String in
@@ -3316,6 +3479,88 @@ final class FakeCompletions: @unchecked Sendable {
         return messages.filter { ["system", "developer"].contains($0["role"] as? String ?? "") }.map { message in
             (message["content"] as? String) ?? ((message["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined(separator: "\n") ?? "")
         }.joined(separator: "\n")
+    }
+}
+
+/// Intercepts requests to `api.openai.com` for in-process Responses API and direct-engine tests.
+private final class OpenAIResponsesStub: URLProtocol {
+    struct Sent {
+        let url: URL?
+        let headers: [String: String]
+        let body: Data
+        var json: [String: Any] {
+            (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+        }
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) static var replies: [(status: Int, type: String, body: String)] = []
+    nonisolated(unsafe) private static var recorded: [Sent] = []
+
+    static var requests: [Sent] { lock.withLock { recorded } }
+
+    static func clear() {
+        lock.withLock {
+            replies.removeAll()
+            recorded.removeAll()
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host()?.lowercased() == "api.openai.com"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let body = Self.bodyData(from: request)
+        let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+        let instructions = (json["instructions"] as? String) ?? ""
+        let inputSystem = ((json["input"] as? [[String: Any]]) ?? []).compactMap { item -> String? in
+            guard ["system", "developer"].contains(item["role"] as? String ?? "") else { return nil }
+            return item["content"] as? String
+        }.joined(separator: "\n")
+        if json["tools"] == nil,
+           instructions.hasPrefix("You name chat conversations") || inputSystem.hasPrefix("You name chat conversations") {
+            let replyBody = FakeCompletions.responsesText("Test conversation")
+            finish(status: 200, type: "text/event-stream", body: replyBody)
+            return
+        }
+        let headers = Dictionary(uniqueKeysWithValues: (request.allHTTPHeaderFields ?? [:]).map { ($0.key.lowercased(), $0.value) })
+        let next = Self.lock.withLock { () -> (status: Int, type: String, body: String) in
+            Self.recorded.append(Sent(url: request.url, headers: headers, body: body))
+            if Self.replies.isEmpty {
+                return (200, "text/event-stream", FakeCompletions.responsesText("No more scripted turns."))
+            }
+            return Self.replies.removeFirst()
+        }
+        finish(status: next.status, type: next.type, body: next.body)
+    }
+
+    override func stopLoading() {}
+
+    private func finish(status: Int, type: String, body: String) {
+        let data = Data(body.utf8)
+        let response = HTTPURLResponse(url: request.url ?? URL(string: "https://api.openai.com/v1/responses")!,
+                                       statusCode: status, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": type, "Content-Length": "\(data.count)"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    private static func bodyData(from request: URLRequest) -> Data {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var out = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count > 0 { out.append(buffer, count: count) } else { break }
+        }
+        return out
     }
 }
 

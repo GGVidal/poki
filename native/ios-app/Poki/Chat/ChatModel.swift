@@ -656,6 +656,7 @@ final class ChatModel {
             awaitingModel = true
             client.say(prepared.message)
             offeredMemories = notes
+            taskResultCardMode = Harness.resultCardMode(for: taskRequest, rendersCards: kind == .poki)
             let completed = await run(client, instructions: instructions, delivered: prepared.you.id, token: token)
             let current = runToken == token
             finishTaskSaves(completed: completed, stopped: stopAsked || countedScrollReplyQuestion != nil, token: token)
@@ -726,6 +727,7 @@ final class ChatModel {
             let includeMemoryAttribution = !SkillStore.shared.notes.isEmpty
             let rendersCards = kind == .poki
             let resultCardMode = Harness.resultCardMode(for: taskPrompt, rendersCards: rendersCards)
+            taskResultCardMode = resultCardMode
             let context = Harness.taskInstructions(for: taskPrompt,
                                                    inSplitView: splitSession != nil,
                                                    includeMemoryAttribution: includeMemoryAttribution)
@@ -904,6 +906,7 @@ final class ChatModel {
         taskCalls.removeAll()
         offeredMemories.removeAll()
         pendingMemoryWrites.removeAll()
+        taskResultCardMode = .all
         if isRetry { _ = taskCardIndex(create: true) }
         // Split View needs both apps before the first model tool runs.
         if splitViewSession != nil { app.prepareForTask() }
@@ -1184,6 +1187,15 @@ final class ChatModel {
 
     /// A look or do of this chat is on its way to the phone.
     private var phoneStepUnderWay = false
+    /// Active result-card schema scope for the running task (shared by direct and Pi engines).
+    private var taskResultCardMode: Harness.ResultCardMode = .all
+
+    private func observeTaskApp(_ bundleID: String) {
+        if kind == .poki {
+            taskResultCardMode = taskResultCardMode.including(app: bundleID)
+        }
+        loop?.observeApp(bundleID)
+    }
 
     private func run(_ client: ModelClient, instructions: String, delivered youID: UUID, token: Int) async -> Bool {
         // Stop has moved the token on (and said Stopped): this task writes nothing more.
@@ -1195,7 +1207,7 @@ final class ChatModel {
                                              tools: Harness.toolSpecs(inSplitView: false,
                                                                       includeScreenHistory: HistoryCapture.agentQueryAllowed,
                                                                       includeMemoryAttribution: !SkillStore.shared.notes.isEmpty,
-                                                                      resultCardMode: Harness.resultCardMode(for: taskRequest, rendersCards: kind == .poki)))
+                                                                      resultCardMode: taskResultCardMode))
             } catch {
                 client.forgetUnansweredQuestion()
                 if stopped { return false }
@@ -1281,13 +1293,13 @@ final class ChatModel {
         if runToken == token, call.name == "do", !answer.isError {
             for app in TaskApps.launches(inArguments: call.arguments) {
                 taskApps.launch(app)
-                loop?.observeApp(app)
+                observeTaskApp(app)
             }
             taskApp = taskApps.target(request: taskRequest)
         }
         if runToken == token, (call.name == "do" || call.name == "look"), !answer.isError,
            let readApp = answer.readApp {
-            loop?.observeApp(readApp)
+            observeTaskApp(readApp)
         }
         calls.append(record)
         if runToken == token, !stopAsked, running { awaitingModel = true }
