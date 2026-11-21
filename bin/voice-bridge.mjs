@@ -303,8 +303,23 @@ const { secret, file } = await bridgeSecret();
 const mcp = new Mcp();
 if (macTools) await mcp.connect();
 
+function startupErrorCode(error) {
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return 'timeout';
+  const status = Number(error?.status);
+  if (status === 400) return 'upstream_bad_request';
+  if (status === 401 || status === 403) return 'upstream_auth';
+  if (status === 429) return 'upstream_rate_limit';
+  if (status >= 500) return 'upstream_server_error';
+  if (status >= 400) return 'upstream_client_error';
+  return 'network_error';
+}
+
 const server = http.createServer(async (req, res) => {
-  const reply = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
+  const reply = (status, body, extraHeaders = {}) => {
+    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extraHeaders });
+    res.end(JSON.stringify(body));
+  };
+  const templateHeaders = { 'x-poki-voice-template': VOICE_SPEC_VERSION };
   const url = new URL(req.url, 'http://bridge');
   const [, scope, given, action] = url.pathname.split('/');
   const ok = scope === 'voice' && given && given.length === secret.length && timingSafeEqual(Buffer.from(given), Buffer.from(secret));
@@ -313,17 +328,17 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && action === 'token') {
       if (usesLive && url.searchParams.get('transport') === 'live') {
         console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'queued', host: voiceHost }));
-        return reply(200, { model, live: true, local_tools: localTools });
+        return reply(200, { model, live: true, local_tools: localTools }, templateHeaders);
       }
       const options = Object.fromEntries(['effort', 'vad', 'voice', 'language'].map(k => [k, url.searchParams.get(k) ?? undefined]).filter(([, v]) => v));
       options.manualTurns = url.searchParams.get('turns') === 'committed';
       const started = Date.now();
       try {
         const { token, prompt } = await mintToken(options);
-        console.log(JSON.stringify({ event: 'voice_startup', template_version: prompt.templateVersion, mode: 'realtime', commit_state: 'confirmed', host: voiceHost, sections: prompt.sectionIds, ms: Date.now() - started, options }));
-        return reply(200, token);
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: prompt.templateVersion, mode: 'realtime', commit_state: 'confirmed', host: voiceHost, sections: prompt.sectionIds, ms: Date.now() - started }));
+        return reply(200, token, templateHeaders);
       } catch (error) {
-        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'realtime', commit_state: 'failed', host: voiceHost, ms: Date.now() - started, options, message: error.message }));
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'realtime', commit_state: 'failed', host: voiceHost, ms: Date.now() - started, error_code: startupErrorCode(error), status: Number(error?.status) || 0 }));
         throw error;
       }
     }
@@ -334,10 +349,10 @@ const server = http.createServer(async (req, res) => {
       const started = Date.now();
       try {
         const { sdp: answer, prompts } = await exchangeOffer(sdp, options);
-        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'confirmed', host: voiceHost, sections: { voice: prompts.voice.sectionIds, executor: prompts.executor.sectionIds }, ms: Date.now() - started, options }));
-        return reply(200, { sdp: answer });
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'confirmed', host: voiceHost, sections: { voice: prompts.voice.sectionIds, executor: prompts.executor.sectionIds }, ms: Date.now() - started }));
+        return reply(200, { sdp: answer }, templateHeaders);
       } catch (error) {
-        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'failed', host: voiceHost, ms: Date.now() - started, options, message: error.message }));
+        console.log(JSON.stringify({ event: 'voice_startup', template_version: VOICE_SPEC_VERSION, mode: 'live', commit_state: 'failed', host: voiceHost, ms: Date.now() - started, error_code: startupErrorCode(error), status: Number(error?.status) || 0 }));
         throw error;
       }
     }

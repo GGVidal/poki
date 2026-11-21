@@ -65,7 +65,8 @@ struct VoiceBehaviorSpec: Decodable, Sendable {
         let section: String
         let roles: [String]
         let hosts: [String]?
-        let requires_non_empty_tools: Bool?
+        let requires_work_tools: Bool?
+        let forbids_work_tools: Bool?
         let requires_all_tools: [String]?
         let requires_any_tools: [String]?
         let forbids_tools: [String]?
@@ -82,12 +83,13 @@ struct VoiceBehaviorSpec: Decodable, Sendable {
     static var version: String { shared.version }
     static var lockCheckGuidance: String { shared.lock_check }
 
-    static func startupLogLine(mode: VoiceStartupMode, commitState: VoiceStartupCommitState) -> String {
-        "voice startup: template=\(shared.version) mode=\(mode.rawValue) commit_state=\(commitState.rawValue)"
+    static func startupLogLine(templateVersion: String, mode: VoiceStartupMode, commitState: VoiceStartupCommitState) -> String {
+        "voice startup: template=\(templateVersion) mode=\(mode.rawValue) commit_state=\(commitState.rawValue)"
     }
 
     private static let screenImageTools = ["look", "do", "open_app"]
     private static let numberedTools = ["look", "do"]
+    private static let controlOnlyTools: Set<String> = ["cancel_current_task"]
 
     private static func load() -> VoiceBehaviorSpec {
         if let url = Bundle.main.url(forResource: "voice-behavior-spec", withExtension: "json"),
@@ -122,6 +124,7 @@ struct VoiceBehaviorSpec: Decodable, Sendable {
         for name in tools where !name.isEmpty && toolSet.insert(name).inserted {
             orderedTools.append(name)
         }
+        let hasWorkTools = orderedTools.contains { !Self.controlOnlyTools.contains($0) }
         let languageName = resolveLanguageName(language)
         let screenTools = Self.formatList(Self.screenImageTools.filter(toolSet.contains), conjunction: "and")
         let numberedTools = Self.formatList(Self.numberedTools.filter(toolSet.contains), conjunction: "or")
@@ -138,7 +141,7 @@ struct VoiceBehaviorSpec: Decodable, Sendable {
         for section in sections {
             var selected: [VoicePromptSectionOutput.ClauseOutput] = []
             for clause in clauses where clause.section == section.id {
-                guard matches(clause, role: role, host: host, toolSet: toolSet) else { continue }
+                guard matches(clause, role: role, host: host, toolSet: toolSet, hasWorkTools: hasWorkTools) else { continue }
                 let rendered = Self.substitute(clause.text, values: values)
                 selected.append(.init(id: clause.id, text: rendered))
                 clauseIds.append(clause.id)
@@ -167,10 +170,11 @@ struct VoiceBehaviorSpec: Decodable, Sendable {
         )
     }
 
-    private func matches(_ clause: Clause, role: VoicePromptRole, host: VoicePromptHost, toolSet: Set<String>) -> Bool {
+    private func matches(_ clause: Clause, role: VoicePromptRole, host: VoicePromptHost, toolSet: Set<String>, hasWorkTools: Bool) -> Bool {
         guard clause.roles.contains(role.rawValue) else { return false }
         if let hosts = clause.hosts, !hosts.contains(host.rawValue) { return false }
-        if clause.requires_non_empty_tools == true, toolSet.isEmpty { return false }
+        if clause.requires_work_tools == true, !hasWorkTools { return false }
+        if clause.forbids_work_tools == true, hasWorkTools { return false }
         if let requiredAll = clause.requires_all_tools, !requiredAll.allSatisfy(toolSet.contains) { return false }
         if let requiredAny = clause.requires_any_tools, !requiredAny.contains(where: toolSet.contains) { return false }
         if let forbidden = clause.forbids_tools, forbidden.contains(where: toolSet.contains) { return false }

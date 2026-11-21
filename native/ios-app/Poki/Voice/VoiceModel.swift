@@ -26,12 +26,20 @@ struct VoiceBridge: Equatable {
         set { UserDefaults.standard.set(newValue?.base.absoluteString, forKey: "voiceBridge") }
     }
 
+    static let templateHeader = "X-Poki-Voice-Template"
+
     struct Token: Decodable {
         let value: String?
         let model: String
         let local_tools: [String]
         var live: Bool? = nil
         var base: String? = nil
+        var templateVersion: String? = nil
+
+        enum CodingKeys: String, CodingKey {
+            case value, model, local_tools, live, base
+            case templateVersion = "template_version"
+        }
     }
     private struct SDPAnswer: Decodable { let sdp: String }
     private struct ScreenDescription: Decodable { let text: String }
@@ -66,10 +74,12 @@ struct VoiceBridge: Equatable {
         ])
         let (data, response) = try await URLSession.shared.data(from: url)
         try Self.check(response, data)
-        return try JSONDecoder().decode(Token.self, from: data)
+        var token = try JSONDecoder().decode(Token.self, from: data)
+        if let header = Self.templateVersion(from: response) { token.templateVersion = header }
+        return token
     }
 
-    func exchangeLiveOffer(_ sdp: String) async throws -> String {
+    func exchangeLiveOffer(_ sdp: String) async throws -> (sdp: String, templateVersion: String?) {
         let url = base.appending(path: "session").appending(queryItems: [URLQueryItem(name: "language", value: AppLocalization.language)])
         var request = URLRequest(url: url, timeoutInterval: 25)
         request.httpMethod = "POST"
@@ -77,7 +87,15 @@ struct VoiceBridge: Equatable {
         request.httpBody = try JSONEncoder().encode(["sdp": sdp])
         let (data, response) = try await URLSession.shared.data(for: request)
         try Self.check(response, data)
-        return try JSONDecoder().decode(SDPAnswer.self, from: data).sdp
+        let answer = try JSONDecoder().decode(SDPAnswer.self, from: data).sdp
+        return (answer, Self.templateVersion(from: response))
+    }
+
+    private static func templateVersion(from response: URLResponse) -> String? {
+        guard let raw = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: templateHeader)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        return raw
     }
 
     var liveScreenReader: ((String) async throws -> String)? {
@@ -313,6 +331,7 @@ final class VoiceModel {
 
     private var link: VoiceConnection?
     private var startupMode: VoiceStartupMode?
+    private var startupTemplateVersion: String?
     private var usesLive = false
     private var liveCloseTimeout: Task<Void, Never>?
     private var liveUsageSeconds: Double?
@@ -696,7 +715,17 @@ final class VoiceModel {
             }
             return token?.live == true ? .liveBridge : .realtimeBridge
         }
-        startupMode = resolveStartupMode(for: nil)
+        func resolveStartupTemplateVersion(for mode: VoiceStartupMode, token: VoiceBridge.Token?) -> String {
+            switch mode {
+            case .realtimeDirect, .liveDirect, .rehearsal, .dictation:
+                return VoiceBehaviorSpec.version
+            case .realtimeBridge, .liveBridge:
+                return token?.templateVersion ?? "unknown"
+            }
+        }
+        let initialMode = resolveStartupMode(for: nil)
+        startupMode = initialMode
+        startupTemplateVersion = resolveStartupTemplateVersion(for: initialMode, token: nil)
         func connect(_ token: VoiceBridge.Token, attempt: Int, direct: Bool) async throws {
             connectionAttempt = attempt
             let link = connection({ [weak self] event in
@@ -714,15 +743,21 @@ final class VoiceModel {
             usesLive = token.live == true
             localTools = Set(token.local_tools)
             let mode = resolveStartupMode(for: token)
+            let templateVersion = resolveStartupTemplateVersion(for: mode, token: token)
             startupMode = mode
-            log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: mode, commitState: rehearsing ? .queued : .submitted))
+            startupTemplateVersion = templateVersion
+            log.add("voice", VoiceBehaviorSpec.startupLogLine(templateVersion: templateVersion, mode: mode, commitState: rehearsing ? .queued : .submitted))
             if usesLive {
                 if let key { liveScreenDescription = { try await VoiceDirect.describeLiveScreen($0, apiKey: key) } }
                 else { liveScreenDescription = bridge?.liveScreenReader }
                 try await link.connectLive(microphone: microphone, direct: direct) { sdp in
                     if let key { return try await VoiceDirect.exchangeLiveOffer(sdp, model: token.model, apiKey: key) }
                     guard let bridge else { throw VoiceError.noBridge }
-                    return try await bridge.exchangeLiveOffer(sdp)
+                    let answer = try await bridge.exchangeLiveOffer(sdp)
+                    if let reported = answer.templateVersion {
+                        self.startupTemplateVersion = reported
+                    }
+                    return answer.sdp
                 }
             } else {
                 guard let secret = token.value else { throw VoiceError.noBridge }
@@ -757,9 +792,10 @@ final class VoiceModel {
             guard number == session, liveCloseTimeout == nil else { return }
             transcript = nil
             if let mode = startupMode, !ready {
-                log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: mode, commitState: .failed))
+                log.add("voice", VoiceBehaviorSpec.startupLogLine(templateVersion: startupTemplateVersion ?? "unknown", mode: mode, commitState: .failed))
             }
             startupMode = nil
+            startupTemplateVersion = nil
             closeConnection("could not connect")
             holdingMicrophone = false
             phase = .lost(VoiceError.reason(for: error))
@@ -880,6 +916,7 @@ final class VoiceModel {
         liveCloseTimeout = nil
         closeConnection("session ended")
         startupMode = nil
+        startupTemplateVersion = nil
         usesLive = false
         screenItem = nil
         holdingMicrophone = false
@@ -1097,7 +1134,7 @@ final class VoiceModel {
         do {
             try dictation.listen()
             phase = .hearing
-            log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: .dictation, commitState: .confirmed))
+            log.add("voice", VoiceBehaviorSpec.startupLogLine(templateVersion: VoiceBehaviorSpec.version, mode: .dictation, commitState: .confirmed))
             log.add("voice", "dictation to the chat (no Realtime key or bridge)")
         } catch {
             self.dictation = nil
@@ -1160,6 +1197,9 @@ final class VoiceModel {
             finishLiveClose(reason, confirmed: confirmed)
             return
         }
+        if !ready, let mode = startupMode {
+            log.add("voice", VoiceBehaviorSpec.startupLogLine(templateVersion: startupTemplateVersion ?? "unknown", mode: mode, commitState: .failed))
+        }
         if usesLive && ready { logLiveClose(reason, confirmed: confirmed) }
         endSession()
         session += 1
@@ -1192,7 +1232,7 @@ final class VoiceModel {
                 manualRealtimeTurns = detection?["create_response"] as? Bool == false
             }
             if !ready, let mode = startupMode {
-                log.add("voice", VoiceBehaviorSpec.startupLogLine(mode: mode, commitState: .confirmed))
+                log.add("voice", VoiceBehaviorSpec.startupLogLine(templateVersion: startupTemplateVersion ?? "unknown", mode: mode, commitState: .confirmed))
             }
             trace("model session ready")
             ready = true

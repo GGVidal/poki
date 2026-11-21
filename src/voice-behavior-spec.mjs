@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs';
 
 const specURL = new URL('./data/voice-behavior-spec.json', import.meta.url);
-export const voiceBehaviorSpec = JSON.parse(readFileSync(specURL, 'utf8'));
+const voiceBehaviorSpec = JSON.parse(readFileSync(specURL, 'utf8'));
 export const VOICE_SPEC_VERSION = voiceBehaviorSpec.version;
-export const VOICE_SECTION_IDS = voiceBehaviorSpec.sections.map(section => section.id);
 export const lockCheckGuidance = voiceBehaviorSpec.lock_check;
 
 const SCREEN_IMAGE_TOOLS = ['look', 'do', 'open_app'];
 const NUMBERED_TOOLS = ['look', 'do'];
+const CONTROL_ONLY_TOOLS = new Set(['cancel_current_task']);
 
 function formatList(items, conjunction) {
   if (items.length <= 1) return items.join('');
@@ -15,7 +15,7 @@ function formatList(items, conjunction) {
   return `${items.slice(0, -1).join(', ')} ${conjunction} ${items.at(-1)}`;
 }
 
-export function resolveVoiceLanguageName(code) {
+function resolveVoiceLanguageName(code) {
   if (typeof code === 'string' && Object.hasOwn(voiceBehaviorSpec.language_names, code)) {
     return voiceBehaviorSpec.language_names[code];
   }
@@ -27,10 +27,11 @@ export function resolveVoiceLanguageName(code) {
   return 'English';
 }
 
-function matchesClause(clause, { role, host, toolSet }) {
+function matchesClause(clause, { role, host, toolSet, hasWorkTools }) {
   if (!clause.roles.includes(role)) return false;
   if (clause.hosts && !clause.hosts.includes(host)) return false;
-  if (clause.requires_non_empty_tools && toolSet.size === 0) return false;
+  if (clause.requires_work_tools && !hasWorkTools) return false;
+  if (clause.forbids_work_tools && hasWorkTools) return false;
   if (clause.requires_all_tools && !clause.requires_all_tools.every(name => toolSet.has(name))) return false;
   if (clause.requires_any_tools && !clause.requires_any_tools.some(name => toolSet.has(name))) return false;
   if (clause.forbids_tools && clause.forbids_tools.some(name => toolSet.has(name))) return false;
@@ -40,6 +41,7 @@ function matchesClause(clause, { role, host, toolSet }) {
 export function buildVoicePrompt({ role, language, tools = [], host = 'phone' }) {
   const orderedTools = [...new Set(tools.filter(name => typeof name === 'string' && name.length > 0))];
   const toolSet = new Set(orderedTools);
+  const hasWorkTools = orderedTools.some(name => !CONTROL_ONLY_TOOLS.has(name));
   const languageName = resolveVoiceLanguageName(language);
   const screenTools = formatList(SCREEN_IMAGE_TOOLS.filter(name => toolSet.has(name)), 'and');
   const numberedTools = formatList(NUMBERED_TOOLS.filter(name => toolSet.has(name)), 'or');
@@ -57,7 +59,7 @@ export function buildVoicePrompt({ role, language, tools = [], host = 'phone' })
     const selected = [];
     for (const clause of voiceBehaviorSpec.clauses) {
       if (clause.section !== section.id) continue;
-      if (!matchesClause(clause, { role, host, toolSet })) continue;
+      if (!matchesClause(clause, { role, host, toolSet, hasWorkTools })) continue;
       const text = clause.text.replace(/\{([a-z_]+)\}/g, (_, key) => values[key] ?? '');
       selected.push({ id: clause.id, text });
       clauseIds.push(clause.id);
@@ -83,29 +85,5 @@ export function buildVoicePrompt({ role, language, tools = [], host = 'phone' })
     clauseIds,
     sections,
     text,
-  };
-}
-
-export function compareVoicePrompts(left, right) {
-  const differences = [];
-  if (left.templateVersion !== right.templateVersion) {
-    differences.push(`templateVersion: ${left.templateVersion} !== ${right.templateVersion}`);
-  }
-  if (JSON.stringify(left.sectionIds) !== JSON.stringify(right.sectionIds)) {
-    differences.push(`sectionIds: ${JSON.stringify(left.sectionIds)} !== ${JSON.stringify(right.sectionIds)}`);
-  }
-  if (JSON.stringify(left.clauseIds) !== JSON.stringify(right.clauseIds)) {
-    differences.push(`clauseIds: ${JSON.stringify(left.clauseIds)} !== ${JSON.stringify(right.clauseIds)}`);
-  }
-  if (left.text !== right.text) {
-    differences.push(`text length ${left.text.length} vs ${right.text.length}`);
-  }
-  return {
-    equal: differences.length === 0,
-    versionMatch: left.templateVersion === right.templateVersion,
-    sectionIdsMatch: JSON.stringify(left.sectionIds) === JSON.stringify(right.sectionIds),
-    clauseIdsMatch: JSON.stringify(left.clauseIds) === JSON.stringify(right.clauseIds),
-    textMatch: left.text === right.text,
-    differences,
   };
 }
