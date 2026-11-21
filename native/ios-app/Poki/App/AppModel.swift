@@ -391,9 +391,11 @@ final class AppModel {
         }
         if transport == nil, supportsAutoUnlock {
             host.onAutoUnlock { [weak self] timeout in
-                guard let self, await self.canAutoUnlock else { return false }
-                return await self.unlockForLocalTask(timeout: timeout)
+                await self?.unlockForLocalTask(timeout: timeout) ?? false
             }
+            log.add("auto-unlock", "handler registered for \(automationPath.rawValue)")
+        } else {
+            log.add("auto-unlock", transport != nil ? "handler not registered for custom transport" : "handler not registered on this device")
         }
         // PokiCore asks for a restart after two silent requests in a row. A slow gesture can be one of
         // them while the runner is fine, so the runner is asked first; only a runner that does not
@@ -496,13 +498,37 @@ final class AppModel {
         }
     }
 
-    private var canAutoUnlock: Bool {
-        sessionOn && !ownerPaused && ChatModel.delegatedBusy == nil &&
-            (automationPath == .runner || inProcessSession == .open)
-    }
-
     private func unlockForLocalTask(timeout: Double) async -> Bool {
-        await autoUnlock.unlock(using: automation, opensSession: automationPath == .runner, timeout: timeout)
+        guard sessionOn, !ownerPaused, ChatModel.delegatedBusy == nil, approvals.isEmpty,
+              !passcodeConfirmationPending, !InProcessWDA.automationDeclined else {
+            log.add("auto-unlock", "lock detected: the current task cannot unlock the iPhone")
+            return false
+        }
+        if automationPath == .runner {
+            log.add("auto-unlock", "lock detected: allowed to try with a temporary session")
+            return await autoUnlock.unlock(using: automation, session: .temporary, timeout: timeout)
+        }
+        if inProcessSession == .open {
+            log.add("auto-unlock", "lock detected: allowed to try with the current session")
+            return await autoUnlock.unlock(using: automation, session: .current, timeout: timeout)
+        }
+        guard !inProcessWarming, inProcessSession == .idle || inProcessSession == .opening else {
+            log.add("auto-unlock", "lock detected: an automation session is changing")
+            return false
+        }
+        guard AutomationAllowance.saved?.covers(boot: BootClock.current, at: Date()) == true else {
+            log.add("auto-unlock", "lock detected: iOS automation authorization must be obtained first")
+            return false
+        }
+        log.add("auto-unlock", "lock detected: allowed to try before preparing the task session")
+        let epoch = inProcessEpoch
+        inProcessOpensInFlight += 1
+        inProcessOpens.enter()
+        defer {
+            if epoch == inProcessEpoch { inProcessOpensInFlight -= 1 }
+            inProcessOpens.leave()
+        }
+        return await autoUnlock.unlock(using: automation, session: .beforeTask, timeout: timeout)
     }
 
     /// The in-process session as prepare last answered it in this process (ESP-152).
@@ -529,6 +555,7 @@ final class AppModel {
     private var preparingCellularImage = false
     private var inProcessWarming = false
     private var inProcessOpensInFlight = 0
+    private let inProcessOpens = DispatchGroup()
     /// A failed local open went back to the loopback once since it last answered.
     private var retriedLocalDDIOnLoopback = false
     /// iOS is asking the owner for the passcode to allow automation (in-process): the open under way
@@ -559,6 +586,7 @@ final class AppModel {
 
     func closeInProcess(_ why: String, keepingSession: Bool = false, then: (@MainActor () -> Void)? = nil) {
         guard automationPath == .inProcess else { return }
+        autoUnlock.cancelAttempt()
         if let then { afterInProcessClose.append(then) }
         if case .closing = inProcessSession {
             if !keepingSession { pendingInProcessClose = why }
@@ -566,14 +594,13 @@ final class AppModel {
         }
         inProcessSession = .closing(reopen: false)
         inProcessEpoch += 1
+        let hadOpening = inProcessOpensInFlight > 0
         inProcessWarming = false
         inProcessOpensInFlight = 0
         retriedLocalDDIOnLoopback = false
         endPasscodeWait(opened: false)
-        DispatchQueue.global(qos: .userInitiated).async { [automation] in
-            var result = keepingSession ? automation.pauseAutomation() : automation.close()
-            let kept = keepingSession && result["paused"] as? Bool == true && result["how"] as? String != "no session"
-            if keepingSession, !kept { result = automation.close() }
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        let complete: @Sendable ([String: Any], Bool) -> Void = { [weak self] result, kept in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let reopen: Bool
@@ -598,6 +625,23 @@ final class AppModel {
                 self.afterInProcessClose.removeAll()
                 for callback in callbacks { callback() }
                 if reopen, self.sessionOn { self.wakeRunner(asked: "a phone step arrived while closing") }
+            }
+        }
+        queue.async { [automation, inProcessOpens] in
+            if hadOpening {
+                let firstClose = automation.close()
+                // An open can outlive the first close. Keep the model in Closing until the
+                // old opens return and the native session is closed again.
+                inProcessOpens.notify(queue: queue) {
+                    let lateClose = automation.close()
+                    complete(lateClose["closed"] as? Bool == true ? lateClose : firstClose, false)
+                }
+            } else if keepingSession {
+                let paused = automation.pauseAutomation()
+                let kept = paused["paused"] as? Bool == true && paused["how"] as? String != "no session"
+                complete(kept ? paused : automation.close(), kept)
+            } else {
+                complete(automation.close(), false)
             }
         }
     }
@@ -649,7 +693,7 @@ final class AppModel {
 
     func warmInProcess(_ why: String) {
         guard automationPath == .inProcess, sessionOn, runner.isRunning,
-              inProcessSession != .idle, inProcessSession != .open else { return }
+              inProcessSession != .idle, inProcessSession != .open, !autoUnlock.isAttempting else { return }
         if case .closing = inProcessSession { return }
         if InProcessWDA.automationDeclined || passcodeConfirmationPending { return }
         // The first open since the iPhone restarted is what brings up iOS's passcode screen: with
@@ -678,7 +722,9 @@ final class AppModel {
             inProcessSession = .opening
         }
         host.update(runner: coreState(of: runner))
-        DispatchQueue.global(qos: .userInitiated).async { [automation] in
+        inProcessOpens.enter()
+        DispatchQueue.global(qos: .userInitiated).async { [automation, inProcessOpens] in
+            defer { inProcessOpens.leave() }
             var result = InProcessWDA.openThroughGate { automation.prepare() }
             var resumeFailure: String?
             if resuming, Self.shouldOpenNewSessionAfterFailedResume(result) {
@@ -1577,7 +1623,7 @@ final class AppModel {
     }
 
     func checkIdle(now: Date = Date()) {
-        if automationPath == .inProcess, inProcessWarming, !inProcessPasscode {
+        if automationPath == .inProcess, inProcessOpensInFlight > 0, !inProcessPasscode {
             let waited = automation.authorizationWaitSeconds()
             if waited > Self.passcodeEvidence { beginPasscodeWait(waited: waited) }
         }

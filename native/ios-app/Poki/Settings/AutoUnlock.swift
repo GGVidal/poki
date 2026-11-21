@@ -5,6 +5,7 @@ import os
 @MainActor @Observable
 final class AutoUnlock {
     enum SettingsError: Error { case invalidPasscode }
+    enum Session { case current, temporary, beforeTask }
 
     private static let account = "device-unlock.passcode.v1"
     private static let enabledKey = "deviceUnlock.enabled"
@@ -18,6 +19,9 @@ final class AutoUnlock {
     }
     @ObservationIgnored private var attempt: OSAllocatedUnfairLock<Bool>?
     @ObservationIgnored private var configurationVersion: UInt64 = 0
+    var isAttempting: Bool { attempt != nil }
+
+    func cancelAttempt() { attempt?.withLock { $0 = false } }
 
     static func accepts(_ passcode: String) -> Bool {
         let bytes = passcode.utf8
@@ -27,7 +31,7 @@ final class AutoUnlock {
     func save(_ passcode: String) throws {
         guard Self.accepts(passcode) else { throw SettingsError.invalidPasscode }
         try Keychain.write(Data(passcode.utf8), account: Self.account)
-        attempt?.withLock { $0 = false }
+        cancelAttempt()
         configurationVersion &+= 1
         resetAttempt()
         deletionFailed = false
@@ -36,7 +40,7 @@ final class AutoUnlock {
     }
 
     func disable() throws {
-        attempt?.withLock { $0 = false }
+        cancelAttempt()
         do {
             try Keychain.remove(Self.account)
         } catch {
@@ -55,10 +59,15 @@ final class AutoUnlock {
         UserDefaults.standard.removeObject(forKey: Self.retryKey)
     }
 
-    func unlock(using automation: InProcessAutomation, opensSession: Bool, timeout: TimeInterval) async -> Bool {
-        guard enabled, !needsPasscode, attempt == nil, !Task.isCancelled, timeout > 0,
-              let data = try? Keychain.read(Self.account),
-              let passcode = String(data: data, encoding: .utf8), Self.accepts(passcode) else { return false }
+    func unlock(using automation: InProcessAutomation, session: Session, timeout: TimeInterval) async -> Bool {
+        guard enabled else { return skip("the setting is off") }
+        guard !needsPasscode else { return skip("the owner needs to update the saved passcode") }
+        guard !isAttempting, !Task.isCancelled, timeout > 0 else { return skip("another attempt is in progress or the request ended") }
+        guard let data = try? Keychain.read(Self.account),
+              let passcode = String(data: data, encoding: .utf8), Self.accepts(passcode) else {
+            return skip("the saved passcode is unavailable")
+        }
+        AppLog.shared.add("auto-unlock", "attempt started")
         let allowed = OSAllocatedUnfairLock(initialState: true)
         let version = configurationVersion
         attempt = allowed
@@ -70,8 +79,8 @@ final class AutoUnlock {
                     let start = ProcessInfo.processInfo.systemUptime
                     let result: PKUnlockResult = {
                         guard allowed.withLock({ $0 }) else { return .unavailable }
-                        defer { if opensSession { _ = automation.close() } }
-                        if opensSession {
+                        defer { if session == .temporary { _ = automation.close() } }
+                        if session != .current {
                             let ready = InProcessWDA.openThroughGate { ["ok": automation.prepareForUnlock()] }
                             guard ready["ok"] as? Bool == true else { return .unavailable }
                         }
@@ -101,5 +110,10 @@ final class AutoUnlock {
             UserDefaults.standard.set(needsPasscode, forKey: Self.retryKey)
         }
         return result == .unlocked && !Task.isCancelled
+    }
+
+    private func skip(_ reason: String) -> Bool {
+        AppLog.shared.add("auto-unlock", "attempt skipped: \(reason)")
+        return false
     }
 }

@@ -1268,6 +1268,40 @@ final class ApprovalTests: XCTestCase {
         }
     }
 
+    func testOwnerLaunchUnlocksBeforeWaitingForAnInProcessSession() async {
+        let (core, wda, host) = makeCore { $0.runnerWait = 0 }
+        wda.reportsLockBeforeSession = true
+        let locked = LockedBox(true)
+        host.state.value = .starting("the iPhone is locked before the session is ready")
+        wda.set("GET /wda/locked") { _ in (200, ["value": .bool(locked.value)]) }
+        let state = host.state
+        host.unlock.value = { _ in
+            guard locked.value else { return false }
+            locked.value = false
+            state.value = .automationReady(revision: 1)
+            return true
+        }
+        wda.set("POST /wda/apps/activate") { [weak wda] body in
+            guard !locked.value, body?["bundleId"]?.string == "com.apple.mobiletimer" else {
+                return (500, ["value": ["error": "the app could not open"]])
+            }
+            wda?.set("GET /wda/activeAppInfo") { _ in
+                (200, ["value": ["bundleId": "com.apple.mobiletimer", "name": "Clock"]])
+            }
+            wda?.source([("Button", "Timer")], app: "Clock")
+            return (200, ["value": nil])
+        }
+
+        let external = await core.call("look", [:])
+        XCTAssertTrue(external.waitingForOwner, external.text)
+        XCTAssertTrue(locked.value, "An outside agent must not unlock the iPhone")
+
+        let result = await core.callTool("do", arguments: #"{"actions":[{"launch":{"bundle":"com.apple.mobiletimer"}}]}"#, localTask: "open-clock")
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertTrue(result.text.contains("Timer"), result.text)
+    }
+
     func testUnconfirmedAutoUnlockReturnsTheCurrentScreenWithoutSendingTheAction() async {
         for tool in ["do", "look"] {
             for remainsLocked in [false, true] {

@@ -98,6 +98,7 @@ final class InProcessWDA: HTTPTransport, @unchecked Sendable {
     private var lanes: LocalRunner!
     let usesDynamicScreenSize = true
     let supportsPaneSelection = true
+    let reportsLockBeforeSession = true
     private let readGeometry = OSAllocatedUnfairLock<(display: PKDisplayGeometry, pane: CGRect)?>(initialState: nil)
     private var routes: [String: Route] = [:]
     /// The focused field from the latest `/element/active`, for the value and frame asked right after.

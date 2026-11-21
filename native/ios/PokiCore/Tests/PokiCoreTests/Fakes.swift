@@ -13,6 +13,7 @@ final class FakeWDA: HTTPTransport, @unchecked Sendable {
 
     let usesDynamicScreenSize: Bool
     let supportsPaneSelection: Bool
+    var reportsLockBeforeSession = false
 
     init(dynamicSize: Bool = false, paneSelection: Bool = false) {
         usesDynamicScreenSize = dynamicSize

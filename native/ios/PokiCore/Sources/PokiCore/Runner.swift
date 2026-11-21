@@ -45,12 +45,15 @@ public protocol HTTPTransport: Sendable {
     /// In-process reads may change their coordinate space as the owner moves or resizes a window.
     var usesDynamicScreenSize: Bool { get }
     var supportsPaneSelection: Bool { get }
+    /// The lock-state request can run without opening an automation session.
+    var reportsLockBeforeSession: Bool { get }
     func send(method: String, url: URL, body: Data?, timeout: Double) async throws -> (status: Int, body: Data)
 }
 
 public extension HTTPTransport {
     var usesDynamicScreenSize: Bool { false }
     var supportsPaneSelection: Bool { false }
+    var reportsLockBeforeSession: Bool { false }
 }
 
 public enum TransportError: Error, Sendable {

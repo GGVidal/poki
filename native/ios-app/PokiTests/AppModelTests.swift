@@ -23,6 +23,7 @@ final class FakeAutomation: InProcessAutomation, @unchecked Sendable {
     private var heldOpenStarted = false
     private var answer: [String: Any]?
     var onPrepare: (@Sendable () -> Void)?
+    var onClose: (@Sendable () -> Void)?
     var openingDelay: TimeInterval = 0
     private var requested: TimeInterval = 0
     private var ready: TimeInterval = 0
@@ -54,7 +55,12 @@ final class FakeAutomation: InProcessAutomation, @unchecked Sendable {
         }
     }
     func close() -> [String: Any] {
-        lock.withLock { defer { if open { closeCalls += 1 }; open = false; paused = false }; return ["closed": open, "generation": 1, "seconds": 0.0] }
+        let result: [String: Any] = lock.withLock {
+            defer { if open { closeCalls += 1 }; open = false; paused = false }
+            return ["closed": open, "generation": 1, "seconds": 0.0]
+        }
+        onClose?()
+        return result
     }
     /// Automation Mode off with the session kept, as iOS does it: the session stays open until the next prepare turns it on.
     func pauseAutomation() -> [String: Any] {
@@ -1108,8 +1114,11 @@ final class InProcessPasscodeTests: XCTestCase {
         session.setAuthorizationWait(4)
         model.checkIdle(now: Date().addingTimeInterval(6))
         XCTAssertTrue(model.passcodeHint, "Poki's home asks the owner for the passcode")
-        let waiting = model.host.currentRunner.describe
-        XCTAssertTrue(waiting.contains("owner to enter the iPhone passcode"), waiting)
+        let waiting = model.host.currentRunner
+        guard case .awaitingAutomationAuthorization(let detail) = waiting else {
+            return XCTFail(waiting.describe)
+        }
+        XCTAssertTrue(detail.contains("owner to allow UI automation"), detail)
         try await captureSessionState("passcode")
         session.answer(["ok": false, "code": "com.apple.dt.XCTest.XCTFuture 1000", "detail": "Timed out while enabling automation mode.", "seconds": 60.0])
         await waitFor("iOS gave up on the passcode") { !self.model.passcodeHint && !self.model.host.currentRunner.describe.hasPrefix("starting") }
@@ -1408,6 +1417,24 @@ final class InProcessPasscodeTests: XCTestCase {
         XCTAssertFalse(session.isOpen)
         XCTAssertEqual(session.closes, 1)
         XCTAssertEqual(session.pauses, 0)
+    }
+
+    func testStopClosesAutomationThatOpensAfterTheFirstClose() async {
+        await prepareWithoutPhoneTask()
+        session.holdNextOpen()
+        model.wakeRunner()
+        await waitFor("an automation open is under way") { self.session.isHoldingOpen }
+
+        let firstClose = expectation(description: "Stop asks iOS to close while the open is still waiting")
+        firstClose.assertForOverFulfill = false
+        session.onClose = { firstClose.fulfill() }
+        model.stopFromOutside(AppModel.liveActivityStop)
+        await fulfillment(of: [firstClose], timeout: 5)
+        session.onClose = nil
+        session.answer(nil)
+        await waitFor("the delayed open answered") { self.session.prepares == 1 }
+        await waitFor("the delayed automation session was closed") { !self.session.isOpen }
+        XCTAssertTrue(model.sessionOn, "Stopping the task should leave Poki on")
     }
 
     func testOnIOS26ClosingDuringAPauseDoesNotKeepTheSession() async {

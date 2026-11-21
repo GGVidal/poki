@@ -574,6 +574,7 @@ final class Computer: @unchecked Sendable {
 
     func lookNow(full: Bool, pane: String? = nil, session: String? = nil, local: Bool = false, expectedApps: Set<String>? = nil, localTask: String? = nil) async -> ToolResult {
         if local { authorizationRead = nil }
+        let earlyUnlock = await unlockBeforeSession(forLocalTask: local && localTask != nil, session: session)
         let until: Double
         let revision: UInt64?
         switch await waitForRunner(until: now() + config.toolDeadline, authorization: local ? .ready : .none) {
@@ -583,7 +584,7 @@ final class Computer: @unchecked Sendable {
         if let selectedPane, selectedPane.session != session, (hasLocalWorkspace || !beginsTask() || pane == nil) { return workspaceInUse() }
         async let locked = isLocked()
         var unlocked = false
-        if localTask != nil, await locked {
+        if localTask != nil, await locked, earlyUnlock != true {
             unlocked = await unlockForLocalTask(until: until)
             if !unlocked { unlocked = await !isLocked() }
         }
@@ -860,6 +861,15 @@ final class Computer: @unchecked Sendable {
         (try? await runner.raw("GET", "/wda/locked", timeout: 1, countsAsMiss: false))?.bool ?? false
     }
 
+    /// The in-process transport can see the Lock Screen before the normal session can read it.
+    /// Give the opted-in host that opportunity before asking it to start the normal session.
+    private func unlockBeforeSession(forLocalTask: Bool, session: String?) async -> Bool? {
+        guard forLocalTask, runner.transport.reportsLockBeforeSession, !host.currentRunner.isRunning,
+              selectedPane == nil || selectedPane?.session == session,
+              approvals.pending == nil, !handoffWaiting, !Task.isCancelled, await isLocked() else { return nil }
+        return await unlockForLocalTask(until: now() + config.toolDeadline)
+    }
+
     private func unlockForLocalTask(until: Double) async -> Bool {
         let timeout = min(16, until - now() - config.readTimeout)
         guard timeout > 0, approvals.pending == nil, !handoffWaiting, !Task.isCancelled else { return false }
@@ -1125,11 +1135,16 @@ final class Computer: @unchecked Sendable {
         var until: Double
         let revision: UInt64?
         let needsCurrentScreen = actions.contains { !hasRequiredScreenEvidence($0, evidence: []) }
+        let harmless = actions.allSatisfy { $0["wait"] != nil || $0["wait_until"] != nil || $0["handoff"] != nil }
+        let onlyButtons = actions.allSatisfy { $0["button"] != nil || $0["wait"] != nil }
         let authorization: AuthorizationWait = local ? (needsCurrentScreen ? .freshScreen : .ready) : .none
+        let earlyUnlock = await unlockBeforeSession(forLocalTask: local && localTask != nil && !harmless && !onlyButtons, session: session)
+        if earlyUnlock != nil { started = now() }
         switch await waitForRunner(until: started + config.toolDeadline, authorization: authorization) {
         case .ready(let deadline, let readyRevision): (until, revision) = (deadline, readyRevision)
         case .blocked(let result): return result
         }
+        if earlyUnlock == true, needsCurrentScreen { return readRequiredAfterAuthorization() }
         if local, let revision {
             let read = authorizationRead
             let evidence = read?.revision == revision && read?.task == localTask ? read?.evidence ?? [] : []
@@ -1158,7 +1173,6 @@ final class Computer: @unchecked Sendable {
 
         // While a step is handed to the owner, nothing is sent (they may be typing a password):
         // the model sees the screen, waits, or takes the step back.
-        let harmless = actions.allSatisfy { $0["wait"] != nil || $0["wait_until"] != nil || $0["handoff"] != nil }
         if let action = actions.first, let drag = action["drag"], drag["to_pane"] != nil,
            let from = try? point(drag["from"]), let attempted = workspaceDrag(from: from),
            workspaceDrags.contains(where: { $0.matches(attempted) }) {
@@ -1170,12 +1184,11 @@ final class Computer: @unchecked Sendable {
             result.waitingForOwner = true
             return result
         }
-        let onlyButtons = actions.allSatisfy { $0["button"] != nil || $0["wait"] != nil }
         if !onlyButtons, await isLocked() {
             guard localTask != nil, !harmless else {
                 return ToolResult(text: "screen: locked. Nothing was sent. The owner has to unlock the phone; call look once they have.", jpeg: nil, isError: true, waitingForOwner: true)
             }
-            guard await unlockForLocalTask(until: until) else {
+            guard earlyUnlock != true, await unlockForLocalTask(until: until) else {
                 let result = await readAndReply(until: until, full: true, error: "Automatic unlock could not be confirmed. Nothing was sent. Call look before choosing the next action.")
                 return await isLocked() ? lockedScreen(result) : result
             }
