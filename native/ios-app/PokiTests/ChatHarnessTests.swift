@@ -2638,6 +2638,249 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertEqual(named.subtracting(tools), [], "named in agent-system.md but not offered to the model")
     }
 
+    private func finishTaskCardKinds(in request: [String: Any]) -> [String]? {
+        let tools = request["tools"] as? [[String: Any]] ?? []
+        guard let finish = tools.first(where: { (($0["function"] as? [String: Any])?["name"] as? String) == "finish_task" }),
+              let fn = finish["function"] as? [String: Any],
+              let params = fn["parameters"] as? [String: Any],
+              let props = params["properties"] as? [String: Any],
+              let card = props["card"] as? [String: Any],
+              let cardProps = card["properties"] as? [String: Any],
+              let kind = cardProps["kind"] as? [String: Any] else { return nil }
+        return kind["enum"] as? [String]
+    }
+
+    func testResponsesSessionForwardsStablePromptCacheKey() async throws {
+        let server = try FakeCompletions(replies: [
+            FakeCompletions.responsesText("First answer."),
+            FakeCompletions.responsesText("Second answer."),
+            FakeCompletions.responsesText("New session answer."),
+        ])
+        let endpoint = CustomEndpoint(url: "http://127.0.0.1:\(server.port)/v1", api: .responses, found: .responses)
+        let provider = CustomProvider(name: "Responses Cache Test", endpoints: [endpoint], model: "fake-responses-model", reasoning: false)
+        try ModelKeys.saveCustom(provider, typedKey: "", keepKey: false)
+        ModelKeys.selectedProvider = .custom
+        ModelKeys.selectedModel = CustomProviders.choiceID(provider.id, provider.model)
+
+        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing(), automation: PKInProcess.shared(), transport: nil)
+        app.inProcessReadyForProbe()
+        self.app = app
+        let chat = ChatModel(app: app, kind: .poki)
+        chat.newConversation()
+        let firstSession = chat.sessionID
+        defer { SessionStore.shared.delete(firstSession) }
+
+        try await Self.ask(chat, "First message")
+        try await Self.ask(chat, "Second message")
+
+        chat.newConversation()
+        let secondSession = chat.sessionID
+        defer { SessionStore.shared.delete(secondSession) }
+        XCTAssertNotEqual(firstSession, secondSession)
+
+        try await Self.ask(chat, "Third message")
+
+        let requests = server.requests.filter { $0["tools"] != nil }
+        XCTAssertEqual(requests.count, 3)
+        let keys = requests.map { $0["prompt_cache_key"] as? String }
+        XCTAssertEqual(keys[0], firstSession)
+        XCTAssertEqual(keys[1], firstSession)
+        XCTAssertEqual(keys[2], secondSession)
+        XCTAssertNotEqual(keys[0], keys[2])
+    }
+
+    func testZeroNoteTasksOmitMemoryAttributionWhilePreservingCountedScroll() async throws {
+        let priorNotes = SkillStore.shared.notes
+        let backup = priorNotes.isEmpty ? nil : try SkillStore.shared.exportData()
+        for note in priorNotes { MemoryLibrary.shared.forget(note.id) }
+        defer {
+            if let backup { _ = try? SkillStore.shared.importData(backup, by: "Poki") }
+        }
+
+        let server = try FakeCompletions(replies: [
+            FakeCompletions.tool("finish_task", [
+                "success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"],
+            ]),
+            FakeCompletions.text("Done."),
+        ])
+        let chat = newChat(on: server)
+        defer { SessionStore.shared.delete(chat.sessionID) }
+        try await Self.ask(chat, "打开设置查看通用里的关于本机")
+
+        let first = try XCTUnwrap(server.requests.first)
+        let system = FakeCompletions.system(first)
+        XCTAssertFalse(system.contains("used_memory_ids"), "memory attribution instructions leaked when no notes exist")
+        XCTAssertTrue(system.contains("count_messages"), "counted scroll instructions must stay unchanged")
+
+        let tools = first["tools"] as? [[String: Any]] ?? []
+        let toolNames = Set(tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+        XCTAssertTrue(toolNames.contains("count_messages"), "count_messages tool must stay unchanged")
+        XCTAssertTrue(toolNames.contains(Harness.countedScrollReplyTool), "wait_for_counted_scroll_reply tool must stay unchanged")
+
+        for tool in tools {
+            guard let fn = tool["function"] as? [String: Any],
+                  let name = fn["name"] as? String,
+                  ["do", "web_open", "web_click", "web_type", "finish_task"].contains(name),
+                  let params = fn["parameters"] as? [String: Any],
+                  let props = params["properties"] as? [String: Any] else { continue }
+            XCTAssertNil(props["used_memory_ids"], "\(name) exposed used_memory_ids when no notes exist")
+        }
+
+        let note = try XCTUnwrap(SkillStore.shared.remember("Prefer concise replies.", by: "Poki"))
+        defer { MemoryLibrary.shared.forget(note.id) }
+
+        let withNotesServer = try FakeCompletions(replies: [
+            FakeCompletions.tool("finish_task", [
+                "success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"],
+            ]),
+            FakeCompletions.text("Done."),
+        ])
+        let withNotesChat = newChat(on: withNotesServer)
+        defer { SessionStore.shared.delete(withNotesChat.sessionID) }
+        try await Self.ask(withNotesChat, "打开设置查看通用里的关于本机")
+
+        let withNotesFirst = try XCTUnwrap(withNotesServer.requests.first)
+        XCTAssertTrue(FakeCompletions.system(withNotesFirst).contains("used_memory_ids"),
+                      "memory attribution instructions must return when saved notes exist")
+        let withNotesTools = withNotesFirst["tools"] as? [[String: Any]] ?? []
+        for tool in withNotesTools {
+            guard let fn = tool["function"] as? [String: Any],
+                  let name = fn["name"] as? String,
+                  ["do", "web_open", "web_click", "web_type", "finish_task"].contains(name),
+                  let params = fn["parameters"] as? [String: Any],
+                  let props = params["properties"] as? [String: Any] else { continue }
+            XCTAssertNotNil(props["used_memory_ids"], "\(name) must keep used_memory_ids when saved notes exist")
+        }
+    }
+
+    func testAppMemoryBriefDoesNotDuplicateNotesAlreadyInTaskBrief() async throws {
+        let fixture = SkillStore(url: nil)
+        let note = try XCTUnwrap(fixture.remember("Check the Wi-Fi row first in Settings.", by: "Poki", app: "com.apple.Preferences"))
+        let automation = FakeAutomation()
+        _ = automation.prepare()
+        let server = try FakeCompletions(replies: [
+            FakeCompletions.tool("do", ["actions": [["launch": "com.apple.Preferences"]]]),
+            FakeCompletions.tool("finish_task", [
+                "success": true, "summary": "Checked Settings.", "details": [], "answer": ["kind": "action"],
+            ]),
+            FakeCompletions.text("Checked Settings."),
+        ])
+        let chat = chat(on: server, transport: SessionScreenTransport(session: automation), automation: automation)
+        let app = try XCTUnwrap(app)
+        let imported = await app.runTool("skills", arguments: Self.json([
+            "action": "import", "data": String(decoding: try fixture.exportData(), as: UTF8.self),
+        ]))
+        XCTAssertFalse(imported.isError, imported.text)
+        defer { MemoryLibrary.shared.forget(note.id); SessionStore.shared.delete(chat.sessionID) }
+
+        let result = await chat.runDelegated("打开设置查看无线局域网")
+        XCTAssertEqual(result.success, true, result.text)
+
+        let first = try XCTUnwrap(server.requests.first)
+        let system = FakeCompletions.system(first)
+        XCTAssertTrue(system.contains(note.id), "taskBrief should offer the app note in the system prompt")
+        XCTAssertTrue(system.contains("used_memory_ids"), "memory attribution instructions should be present when notes exist")
+
+        let answers = server.requests.dropFirst().map(Self.toolAnswer)
+        XCTAssertFalse(answers.contains { $0.contains("Saved memories for this app") },
+                       "First read of an already-briefed app must not duplicate its notes: \(answers)")
+        XCTAssertFalse(answers.contains { $0.contains(note.id) },
+                       "Already-offered note ID must not be injected a second time in the tool answer: \(answers)")
+    }
+
+    func testResultCardSchemaIsGatedPerTaskAndWidensForObservedApps() async throws {
+        // 1. Delegated tasks never render cards and must omit finish_task.card even when no app is named.
+        let delegatedServer = try FakeCompletions(replies: [
+            FakeCompletions.tool("finish_task", ["success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"]]),
+            FakeCompletions.text("Done."),
+        ])
+        let delegatedChat = chat(on: delegatedServer)
+        defer { SessionStore.shared.delete(delegatedChat.sessionID) }
+        _ = await delegatedChat.runDelegated("Find trains from Beijing to Shanghai")
+        XCTAssertNil(finishTaskCardKinds(in: try XCTUnwrap(delegatedServer.requests.first)),
+                     "Delegated tasks must omit finish_task.card")
+
+        // 2. Non-card utility apps and explicit-URL built-in browser tasks omit finish_task.card.
+        for prompt in [
+            "打开设置查看通用里的关于本机",
+            "Open Photos and check the latest photo",
+            "打开 https://example.com/ 查看标题和域名",
+        ] {
+            let server = try FakeCompletions(replies: [
+                FakeCompletions.tool("finish_task", ["success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"]]),
+                FakeCompletions.text("Done."),
+            ])
+            let chat = newChat(on: server)
+            defer { SessionStore.shared.delete(chat.sessionID) }
+            try await Self.ask(chat, prompt)
+            XCTAssertNil(finishTaskCardKinds(in: try XCTUnwrap(server.requests.first)),
+                         "\(prompt): finish_task.card should be omitted")
+        }
+
+        // 3. Dedicated card app scopes card kinds to that app + generic list and still renders its card.
+        let railServer = try FakeCompletions(replies: [
+            Self.finishWithCard([Self.train("G1", "07:00"), Self.train("G3", "08:00")], "把 {title} 次发到公司差旅群"),
+            FakeCompletions.text("G1 is earliest."),
+        ])
+        let railChat = newChat(on: railServer)
+        defer { SessionStore.shared.delete(railChat.sessionID) }
+        try await Self.ask(railChat, "打开12306看一下明天上海到北京的高铁")
+        XCTAssertEqual(Set(try XCTUnwrap(finishTaskCardKinds(in: try XCTUnwrap(railServer.requests.first)))),
+                       ["12306.trains", "12306.transfers", "list"])
+        XCTAssertEqual(Self.cards(in: railChat).count, 1)
+
+        // 4. Multi-app overlapping-field tasks merge shared fields without crashing and expose only those apps + list.
+        let multiAppServer = try FakeCompletions(replies: [
+            FakeCompletions.tool("finish_task", ["success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"]]),
+            FakeCompletions.text("Done."),
+        ])
+        let multiAppChat = newChat(on: multiAppServer)
+        defer { SessionStore.shared.delete(multiAppChat.sessionID) }
+        try await Self.ask(multiAppChat, "打开12306和携程查明天车票和机票")
+        XCTAssertEqual(Set(try XCTUnwrap(finishTaskCardKinds(in: try XCTUnwrap(multiAppServer.requests.first)))),
+                       ["12306.trains", "12306.transfers", "ctrip.flights", "ctrip.hotels", "ctrip.rooms", "ctrip.fares", "list"])
+
+        // 5. Other named apps receive generic list only; lowercase everyday words keep all card kinds.
+        let meituanServer = try FakeCompletions(replies: [
+            FakeCompletions.tool("finish_task", ["success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"]]),
+            FakeCompletions.text("Done."),
+        ])
+        let meituanChat = newChat(on: meituanServer)
+        defer { SessionStore.shared.delete(meituanChat.sessionID) }
+        try await Self.ask(meituanChat, "打开美团找附近的咖啡店")
+        XCTAssertEqual(finishTaskCardKinds(in: try XCTUnwrap(meituanServer.requests.first)), ["list"])
+
+        let openEndedServer = try FakeCompletions(replies: [
+            FakeCompletions.tool("finish_task", ["success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"]]),
+            FakeCompletions.text("Done."),
+        ])
+        let openEndedChat = newChat(on: openEndedServer)
+        defer { SessionStore.shared.delete(openEndedChat.sessionID) }
+        try await Self.ask(openEndedChat, "Find flights home from Tokyo")
+        XCTAssertEqual(Set(try XCTUnwrap(finishTaskCardKinds(in: try XCTUnwrap(openEndedServer.requests.first)))).count, 10)
+
+        // 6. A task starting in a non-card app widens finish_task.card when it launches a card app mid-task.
+        let automation = FakeAutomation()
+        _ = automation.prepare()
+        let widenServer = try FakeCompletions(replies: [
+            FakeCompletions.tool("do", ["actions": [["launch": ["bundle": "cn.12306.rails12306"]]]]),
+            Self.finishWithCard([Self.train("G1", "07:00"), Self.train("G3", "08:00")], "把 {title} 次发到公司差旅群"),
+            FakeCompletions.text("G1 is earliest."),
+        ])
+        let widenChat = chat(on: widenServer, transport: SessionScreenTransport(session: automation), automation: automation, kind: .poki)
+        widenChat.newConversation()
+        defer { SessionStore.shared.delete(widenChat.sessionID) }
+        try await Self.ask(widenChat, "打开设置看看，顺便查一下明天车次")
+
+        XCTAssertGreaterThanOrEqual(widenServer.requests.count, 3)
+        XCTAssertNil(finishTaskCardKinds(in: widenServer.requests[0]),
+                     "Turn 1 in Settings should omit finish_task.card before another app is observed")
+        XCTAssertEqual(Set(try XCTUnwrap(finishTaskCardKinds(in: widenServer.requests[1]))),
+                       ["12306.trains", "12306.transfers", "list"],
+                       "Turn 2 after launching 12306 must widen finish_task.card to 12306 + list")
+        XCTAssertEqual(Self.cards(in: widenChat).count, 1, "Widened task must still render the 12306 card")
+    }
+
     func testChineseAppTaskOffersMatchingSkillInPromptAndOmitsUnrelatedSkills() async throws {
         let skillName = "查电池健康"
         let session = FakeAutomation()
@@ -2992,6 +3235,19 @@ final class FakeCompletions: @unchecked Sendable {
     private func answer(_ connection: NWConnection, _ body: Data) {
         let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
         // The chat's own title request: answered on the side, so it takes no scripted turn.
+        let responsesInstructions = (json["instructions"] as? String) ?? ""
+        let responsesInputSystem = ((json["input"] as? [[String: Any]]) ?? []).compactMap { item -> String? in
+            guard ["system", "developer"].contains(item["role"] as? String ?? "") else { return nil }
+            return item["content"] as? String
+        }.joined(separator: "\n")
+        if json["tools"] == nil,
+           responsesInstructions.hasPrefix("You name chat conversations")
+            || responsesInputSystem.hasPrefix("You name chat conversations") {
+            let events = Self.responsesText("Test conversation")
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: \(events.utf8.count)\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data((head + events).utf8), completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
         if json["tools"] == nil, Self.system(json).hasPrefix("You name chat conversations") {
             let response = #"{"choices":[{"message":{"role":"assistant","content":"Test conversation"}}]}"#
             let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(response.utf8.count)\r\nConnection: close\r\n\r\n"
@@ -3030,6 +3286,25 @@ final class FakeCompletions: @unchecked Sendable {
     }
 
     static func text(_ words: String) -> String { event(["role": "assistant", "content": words], finish: "stop") }
+
+    static func responsesText(_ words: String) -> String {
+        let id = "resp_\(UUID().uuidString.prefix(8))"
+        let msg = "msg_\(UUID().uuidString.prefix(8))"
+        let events: [[String: Any]] = [
+            ["type": "response.created", "response": ["id": id, "status": "in_progress"]],
+            ["type": "response.output_item.added", "output_index": 0,
+             "item": ["type": "message", "id": msg, "status": "in_progress", "role": "assistant", "content": []]],
+            ["type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": words],
+            ["type": "response.output_item.done", "output_index": 0,
+             "item": ["type": "message", "id": msg, "status": "completed", "role": "assistant",
+                      "content": [["type": "output_text", "text": words]]]],
+            ["type": "response.completed", "response": ["id": id, "status": "completed"]],
+        ]
+        return events.map { ev in
+            let data = try! JSONSerialization.data(withJSONObject: ev)
+            return "data: \(String(decoding: data, as: UTF8.self))\n\n"
+        }.joined()
+    }
 
     static func countedScrollQuestion(_ question: String) -> String {
         tool("wait_for_counted_scroll_reply", ["question": question])

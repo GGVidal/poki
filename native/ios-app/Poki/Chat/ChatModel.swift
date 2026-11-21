@@ -611,7 +611,8 @@ final class ChatModel {
         let namedApps = chooseWorkspace && kind == .poki && app.canPlanSplitView
             ? AppIconStore.bundleIDs(namedIn: text) : []
         if !inSplitView, namedApps.count < 2, Self.direct, provider == .anthropic || provider == .openai {
-            let context = Harness.taskInstructions(for: taskRequest)
+            let context = Harness.taskInstructions(for: taskRequest,
+                                                   includeMemoryAttribution: !SkillStore.shared.notes.isEmpty)
             let instructions = [context.text, restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
             // Another model starts a new conversation on the model's side; the chat on screen stays.
             if client?.signature != "\(provider.rawValue)/\(model)" {
@@ -721,12 +722,20 @@ final class ChatModel {
                 AppLog.shared.add("chat", "workspace planning confirmed the requested Split View apps")
             }
             let loop = modelLoop(provider: prepared.provider, model: piModel, inSplitView: splitSession != nil)
-            let context = Harness.taskInstructions(for: prepared.continuation == nil ? prepared.message : taskRequest,
-                                                   inSplitView: splitSession != nil)
+            let taskPrompt = prepared.continuation == nil ? prepared.message : taskRequest
+            let includeMemoryAttribution = !SkillStore.shared.notes.isEmpty
+            let rendersCards = kind == .poki
+            let resultCardMode = Harness.resultCardMode(for: taskPrompt, rendersCards: rendersCards)
+            let context = Harness.taskInstructions(for: taskPrompt,
+                                                   inSplitView: splitSession != nil,
+                                                   includeMemoryAttribution: includeMemoryAttribution)
             offeredMemories = context.notes
             let instructions = [context.text, restoredContext, prepared.continuation].compactMap { $0 }.joined(separator: "\n\n")
             let outcome = await loop.run(prepared.message.isEmpty ? Self.picturesOnly : prepared.message,
                                          images: prepared.images, instructions: instructions, maxTurns: Self.maxTurns,
+                                         includeMemoryAttribution: includeMemoryAttribution,
+                                         rendersCards: rendersCards,
+                                         resultCardMode: resultCardMode,
                                          timing: timing) { [weak self] text in
                 guard let self, self.runToken == token else { return }
                 self.markDelivered(prepared.you.id)
@@ -869,8 +878,10 @@ final class ChatModel {
            loop.model.reasoning == model.reasoning, loop.hasCurrentCustomBackups, !changedWorkspace { return loop }
         // A different workspace starts without old screen evidence.
         let next = PiLoop(provider: provider, model: model,
-                          tools: Harness.toolSpecs(inSplitView: inSplitView, includeScreenHistory: true),
-                          inSplitView: inSplitView, carrying: changedWorkspace ? [] : loop?.messages ?? []) { [weak self] call in
+                          tools: Harness.toolSpecs(inSplitView: inSplitView, includeScreenHistory: true,
+                                                   includeMemoryAttribution: true, resultCardMode: .all),
+                          inSplitView: inSplitView, sessionId: sessionID,
+                          carrying: changedWorkspace ? [] : loop?.messages ?? []) { [weak self] call in
             guard let self else { return PokiCore.ToolAnswer(text: "Task stopped. Action not executed.", jpeg: nil, isError: true) }
             return await self.perform(call)
         }
@@ -1181,7 +1192,10 @@ final class ChatModel {
             let turn: ModelTurn
             do {
                 turn = try await client.next(instructions: Harness.historyInstructions(instructions, allowed: HistoryCapture.agentQueryAllowed),
-                                             tools: Harness.tools)
+                                             tools: Harness.toolSpecs(inSplitView: false,
+                                                                      includeScreenHistory: HistoryCapture.agentQueryAllowed,
+                                                                      includeMemoryAttribution: !SkillStore.shared.notes.isEmpty,
+                                                                      resultCardMode: Harness.resultCardMode(for: taskRequest, rendersCards: kind == .poki)))
             } catch {
                 client.forgetUnansweredQuestion()
                 if stopped { return false }
@@ -1265,8 +1279,15 @@ final class ChatModel {
         }
         // A launch that went through says which app the task is for; a refused one says nothing.
         if runToken == token, call.name == "do", !answer.isError {
-            for app in TaskApps.launches(inArguments: call.arguments) { taskApps.launch(app) }
+            for app in TaskApps.launches(inArguments: call.arguments) {
+                taskApps.launch(app)
+                loop?.observeApp(app)
+            }
             taskApp = taskApps.target(request: taskRequest)
+        }
+        if runToken == token, (call.name == "do" || call.name == "look"), !answer.isError,
+           let readApp = answer.readApp {
+            loop?.observeApp(readApp)
         }
         calls.append(record)
         if runToken == token, !stopAsked, running { awaitingModel = true }
@@ -1422,7 +1443,8 @@ final class ChatModel {
                 phoneArguments = call.arguments
             }
             let response = await app.runTool(call.name, arguments: phoneArguments, localSession: splitViewSession,
-                                             expectedApps: expectedSplitViewApps, localTask: localTask) { [weak self, notesByAction] index, step, skill in
+                                             expectedApps: expectedSplitViewApps, localTask: localTask,
+                                             offeredMemoryIDs: Set(offeredMemories.map(\.id))) { [weak self, notesByAction] index, step, skill in
                 guard let self, self.runToken == taskToken, !self.stopAsked, notesByAction.indices.contains(index) else { return }
                 let action = notesByAction[index]
                 let ids = step.map { action.steps[$0] ?? [] } ?? action.direct
