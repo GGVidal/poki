@@ -125,6 +125,28 @@ function hotfixPublisher(dir) {
   return commands(publishJob.slice(publishJob.lastIndexOf('\n      - name: Publish')));
 }
 
+test('the hotfix build number counts the pinned source history', t => {
+  const { dir, run, outputs } = mock(t);
+  const source = join(dir, 'source');
+  mkdirSync(source);
+  const git = (...args) => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
+  const commit = message => git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+    '-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-qm', message);
+  git('init', '-q', '-b', 'main');
+  commit('main');
+  git('switch', '-qc', 'hotfix/candidate');
+  commit('candidate');
+  const pinned = git('rev-parse', 'HEAD');
+  commit('later change');
+  git('switch', '-q', '--detach', pinned);
+
+  const step = workflow('prealpha').split('\n      - name: Count hotfix commits\n')[1]?.split('\n      - ')[0];
+  assert.ok(step, 'the hotfix workflow derives its build number');
+  const result = run(commands(step), { cwd: source, env: { PATH: process.env.PATH } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(outputs, 'utf8').trim(), 'build=2');
+});
+
 test('a hotfix publishes only its versioned pre-alpha and leaves both rolling releases alone', t => {
   const { dir, run, calls } = mock(t);
   const result = run(hotfixPublisher(dir), { cwd: join(dir, 'source') });
@@ -153,28 +175,38 @@ test('a hotfix retry publishes its own run in the notes and Alpha selects the ne
 
   const ipaHash = createHash('sha256').update(retryIpa).digest('hex');
   const provenance = { sha, version: '0.4.7', build: '9969', ipa_sha256: ipaHash };
-  const workflowRun = (id, conclusion, record = provenance) => ({
+  const workflowRun = (id, conclusion, record = provenance, title = 'Hotfix Pre-alpha 0.4.7') => ({
     id, conclusion, run_number: id, head_branch: 'main', event: 'workflow_dispatch',
-    workflow_id: 123, display_title: 'Hotfix Pre-alpha 0.4.7 (9969)', provenance: record,
+    workflow_id: 123, display_title: title, provenance: record,
   });
   const records = [
-    workflowRun(860, 'success', { ...provenance, ipa_sha256: 'a'.repeat(64) }),
+    workflowRun(860, 'success', { ...provenance, ipa_sha256: 'a'.repeat(64) }, 'Hotfix Pre-alpha 0.4.7 (9969)'),
     workflowRun(861, 'failure'),
     workflowRun(864, 'success', { ...provenance, sha: 'f'.repeat(40) }),
     workflowRun(862, 'success'),
     workflowRun(863, 'failure'),
     workflowRun(865, 'success', { ...provenance, build: '9970' }),
     workflowRun(866, 'success', { ...provenance, version: '0.4.6' }),
+    workflowRun(867, 'success', null),
   ];
   const notedRun = release.notes.match(/actions\/runs\/(\d+)/)[1];
-  const step = workflow('promote-alpha').split('\n      - id: r\n')[1].split('\n  # The alpha tests')[0];
-  const selected = run(commands(step), {
-    env: { WANT: tag, HOTFIX: 'true', HOTFIX_RUN: '861', RUN_RECORDS: JSON.stringify(records) },
-  });
-  assert.deepEqual({ notedRun, alphaStatus: selected.status }, { notedRun: '862', alphaStatus: 0 },
-    selected.stdout + selected.stderr);
-  assert.match(readFileSync(outputs, 'utf8'), /^run=862$/m);
-  assert.ok(readFileSync(outputs, 'utf8').includes('ipa_sha256=' + ipaHash));
+  assert.equal(notedRun, '862');
+  for (const name of ['promote-alpha', 'promote-alpha-fast']) {
+    const step = workflow(name).split('\n      - id: r\n')[1].split(/\n  (?:# The alpha tests|publish:)/)[0];
+    for (const candidate of [
+      { records, id: 862, hash: ipaHash },
+      { records: records.slice(0, 1), id: 860, hash: 'a'.repeat(64) },
+    ]) {
+      writeFileSync(outputs, '');
+      const selected = run(commands(step), {
+        env: { WANT: tag, HOTFIX: 'true', RUN_RECORDS: JSON.stringify(candidate.records) },
+      });
+      assert.equal(selected.status, 0, selected.stdout + selected.stderr);
+      const result = Object.fromEntries(readFileSync(outputs, 'utf8').trim().split('\n').map(line => line.split('=')));
+      assert.equal(result.run, String(candidate.id), name);
+      assert.equal(result.ipa_sha256, candidate.hash, name);
+    }
+  }
 });
 
 test('ordinary Alpha defaults to the main push artifact when a hotfix dispatch has the same workflow head', t => {
