@@ -1,3 +1,4 @@
+import ActivityKit
 import PokiCore
 import XCTest
 @testable import Poki
@@ -81,7 +82,10 @@ final class FakeConnection: VoiceConnection, @unchecked Sendable {
     private(set) var liveAnswer: String?
     private(set) var remoteVolume = 1.0
     @MainActor var remoteSpeech = false
-    func connect(secret: String, base: URL?, microphone: Bool, direct: Bool) async throws {}
+    @MainActor var failNetworkPath = false
+    @MainActor func connect(secret: String, base: URL?, microphone: Bool, direct: Bool) async throws {
+        if failNetworkPath { throw VoiceError.noPath("failed") }
+    }
     func connectLive(microphone: Bool, direct: Bool, exchange: (String) async throws -> String) async throws {
         liveAnswer = try await exchange("sdp-offer")
     }
@@ -155,6 +159,25 @@ private actor VoiceRunnerTransport: HTTPTransport {
 
 @MainActor
 final class VoiceModelTests: XCTestCase {
+    func testAnEventFromTheFailedNetworkAttemptCannotInterruptTheRetrysReply() async throws {
+        let h = Harness(failFirstNetworkPath: true)
+        await h.talk()
+        XCTAssertEqual(h.links.count, 2)
+        let failed = try XCTUnwrap(h.links.first)
+        XCTAssertTrue(failed.closed)
+        h.link.play(["type": "response.created", "response": ["id": "first"]],
+                    ["type": "output_audio_buffer.started"])
+        XCTAssertEqual(h.voice.talkState, .speaking)
+
+        // A data channel delegate can have queued a delivery before its peer was closed.
+        failed.play(["type": "input_audio_buffer.speech_started"])
+        XCTAssertEqual(h.voice.talkState, .speaking)
+
+        h.link.play(["type": "input_audio_buffer.speech_started"])
+        XCTAssertEqual(h.voice.talkState, .interrupted)
+        h.voice.stop()
+    }
+
     func testAConnectionWhoseSessionNeverStartsEndsAfterSixtySeconds() async {
         let h = Harness()
         await h.connect()
@@ -717,7 +740,8 @@ final class VoiceModelTests: XCTestCase {
         private(set) var microphone: [Bool] = []
         var link: FakeConnection { links.last! }
 
-        @MainActor init(time: FakeTime? = nil, phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("", false, nil) }) {
+        @MainActor init(time: FakeTime? = nil, failFirstNetworkPath: Bool = false,
+                        phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("", false, nil) }) {
             let time = time ?? FakeTime()
             self.time = time
             var made: (() -> FakeConnection)!
@@ -726,7 +750,12 @@ final class VoiceModelTests: XCTestCase {
                 await PhoneOperationCancellation.$current.withValue(cancellation) { await phoneTool(name, arguments) }
             }, holdMicrophone: { held($0) },
                                connection: { onEvent, onClosed in let link = made(); link.onEvent = onEvent; link.onClosed = onClosed; return link }, time: time.clock)
-            made = { [unowned self] in let link = FakeConnection(); self.links.append(link); return link }
+            made = { [unowned self] in
+                let link = FakeConnection()
+                link.failNetworkPath = failFirstNetworkPath && self.links.isEmpty
+                self.links.append(link)
+                return link
+            }
             held = { [unowned self] in self.microphone.append($0) }
             _ = voice.setBridge(BridgeStub.address)
             // As in the app: an ended conversation goes into the chat, and its lines leave the voice model.
@@ -1021,13 +1050,18 @@ final class OpenAIStub: URLProtocol {
 }
 
 final class VoiceLanguageTests: XCTestCase {
-    func testDirectLiveVoiceInstructionsAskForTheResultOnly() async throws {
+    func testDirectLiveVoiceInstructionsCoverTaskStagesAndCasualChat() async throws {
         URLProtocol.registerClass(OpenAIStub.self)
         defer { URLProtocol.unregisterClass(OpenAIStub.self) }
         let answer = try await VoiceDirect.exchangeLiveOffer("offer", model: "gpt-live-1.1", apiKey: "sk-test")
         XCTAssertEqual(answer, "sdp-answer")
         let prompt = try XCTUnwrap(OpenAIStub.session?["instructions"] as? String)
-        for rule in ["Act first, then talk.", "Say nothing before or between tool calls.", "Give the verified result in one short sentence."] {
+        for rule in [
+            "Before delegating a new task, say one short sentence about what you will do.",
+            "give one short progress update when a meaningful step is confirmed and more work remains",
+            "state the verified result and ask one brief, specific follow-up question",
+            "For casual chat, reply in two or three short sentences",
+        ] {
             XCTAssertTrue(prompt.contains(rule), rule)
         }
     }
@@ -1075,6 +1109,7 @@ extension VoiceModelTests {
     func testLiveActivityWaitsForTheNextResponseAndMeasuresThePlayedAnswer() async {
         let h = Harness(phoneTool: { _, _ in ("Screen is open", false, nil) })
         let (activity, watcher) = following(h)
+        let priorActivityLog = Set(AppLog.shared.lines)
         activity.finishAfter = .seconds(60)
         await h.liveTalk()
         h.link.play(["type": "session.input_transcript.delta", "delta": "打开微信。", "start_ms": 0, "end_ms": 400],
@@ -1088,6 +1123,7 @@ extension VoiceModelTests {
         h.link.backend("response.completed", ["response": ["id": "r1"]])
         await h.time.settle()
         XCTAssertEqual(activity.state.phase, .working, "The first response finished, but the continuation is still queued.")
+        XCTAssertTrue(activity.isRunning, activity.lastError ?? "A Live Activity must be active to observe a completion alert.")
 
         h.link.backend("response.created", ["response": ["id": "r2"]])
         h.link.backend("response.completed", ["response": ["id": "r2"]])
@@ -1102,9 +1138,13 @@ extension VoiceModelTests {
         for _ in 0..<3 { await h.time.advance(0.2) }
         XCTAssertEqual(activity.state.phase, .done)
         XCTAssertEqual(activity.state.face.content, "微信已打开。")
+        await activity.end(dismissalPolicy: .immediate)?.value
+        let completionAlerts = AppLog.shared.lines.filter {
+            !priorActivityLog.contains($0) && $0.contains("[activity] alert sent with done ")
+        }
+        XCTAssertTrue(completionAlerts.isEmpty, "A spoken completion must not request an ActivityKit alert: \(completionAlerts)")
         h.voice.stop()
         withExtendedLifetime(watcher) {}
-        activity.end()
     }
 
     /// ESP-954: a talk's run of steps finishes when the talk's turn is over, not by the quiet wait while

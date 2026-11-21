@@ -221,7 +221,9 @@ final class AppModel {
 
     let host = AppCoreHost()
     let autoUnlock = AutoUnlock()
-    var supportsAutoUnlock: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    // The 0.4.7 candidate keeps Automatic Unlock off, including existing opt-ins.
+    private static let automaticUnlockAvailable = false
+    var supportsAutoUnlock: Bool { Self.automaticUnlockAvailable && UIDevice.current.userInterfaceIdiom == .phone }
     /// Poki Runner or Poki's own process, fixed for this launch (Debug tab).
     let automationPath = AutomationPath.current
     private let core: LiveCore
@@ -340,12 +342,16 @@ final class AppModel {
         return ChatModel.delegatedBusy
     }
 
+    private let simulatorRunnerAnswers: (@Sendable () async -> Bool)?
+
     init(launcher: RunnerLauncher = RustLauncher(), pairer: DevicePairing = RustPairing(),
          automation: InProcessAutomation = PKInProcess.shared(), transport: HTTPTransport? = nil,
          systemVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
-         requiresDiskImageCheck: Bool? = nil, imageMounted: @escaping () -> Bool = { AppModel.localDDIMounted }) {
+         requiresDiskImageCheck: Bool? = nil, imageMounted: @escaping () -> Bool = { AppModel.localDDIMounted },
+         simulatorRunnerAnswers: (@Sendable () async -> Bool)? = nil) {
         ActivityController.endAll()
         self.imageMounted = imageMounted
+        self.simulatorRunnerAnswers = simulatorRunnerAnswers
         self.activity = ActivityController()
         self.automation = automation
         self.idleSessionPolicy = .forSystem(systemVersion)
@@ -1275,6 +1281,7 @@ final class AppModel {
         log.add("session", automationPath == .inProcess ? "turned off: closing the in-process session" : "turned off: ending the runner")
         // The session closes and Poki stays: the next turn-on opens a new one in this same launch.
         if automationPath == .inProcess { closeInProcess("turned off") }
+        for approval in approvals { ApprovalNotice.clear(approval.id) }
         core.stop()
         launcher.stop()
         if setup.loopback == .builtIn { tunnel.disconnect() }
@@ -1309,8 +1316,9 @@ final class AppModel {
         #if targetEnvironment(simulator)
         // On a simulator, WebDriverAgent runs from Xcode on the Mac (`xcodebuild test` of
         // WebDriverAgentRunner, as in .github/workflows/ios-core.yml) and answers on 127.0.0.1:8100.
-        Task { [weak self] in
-            let up = await RunnerProbe.answers()
+        Task { [weak self, simulatorRunnerAnswers] in
+            let up: Bool
+            if let simulatorRunnerAnswers { up = await simulatorRunnerAnswers() } else { up = await RunnerProbe.answers() }
             self?.runnerChanged(up ? RunnerStatus(state: "running") :
                 RunnerStatus(state: "failed", detail: "WebDriverAgent is not answering on 127.0.0.1:8100", fix: "Start WebDriverAgentRunner on this simulator from Xcode"))
         }
@@ -1535,21 +1543,28 @@ final class AppModel {
     /// `.approvalEnded`) to drain onto the main actor.
     private var pendingTaskClose: (why: String, forceClose: Bool)?
 
-    private func closeAfterTask(_ why: String, forceClose: Bool = false) {
+    var isTaskTeardownIdle: Bool {
+        if case .closing = inProcessSession { return false }
+        return endingTasks == 0 && pendingTaskClose == nil && !chatTaskActive && stepUnderWay == nil && activityText == "Idle"
+    }
+
+    private func closeAfterTask(_ why: String, forceClose: Bool = false, then: (@MainActor () -> Void)? = nil) {
         guard automationPath == .inProcess, sessionOn else {
             pendingTaskClose = nil
+            then?()
             return
         }
         guard !chatTaskActive, endingTasks == 0 else {
             if chatTaskActive { pendingTaskClose = nil }
+            then?()
             return
         }
-        guard approvals.isEmpty, handoffText == nil, activityText == "Idle", stepUnderWay == nil else {
-            let force = forceClose || (pendingTaskClose?.forceClose ?? false)
+        if !forceClose, !approvals.isEmpty || handoffText != nil || activityText != "Idle" || stepUnderWay != nil {
             if pendingTaskClose == nil {
                 log.add("runner", "\(why): deferring automation close until in-flight step/events finish")
             }
-            pendingTaskClose = (why, force)
+            pendingTaskClose = (why, false)
+            then?()
             return
         }
         pendingTaskClose = nil
@@ -1559,14 +1574,16 @@ final class AppModel {
             // reopened by an in-flight step retrying after pauseRunner).
             if forceClose || ownerPaused {
                 log.add("runner", "\(why): closing the automation session at once; the banner goes with it")
-                closeInProcess(why, keepingSession: false)
+                closeInProcess(why, keepingSession: false, then: then)
+            } else {
+                then?()
             }
             return
         }
         log.add("runner", "\(why): closing the automation session at once; the banner goes with it")
         if !forceClose { ownerPaused = false }
         let keep = !forceClose && idleSessionPolicy == .pauseAutomation
-        closeInProcess(forceClose ? why : "the end of the task", keepingSession: keep)
+        closeInProcess(forceClose ? why : "the end of the task", keepingSession: keep, then: then)
         standBy(reason: nil, keepingDone: true)
     }
 
@@ -2014,9 +2031,14 @@ final class AppModel {
                 PKInProcess.shared().endDuoCompanionTask()
                 self?.duoCompanionTask = nil
             }
-            self?.endingTasks -= 1
-            self?.closeAfterTask(ownerStopped ? "the task was stopped" : "the task ended", forceClose: ownerStopped)
-            then?()
+            guard let self else { then?(); return }
+            self.endingTasks -= 1
+            if ownerStopped, self.automationPath == .inProcess, self.sessionOn {
+                self.closeAfterTask("the task was stopped", forceClose: true, then: then)
+            } else {
+                self.closeAfterTask(ownerStopped ? "the task was stopped" : "the task ended", forceClose: ownerStopped)
+                then?()
+            }
         }
     }
 
@@ -2250,32 +2272,24 @@ final class AppModel {
                              caller: currentCaller, kind: .approval, detail: detail, why: approval.reason)
     }
 
-    /// Each request is answered by the owner on the Live Activity, or on a notification when there is none.
+    /// The island asks first. The notification is available if nobody answers before iOS folds it.
     private func askOwner(_ approval: PendingApproval) {
         approvals.append(approval)
         log.add("approval", "requested \(approval.id) in \(approval.app): \(approval.summary); Live Activity \(activity.isRunning ? "running" : "NOT running: \(activity.lastError ?? "no error")")")
         let caller = currentCaller
         activity.update { $0.phase = .approval; $0.approval = approval; $0.headline = "Allow this step?"; $0.caller = caller }
-        // One surface per approval. With a Live Activity, its alert is the ask (Allow and Don't Allow
-        // on the expanded island and the Lock Screen card): a banner on top of it put two asks over the
-        // top of the screen, and a tap on the banner opens Poki in the middle of the task. The
-        // time-sensitive notification is for when there is no Live Activity to pop up: off in
-        // Settings, dismissed, or Poki turned on from the background, where iOS starts none.
-        if activity.isRunning {
-            log.add("approval", "asked on the Live Activity only, no notification")
-        } else {
-            ApprovalNotice.post(approval, caller: caller)
-        }
+        ApprovalNotice.post(approval, after: activity.isRunning ? ApprovalNotice.islandReminderDelay : 0)
     }
 
     func resolve(_ approval: PendingApproval, approved: Bool) {
+        ApprovalNotice.clear(approval.id)
         core.resolveApproval(id: approval.id, approved: approved)
     }
 
     /// Don’t Ask Again on an approval's card: this step goes through and approvals are off from now on.
     func stopAsking(_ approval: PendingApproval) {
         turnApprovalsOff()
-        core.resolveApproval(id: approval.id, approved: true)
+        resolve(approval, approved: true)
     }
 
     private func turnApprovalsOff() {
@@ -2346,16 +2360,17 @@ final class AppModel {
         for decision in ApprovalMailbox.drain() { decide(decision) }
     }
 
-    /// A decision from the Live Activity. The card shows the answer at once (Allowing, Denying).
-    /// Allow is tapped on the expanded Dynamic Island, which takes about a second to collapse; input
-    /// sent at once can land on it (iOS then opens Poki). So the Live Activity's decisions reach
-    /// PokiCore after a short pause, the app's own buttons at once.
+    /// Restore the progress display immediately. Let the island fold before PokiCore sends input
+    /// so the approved tap can land in the target app.
     func decide(_ decision: ApprovalDecision) {
         // Don’t Ask Again is the owner's word about all later steps too, so it counts for a card whose
         // approval has already ended.
         if decision.stopAsking { turnApprovalsOff() }
         // A tap on an approval that already ended (answered in the app, or timed out) does nothing.
         guard approvals.contains(where: { $0.id == decision.approvalID }) else { return }
+        guard activity.state.phase != .deciding || activity.state.approval?.id != decision.approvalID else { return }
+        ApprovalNotice.clear(decision.approvalID)
+        lastApprovalAnswered = Date()
         log.add("approval", "\(decision.approved ? "allowed" : "denied") \(decision.approvalID) on the Live Activity\(decision.stopAsking ? ", asking off" : "")")
         activity.update { state in
             guard state.approval?.id == decision.approvalID else { return }
