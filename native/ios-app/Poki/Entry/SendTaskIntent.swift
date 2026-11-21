@@ -62,7 +62,7 @@ struct SendTaskToPokiIntent: ForegroundContinuableIntent {
     @MainActor
     private func needsAttention(_ words: LocalizedStringResource) async throws -> IntentResultContainer<Never, Never, Never, Never> {
         if inSplitView { throw SplitViewStartError(words: words) }
-        PokiEntry.shared.ask(.show)
+        PokiEntry.shared.ask(.chat, from: .sendTask)
         if #available(iOS 26.0, *) {
             try await continueInForeground(IntentDialog(words), alwaysConfirm: false)
         } else {

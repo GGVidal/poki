@@ -538,6 +538,7 @@ final class VoiceModel {
     /// while AirPods switch to their microphone) the button and the bar already show it, and a second
     /// tap ends it instead of starting another one.
     var isOn: Bool { liveCloseTimeout == nil && (link != nil || dictation != nil || isConnecting) }
+    var activeEntrySession: Int? { isOn ? session : nil }
     private var isConnecting: Bool { if case .connecting = phase { return true }; return false }
 
     /// Voice can start: the OpenAI key on this iPhone (Realtime, no bridge), the Mac's voice bridge, or
@@ -660,8 +661,10 @@ final class VoiceModel {
         #endif
     }
 
-    func start(microphone: Bool = true) async {
+    func start(microphone: Bool = true, admitEntry: (() -> PokiEntry.Request?)? = nil) async {
         if let liveCloseTimeout { await liveCloseTimeout.value }
+        let request = admitEntry?()
+        if admitEntry != nil, request == nil { return }
         guard link == nil, dictation == nil, !isConnecting else { return }
         let account = VoiceDirect.account
         let key = VoiceDirect.apiKey(for: account)
@@ -671,7 +674,9 @@ final class VoiceModel {
         }
         phase = .connecting
         session += 1
+        PokiEntry.shared.advanceEpoch()
         let number = session
+        request?.record(.started, reason: "newTalk", session: number)
         let bridge = self.bridge
         func configuration() async throws -> VoiceBridge.Token {
             if rehearsing { return Self.rehearsalToken }
@@ -741,6 +746,7 @@ final class VoiceModel {
             link = nil
             holdingMicrophone = false
             phase = .lost(VoiceError.reason(for: error))
+            PokiEntry.shared.advanceEpoch()
             log.add("voice", "could not connect: \(error.localizedDescription)")
         }
     }
@@ -770,6 +776,7 @@ final class VoiceModel {
     /// Ends the conversation. Calls already running keep running; the next session hears how they ended.
     func stop() {
         guard liveCloseTimeout == nil else { return }
+        PokiEntry.shared.advanceEpoch()
         if let dictation {
             dictation.cancel()
             self.dictation = nil
@@ -1052,6 +1059,8 @@ final class VoiceModel {
         do {
             try dictation.listen()
             phase = .hearing
+            session += 1
+            PokiEntry.shared.advanceEpoch()
             log.add("voice", "dictation to the chat (no Realtime key or bridge)")
         } catch {
             self.dictation = nil
@@ -1114,6 +1123,7 @@ final class VoiceModel {
             return
         }
         if usesLive && ready { logLiveClose(reason, confirmed: confirmed) }
+        PokiEntry.shared.advanceEpoch()
         endSession()
         session += 1
         phase = .lost(TalkState.connectionLost)

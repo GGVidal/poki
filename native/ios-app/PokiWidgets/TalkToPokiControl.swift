@@ -7,7 +7,7 @@ import WidgetKit
 struct TalkToPokiControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "PokiTalk") {
-            ControlWidgetButton(action: TalkToPokiIntent()) {
+            ControlWidgetButton(action: TalkToPokiIntent(fromControl: true)) {
                 Label(String(localized: "Talk to Poki", table: "Entry"), systemImage: "waveform.circle")
             }
         }
