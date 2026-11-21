@@ -26,10 +26,14 @@ final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
         var sent = 0
 
         func screenText() -> String {
-            var lines = ["app: 备忘录", #"1 Button "新建备忘录" [340,800,44,44]"#]
+            var lines = [
+                "app: 备忘录   read: 2026-11-22T00:00:00Z (12 ms)",
+                "elements (\(drafts.isEmpty ? 1 : 3)):",
+                #" 1 Button "新建备忘录" [340,800,44,44]"#,
+            ]
             if let latest = drafts.last {
-                lines.append(#"2 TextView "\#(latest)" [16,120,360,400]"#)
-                lines.append(#"3 Button "发送" [330,60,50,34]"#)
+                lines.append(#" 2 TextView "\#(latest)" [16,120,360,400]"#)
+                lines.append(#" 3 Button "发送" [330,60,50,34]"#)
             }
             return lines.joined(separator: "\n")
         }
@@ -65,8 +69,14 @@ final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
                         else if ref == 3 { notesState.sent += 1 }
                     }
                     if let text = action["type"] as? String {
-                        if notesState.drafts.isEmpty { notesState.drafts.append(text) }
-                        else { notesState.drafts[notesState.drafts.count - 1] = text }
+                        let clear = action["clear"] as? Bool ?? false
+                        if notesState.drafts.isEmpty {
+                            notesState.drafts.append(text)
+                        } else if clear {
+                            notesState.drafts[notesState.drafts.count - 1] = text
+                        } else {
+                            notesState.drafts[notesState.drafts.count - 1] += text
+                        }
                     }
                 }
             default:
@@ -173,7 +183,7 @@ final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
             (4.3, ["type": "response.output_item.done", "response_id": "notes-r2",
                    "item": ["type": "function_call", "call_id": "notes-look-2", "name": "look", "arguments": "{}"]]),
             (4.9, ["type": "response.output_item.done", "response_id": "notes-r2",
-                   "item": ["type": "function_call", "call_id": "notes-edit-2", "name": "do", "arguments": #"{"actions":[{"tap":2},{"type":"周六"}]}"#]]),
+                   "item": ["type": "function_call", "call_id": "notes-edit-2", "name": "do", "arguments": #"{"actions":[{"tap":2},{"type":"周六","clear":true}]}"#]]),
             (5.5, ["type": "response.done", "response": ["id": "notes-r2"]]),
             (5.7, ["type": "response.created", "response": ["id": "notes-r3"]]),
             (5.8, ["type": "output_audio_buffer.started"]),

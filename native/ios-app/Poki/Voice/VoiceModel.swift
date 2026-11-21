@@ -1229,7 +1229,8 @@ final class VoiceModel {
                     liveCallerSpeech.source = VoiceUtteranceSource.parse(rawSource, fallback: defaultUtteranceSource)
                 }
                 let utterance = Self.liveSpeechParts(liveCallerSpeech.text).filter { !Self.liveBackchannels.contains($0) }
-                if !liveCallerSpeech.alreadyHandled, Self.liveRequestsStop(utterance) {
+                if !liveCallerSpeech.alreadyHandled,
+                   Self.liveRequestsStop(utterance) || VoiceTaskRelationClassifier.isStopUtterance(liveCallerSpeech.text) {
                     cancelLiveTask()
                     stopLivePlayback(on: link, note: "The user stopped the reply and cancelled the phone task. Drop the reply and stay silent until a new request.")
                 } else if !liveCallerSpeech.alreadyHandled, !utterance.isEmpty {
@@ -1502,6 +1503,7 @@ final class VoiceModel {
 
     private func stopped(_ call: VoiceCall) -> Bool {
         if livePhoneOperations[call.id]?.isCancelled == true { return true }
+        if let goalID = call.goalID, goalTracker.goal(for: goalID)?.stopped == true { return true }
         guard usesLive, call.session == session else { return false }
         // After cancellation, only a tool tied to a new delegation can start.
         guard let id = call.delegation, let state = liveDelegations[id] else { return liveHasCancellation }
@@ -1624,7 +1626,7 @@ final class VoiceModel {
         case .deny(let reason, let code, let goalID, let revision):
             log.add("voice", "goal gate denied \(call.name) (\(call.id), goal \(goalID?.rawValue ?? "none") r\(revision ?? 0)): \(code.rawValue)")
             completeControl(call, state: .failed, output: reason)
-            if !usesLive {
+            if !usesLive, code != .goalStopped, code != .unauthorizedSource {
                 wantsResponse = true
                 flush()
             }
@@ -1663,7 +1665,7 @@ final class VoiceModel {
                     return
                 }
             }
-            let operation = live ? PhoneOperationCancellation() : nil
+            let operation = PhoneOperationCancellation()
             livePhoneOperations[call.id] = operation
             defer { livePhoneOperations.removeValue(forKey: call.id) }
             var state = VoiceCall.State.done
@@ -1773,7 +1775,7 @@ final class VoiceModel {
         calls[index].delivered = true
         lastActivity = time.now()
         clock.delivered = Date()
-        if usesLive, stopped(call) {
+        if stopped(call) {
             endIfDone()
             return
         }
@@ -1991,6 +1993,16 @@ final class VoiceModel {
         )
         let goalLabel = record.goalID.map { "\($0) r\(record.revision ?? 1)" } ?? "none"
         log.add("voice", "utterance [\(record.source.rawValue)] relation=\(record.relation.rawValue) goal=\(goalLabel) scope=\(record.replacementScope.rawValue) fresh=\(record.needsFreshEvidence)")
+        if record.relation == .stop {
+            if usesLive {
+                cancelLiveTask()
+            } else {
+                for operation in livePhoneOperations.values { operation.cancel() }
+                wantsResponse = false
+                if activeResponse != nil { link.send(["type": "response.cancel"]) }
+                link.send(["type": "output_audio_buffer.clear"])
+            }
+        }
         if let update = goalTracker.revisionNote(for: record) {
             link.send(note(update, spoken: false))
         }
