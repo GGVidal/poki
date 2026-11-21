@@ -377,9 +377,10 @@ on the phone; the next first `look` of a task in that app names the saved skills
   app's Testing Options). `{launch: "Clock"}` looks up an installed app by name through
   `CoreConfig.resolveInstalledApp`. If the name is unknown, the whole batch or path is refused
   before it sends any action. Reverse-DNS shorthand such as `{launch: "com.apple.mobiletimer"}`
-  goes directly to the runner, which reports whether iOS can open the app. For shorter bundle IDs,
-  use the explicit `bundle` field. `{launch: {name: "Clock"}}` uses `CoreConfig.resolveApp` and
-  also lets the caller explicitly pass a name that looks like a bundle ID.
+  goes directly to iOS. If iOS reports that ID missing, Poki tries the same text as an installed
+  display name. A failed launch stops at that action and reports which earlier actions were sent
+  so the caller can resume without repeating them. Use the explicit `bundle` field for an exact ID
+  even if it is short. `{launch: {name: "Clock"}}` uses `CoreConfig.resolveApp` to start by name.
   `do {app: "Clock", actions: […]}` uses the installed-app lookup and names the app once
   for the session: it is brought to the front first when it is not there already (the latest read
   says so, checked with the runner when that read is over 10 s old), and later calls in

@@ -28,6 +28,7 @@ final class LiveCore: CoreSession {
         // their Testing Options switch.
         config.resolveApp = { KnownApps.launchID($0) }
         config.resolveInstalledApp = { KnownApps.installedLaunchID($0) }
+        config.resolveInstalledAppByName = { KnownApps.installedLaunchID(named: $0) }
         config.appNames = { SpeedOptions.appNames }
         config.quickRead = { SpeedOptions.quickRead }
         config.screenHistory = HistoryStore.agentSource
