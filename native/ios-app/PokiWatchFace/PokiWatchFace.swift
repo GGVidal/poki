@@ -9,7 +9,7 @@ struct PokiWatchFace: Widget {
                 .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Poki")
-        .description("Open Poki to record a task.")
+        .description("Open Poki to control live voice or send a task.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
     }
 }
