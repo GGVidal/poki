@@ -58,7 +58,7 @@ private struct WatchVoiceView: View {
                     }
                     if let latest = model.results.first, !model.hasPending, !model.recording {
                         NavigationLink {
-                            result(latest)
+                            WatchVoiceResultView(model: model, id: latest.id)
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Label(latest.phase.title, systemImage: latest.phase.symbol)
@@ -73,7 +73,7 @@ private struct WatchVoiceView: View {
                         NavigationLink("Task history") {
                             List(model.results) { update in
                                 NavigationLink {
-                                    result(update)
+                                    WatchVoiceResultView(model: model, id: update.id)
                                 } label: {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Label(update.phase.title, systemImage: update.phase.symbol)
@@ -122,18 +122,42 @@ private struct WatchVoiceView: View {
                 .multilineTextAlignment(.center)
         }
     }
+}
 
-    private func result(_ update: WatchVoiceUpdate) -> some View {
+private struct WatchVoiceResultView: View {
+    let model: WatchVoiceModel
+    let id: UUID
+    @State private var retry = 0
+    @State private var loadFailed = false
+
+    var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 6) {
-                Label(update.phase.title, systemImage: update.phase.symbol)
-                    .font(.footnote.weight(.semibold))
-                if let text = update.text { Text(text) }
+            if let update = model.results.first(where: { $0.id == id }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(update.phase.title, systemImage: update.phase.symbol)
+                        .font(.footnote.weight(.semibold))
+                    if update.fullTextBytes != nil {
+                        if loadFailed {
+                            Text("Couldn’t load the full result.")
+                                .font(.footnote)
+                            Button("Try again") { retry += 1 }
+                        } else {
+                            ProgressView("Loading full result…")
+                        }
+                        Text("Preview").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let text = update.text { Text(text) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(6)
         }
         .navigationTitle("Result")
+        .task(id: retry) {
+            loadFailed = false
+            let loaded = await model.loadFullResult(id)
+            if !Task.isCancelled { loadFailed = !loaded }
+        }
     }
 }
 
