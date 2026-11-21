@@ -18,8 +18,103 @@ enum Harness {
         return text
     }()
 
+    enum ReplyExamplesLanguage: Equatable, Sendable {
+        case english, chinese, both
+    }
+
+    private static let automaticUnlockPromptClause = "Call the phone tool for the owner's task even if the iPhone may be locked. Poki checks the owner's Automatic Unlock setting on the phone. If the tool still reports screen: locked, ask the owner to unlock the iPhone and look again once unlocked."
+    private static let manualUnlockPromptClause = "When look reports screen: locked, ask the owner to unlock the iPhone and call look again once unlocked."
+
+    private static let replyExamplesHeader = "\n\n## Reply examples\n\n"
+    private static let chineseExamplesHeader = "\n\n### 简体中文\n\n"
+
+    private static let urlPattern = try! NSRegularExpression(pattern: #"https?://\S+"#, options: [.caseInsensitive])
+    private static let explicitEnglishPattern = try! NSRegularExpression(pattern: #"\benglish\b|英文|英语|英語"#, options: [.caseInsensitive])
+    private static let explicitChinesePattern = try! NSRegularExpression(pattern: #"\bchinese\b|中文|汉语|漢語|国语|國語"#, options: [.caseInsensitive])
+    private static let hanPattern = try! NSRegularExpression(pattern: #"\p{Script=Han}"#)
+    private static let kanaPattern = try! NSRegularExpression(pattern: #"\p{Script=Hiragana}|\p{Script=Katakana}"#)
+    private static let latinPattern = try! NSRegularExpression(pattern: #"[A-Za-z]"#)
+    private static let screenshotIDLinePattern = try! NSRegularExpression(pattern: #"^screenshot_id: [0-9A-Fa-f-]+$"#)
+
+    nonisolated static func replyExamplesLanguage(for task: String) -> ReplyExamplesLanguage {
+        let fullRange = NSRange(task.startIndex..., in: task)
+        let stripped = urlPattern.stringByReplacingMatches(in: task, range: fullRange, withTemplate: " ")
+        let range = NSRange(stripped.startIndex..., in: stripped)
+        let hasHan = hanPattern.firstMatch(in: stripped, range: range) != nil
+        let hasKana = kanaPattern.firstMatch(in: stripped, range: range) != nil
+        let hasLatin = latinPattern.firstMatch(in: stripped, range: range) != nil
+        let asksEnglish = explicitEnglishPattern.firstMatch(in: stripped, range: range) != nil
+        let asksChinese = explicitChinesePattern.firstMatch(in: stripped, range: range) != nil
+        if (hasHan && asksEnglish) || (hasLatin && !hasHan && asksChinese) {
+            return .both
+        }
+        if hasKana {
+            return .english
+        }
+        if hasHan {
+            return .chinese
+        }
+        if hasLatin {
+            return .english
+        }
+        return .both
+    }
+
+    nonisolated static func systemPrompt(for task: String,
+                                         includeAutomaticUnlock: Bool = AppModel.automaticUnlockAvailable) -> String {
+        var text = system
+        if !includeAutomaticUnlock {
+            text = text.replacingOccurrences(of: automaticUnlockPromptClause, with: manualUnlockPromptClause)
+        }
+        let language = replyExamplesLanguage(for: task)
+        guard language != .both,
+              let examplesRange = text.range(of: replyExamplesHeader),
+              let chineseRange = text.range(of: chineseExamplesHeader, range: examplesRange.upperBound..<text.endIndex) else {
+            return text
+        }
+        let prefix = text[..<examplesRange.upperBound]
+        switch language {
+        case .english:
+            return String(text[..<chineseRange.lowerBound])
+        case .chinese:
+            let chineseBody = text[chineseRange.upperBound...]
+            return String(prefix) + "### 简体中文\n\n" + String(chineseBody)
+        case .both:
+            return text
+        }
+    }
+
+    nonisolated static func strippingScreenshotID(from answer: PokiCore.ToolAnswer) -> PokiCore.ToolAnswer {
+        guard answer.text.contains("screenshot_id: ") else { return answer }
+        let lines = answer.text.split(separator: "\n", omittingEmptySubsequences: false)
+        var removed = false
+        let kept = lines.filter { line in
+            let s = String(line)
+            let range = NSRange(s.startIndex..., in: s)
+            if screenshotIDLinePattern.firstMatch(in: s, range: range) != nil {
+                removed = true
+                return false
+            }
+            return true
+        }
+        guard removed else { return answer }
+        return PokiCore.ToolAnswer(
+            text: kept.joined(separator: "\n"),
+            jpeg: answer.jpeg,
+            isError: answer.isError,
+            splitView: answer.splitView,
+            splitViewNeedsRead: answer.splitViewNeedsRead,
+            screen: answer.screen,
+            waitingForOwner: answer.waitingForOwner,
+            automationAuthorizationDeclined: answer.automationAuthorizationDeclined,
+            numberedScreen: answer.numberedScreen,
+            offeredMemories: answer.offeredMemories,
+            readApp: answer.readApp
+        )
+    }
+
     static var instructions: String {
-        [system, countedScrollInstructions, PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed), WebTools.instructions].joined(separator: "\n\n")
+        [system, PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed), WebTools.instructions].joined(separator: "\n\n")
     }
 
     static let splitViewInstructions = """
@@ -29,12 +124,17 @@ enum Harness {
     Check the target field and content before typing, and verify the result in the same pane. Wait for the owner's decision on approvals, leave password manager apps unopened, stop on checkout or payment pages unless purchase was explicitly requested, and use handoff for passwords, verification, or owner-only prompts. Call finish_task after verifying the final result, setting success=false when unverified.
     """
 
-    private static let countedScrollInstructions = """
+    private static let countedScrollCoreInstructions = """
     For a request measured in pages or screens, scroll the requested number of screens and verify those moves with the screen tools. Use count_messages only for requests measured in individual messages.
     For a request to scroll back an exact number of messages, open the conversation and take a full read before scrolling. Call count_messages with the requested target and one current ref per distinct message bubble, oldest to newest. Use the screenshot to exclude headers, dates, controls, and duplicate labels or OCR lines in the same bubble. Include every distinguishable message in view, including any overlapping messages. Do not skip a message you cannot identify.
     Send one vertical drag at a time with full=true, using two explicit screen points with the same x coordinate. Poki bounds the distance and slows the drag before lifting. After each drag, call count_messages with the same target and the new screen's refs. Keep at least one third of the previous messages in view, including at least three consecutive messages, using the same kind of ref for each overlapping bubble. Shorten the drag near the target or the end of the list. If count_messages asks you to reverse the last drag, reverse it and check the resulting page before trying the shorter forward drag. If that cannot be verified, stop. Use the confirmed total from count_messages. Call finish_task with success=true only after it confirms the target on screen. If you cannot continue, call finish_task with success=false and give the specific reason. Poki reports the confirmed count and last verified message.
-    If you need clarification at any point during a counted scroll in the owner's chat, call wait_for_counted_scroll_reply with your question. That pauses the task. When the owner replies, take a fresh read and recheck the messages before scrolling again.
     """
+
+    private static let countedScrollReplyInstruction = "If you need clarification at any point during a counted scroll in the owner's chat, call wait_for_counted_scroll_reply with your question. That pauses the task. When the owner replies, take a fresh read and recheck the messages before scrolling again."
+
+    private static func countedScrollSection(includeReply: Bool) -> String {
+        includeReply ? countedScrollCoreInstructions + "\n" + countedScrollReplyInstruction : countedScrollCoreInstructions
+    }
 
     /// Apps with dedicated result card layouts (`ResultCardLooks`).
     enum DedicatedCardApp: CaseIterable, Hashable, Sendable {
@@ -133,16 +233,25 @@ enum Harness {
 
     /// The instructions for a task: the above, then the saved notes and the skills that fit it.
     @MainActor static func taskInstructions(for task: String, inSplitView: Bool = false,
-                                            includeMemoryAttribution: Bool? = nil) -> (text: String, notes: [MemoryNote]) {
+                                            includeMemoryAttribution: Bool? = nil,
+                                            includeCountedScroll: Bool? = nil,
+                                            includeCountedScrollReply: Bool? = nil,
+                                            includeAutomaticUnlock: Bool = AppModel.automaticUnlockAvailable) -> (text: String, notes: [MemoryNote]) {
+        let countedScroll = includeCountedScroll ?? (MessageScrollTarget.parse(task)?.messageCount != nil)
+        let countedScrollReply = includeCountedScrollReply ?? countedScroll
         if inSplitView {
-            var parts = [splitViewInstructions, countedScrollInstructions]
+            var parts = [splitViewInstructions]
+            if countedScroll { parts.append(countedScrollSection(includeReply: countedScrollReply)) }
             if HistoryCapture.agentQueryAllowed { parts.append(PokiCore.screenHistoryInstructions) }
             if ApprovalClassifier.mode == .reply { parts.append(replyApprovals) }
             return (parts.joined(separator: "\n\n"), [])
         }
         let namedBundleIDs = AppIconStore.bundleIDs(namedIn: task)
         let brief = SkillStore.shared.taskBrief(for: task, apps: namedBundleIDs)
-        var parts = [instructions]
+        var parts = [systemPrompt(for: task, includeAutomaticUnlock: includeAutomaticUnlock)]
+        if countedScroll { parts.append(countedScrollSection(includeReply: countedScrollReply)) }
+        parts.append(PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed))
+        parts.append(WebTools.instructions)
         parts.append("To continue or resume, match one unfinished task from this conversation or an explicitly selected saved task; if none or several match, ask which task before calling action tools. Treat long-term notes and saved skills strictly as preferences and reusable steps, never pending tasks.")
         // Matching skills sit in the brief below, so the first call can invoke the skill directly.
         // Poki is in front when a task starts, and finish_task brings Poki back when the task ends,
@@ -165,9 +274,9 @@ enum Harness {
         }
         parts.append(recipients)
         if includeMemoryAttribution ?? !SkillStore.shared.notes.isEmpty {
-            parts.append("When a saved memory changes an action in do, put used_memory_ids on the individual object inside actions, for example {actions: [{launch: \"com.apple.Preferences\", used_memory_ids: [\"ID\"]}]}. For a path, set used_memory_ids on the exact object in path.steps that uses the memory. For a saved skill, use skills show to see its numbered steps; add step_memory_ids inside run, keyed by the 1-based step number, for example {run: {name: \"Search Settings\", with: {text_1: \"Wi-Fi\"}, step_memory_ids: {\"2\": [\"ID\"]}}}. Leave used_memory_ids off the outer path or run action. For web_open, web_click or web_type, put used_memory_ids on the tool call. Report IDs only on the actions that used them.")
+            parts.append("When a saved memory changes an action in do, add used_memory_ids: [\"ID\"] on that item in actions or path.steps (not outer path/run), or on web_open/web_click/web_type. For a saved skill, check numbered steps via skills show and set run.step_memory_ids (1-based, e.g. {\"2\":[\"ID\"]}). Report only IDs that drove the action.")
         }
-        parts.append("A skill or memory you ask to save is kept only after the task ends with finish_task success=true. Set optional=true on automatic saves the owner did not request. When saving is part of the owner's task, omit optional. Call finish_task even when the task was only to remember something. Leave failed or interrupted attempts out of memory.")
+        parts.append("A skill or memory you ask to save is kept only after finish_task(success=true); call finish_task even for remember-only tasks and skip failed/interrupted attempts. Set optional=true only on unrequested automatic saves; omit it when requested.")
         if let apps = appIDs(namedBundleIDs) { parts.append(apps) }
         if !brief.text.isEmpty { parts.append(brief.text) }
         return (parts.joined(separator: "\n\n"), brief.notes)
@@ -212,8 +321,12 @@ enum Harness {
     /// The current permission determines which ones are declared for each request.
     static func toolSpecs(inSplitView: Bool, includeScreenHistory: Bool,
                           includeMemoryAttribution: Bool = true,
+                          includeCountedScroll: Bool = true,
+                          includeCountedScrollReply: Bool = true,
                           resultCardMode: ResultCardMode = .all) -> [ToolSpec] {
-        let taskTools = Self.taskTools(includeMemoryAttribution: includeMemoryAttribution, resultCardMode: resultCardMode)
+        let taskTools = Self.taskTools(includeCountedScroll: includeCountedScroll,
+                                       includeCountedScrollReply: includeCountedScrollReply,
+                                       resultCardMode: resultCardMode)
         if !inSplitView {
             let webTools = includeMemoryAttribution ? WebTools.specs.map(withActionMemoryIDs) : WebTools.specs
             return catalogTools(includeScreenHistory: includeScreenHistory, includeMemoryAttribution: includeMemoryAttribution) + [findApp] + webTools + taskTools
@@ -245,15 +358,15 @@ enum Harness {
         properties["used_memory_ids"] = [
             "type": "array", "items": string, "maxItems": 20,
             "description": tool.name == "do"
-                ? "For a single action except path and run. Put memory IDs on the specific action, path step, or numbered step in run.step_memory_ids."
-                : "IDs of supplied saved memories that changed this action. Omit memories you only read.",
+                ? "Single non-path/run action only; else put on the action, path.steps item, or run.step_memory_ids."
+                : "Memory IDs that drove this action.",
         ] as [String: Any]
         tool.schema["properties"] = properties
         return tool
     }
 
     nonisolated static func withoutActionMemoryIDs(_ tool: ToolSpec) -> ToolSpec {
-        guard (memoryUsingActions.contains(tool.name) || tool.name == "finish_task"),
+        guard memoryUsingActions.contains(tool.name),
               var properties = tool.schema["properties"] as? [String: Any],
               properties.removeValue(forKey: "used_memory_ids") != nil else { return tool }
         var tool = tool
@@ -275,9 +388,18 @@ enum Harness {
         ["type": "object", "properties": properties, "required": required, "additionalProperties": false]
     }
     private nonisolated static let string: [String: Any] = ["type": "string"]
-    private static func taskTools(includeMemoryAttribution: Bool, resultCardMode: ResultCardMode) -> [ToolSpec] {
-        [reportPlan, countMessages, waitForCountedScrollReply,
-         finishTask(includeMemoryAttribution: includeMemoryAttribution, resultCardMode: resultCardMode)]
+    private static func taskTools(includeCountedScroll: Bool,
+                                  includeCountedScrollReply: Bool,
+                                  resultCardMode: ResultCardMode) -> [ToolSpec] {
+        var tools = [reportPlan]
+        if includeCountedScroll {
+            tools.append(countMessages)
+            if includeCountedScrollReply {
+                tools.append(waitForCountedScrollReply)
+            }
+        }
+        tools.append(finishTask(resultCardMode: resultCardMode))
+        return tools
     }
 
     static let reportPlan = ToolSpec(
@@ -298,9 +420,9 @@ enum Harness {
         description: "Pause a counted message scroll in the owner's chat and ask for the information you need to continue it. The question is shown to the owner with a reply button.",
         schema: object(["question": string], ["question"]))
 
-    static let finishTask = finishTask(includeMemoryAttribution: true, resultCardMode: .all)
+    static let finishTask = finishTask(resultCardMode: .all)
 
-    nonisolated static func finishTask(includeMemoryAttribution: Bool, resultCardMode: ResultCardMode) -> ToolSpec {
+    nonisolated static func finishTask(resultCardMode: ResultCardMode) -> ToolSpec {
         var properties: [String: Any] = [
             "success": ["type": "boolean"], "summary": string,
             "details": ["type": "array", "items": object(["label": string, "value": string], ["label", "value"])],
@@ -310,16 +432,14 @@ enum Harness {
                 "start_ref": string, "end_ref": string,
             ], ["kind"]),
         ]
-        if includeMemoryAttribution {
-            properties["used_memory_ids"] = ["type": "array", "items": string, "maxItems": 20, "description": "Obsolete and ignored. Omit this field."]
-        }
         if case .scoped(let apps) = resultCardMode {
             properties["card"] = resultCard(for: apps)
         }
         return ToolSpec(
             name: "finish_task",
             description: "Finish after observing the requested result. On failure set success=false and say what worked, what blocked completion and what you tried. In details give the requested facts as whole current labels or values. Set answer.kind to action only for an executed change, field for fixed values, or list for requested entries. For field, use current refs and label/value. For a label like Capacity,90%, use prefix Capacity, and suffix % to identify the field. For list, include all requested current rows in order with names/times. Use start_ref/end_ref only for unique labels immediately outside the rows. Never invent refs or report a heading as a requested value.",
-            schema: object(properties, ["success", "summary", "details", "answer"]))
+            // Omit additionalProperties: false so obsolete keys such as used_memory_ids are ignored instead of failing validation.
+            schema: ["type": "object", "properties": properties, "required": ["success", "summary", "details", "answer"]])
     }
 
     /// finish_task's card, scoped to `apps`'s dedicated layouts plus generic `list` (`ResultCardLooks`).
