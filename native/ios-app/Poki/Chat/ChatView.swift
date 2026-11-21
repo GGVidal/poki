@@ -782,8 +782,14 @@ struct ChatTranscript<Footer: View>: View {
                 .transition(PlanMotion.stepTransition)
         case .note(.approval(let approval)):
             HStack {
-                ApprovalNoteCard(note: approval)
-                    .contentShape(.contextMenuPreview, .rect(cornerRadius: 16, style: .continuous))
+                Group {
+                    if let share = approval.history {
+                        SensesShareCard(note: approval, share: share)
+                    } else {
+                        ApprovalNoteCard(note: approval)
+                    }
+                }
+                .contentShape(.contextMenuPreview, .rect(cornerRadius: 16, style: .continuous))
 
                 Spacer(minLength: .messageInsetPadding)
             }
