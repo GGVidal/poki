@@ -272,6 +272,46 @@ enum VoiceDirect {
     }
 }
 
+typealias SpeechPermissionPresenter = @MainActor (@MainActor () async -> Bool) async -> Bool
+
+/// The iOS permission, recognition and text-task boundaries for a captured opening.
+struct OpeningSpeech {
+    let authorizationStatus: @MainActor () -> SFSpeechRecognizerAuthorizationStatus
+    let requestAuthorization: @MainActor () async -> SFSpeechRecognizerAuthorizationStatus
+    let transcribe: @MainActor (AVAudioPCMBuffer) async throws -> String
+    let sendText: @MainActor (String) -> Bool
+    let announce: @MainActor (String) async -> Void
+
+    @MainActor func authorize(present: SpeechPermissionPresenter) async -> Bool {
+        switch authorizationStatus() {
+        case .authorized: return true
+        case .notDetermined:
+            return await present {
+                let status = authorizationStatus()
+                if status != .notDetermined { return status == .authorized }
+                return await requestAuthorization() == .authorized
+            }
+        default: return false
+        }
+    }
+
+    static let system = OpeningSpeech(
+        authorizationStatus: { SFSpeechRecognizer.authorizationStatus() },
+        requestAuthorization: {
+            await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+            }
+        },
+        transcribe: { try await Dictation.transcribeLocally($0) },
+        sendText: { text in
+            guard let chat = AskPoki.chat, !chat.running else { return false }
+            chat.send(text)
+            return true
+        },
+        announce: { await Dictation().speakAndWait($0) }
+    )
+}
+
 /// Hold to dictate, let go to send to Poki's chat, hear the answer: voice for models without Realtime.
 @MainActor
 final class Dictation: NSObject, AVSpeechSynthesizerDelegate {

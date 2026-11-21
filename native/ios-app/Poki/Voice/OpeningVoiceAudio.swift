@@ -22,6 +22,7 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     private static let maxOpeningFrames = Int(sampleRate) * 210
     private static let pauseFrames = Int(sampleRate * 1.25)
     private static let noSpeechFrames = Int(sampleRate * 5)
+    private static let maxReplayBurst = Int(sampleRate / 10)
     private static let channelFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true
     )!
@@ -195,11 +196,13 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
             let (delegate, audio): (RTCAudioDeviceDelegate?, [Int16]?) = lock.withLock {
                 switch state {
                 case .buffering, .listeningForQuiet:
+                    observeUtterance(sourceFrames)
                     buffer(sourceFrames)
                     finishIfQuiet()
                     return (nil, nil)
                 case .sending:
                     guard recording, let delegate else {
+                        observeUtterance(sourceFrames)
                         buffer(sourceFrames)
                         return (nil, nil)
                     }
@@ -220,22 +223,24 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
         }
     }
 
-    private func buffer(_ frames: UnsafeBufferPointer<Int16>, duringReplay: Bool = false) {
+    /// Used only to decide when the local fallback should stop recording.
+    private func observeUtterance(_ frames: UnsafeBufferPointer<Int16>) {
         let quiet = frames.reduce(Int64(0)) { $0 + Int64($1) * Int64($1) } < Int64(frames.count) * 10_000
-        let retainedCount: Int
         if quiet {
-            // Keep a natural pause next to speech. Time spent waiting in silence must not
-            // fill the buffer or delay delivery of the user's first words.
-            retainedCount = min(frames.count, max(0, Self.pauseFrames - quietFrames))
             quietFrames = min(Self.noSpeechFrames, quietFrames + frames.count)
         } else {
             quietFrames = 0
             heardSpeech = true
-            retainedCount = frames.count
         }
-        let available = duringReplay ? frames.count : Self.maxOpeningFrames - (queued.count - readIndex)
-        queued.append(contentsOf: frames.prefix(min(retainedCount, available)))
-        if retainedCount > available { overflow = true }
+    }
+
+    private func buffer(_ frames: UnsafeBufferPointer<Int16>) {
+        let available = Self.maxOpeningFrames - (queued.count - readIndex)
+        guard frames.count <= available else {
+            overflow = true
+            return
+        }
+        queued.append(contentsOf: frames)
     }
 
     private func finishIfQuiet() {
@@ -248,17 +253,17 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     private func drain(with frames: UnsafeBufferPointer<Int16>) -> [Int16] {
         // The same microphone stays on. Append new input behind the opening before draining
         // the next packet, so speech that crosses the handoff cannot overlap or disappear.
-        buffer(frames, duringReplay: true)
-        let end = min(readIndex + frames.count, queued.count)
-        var packet = Array(queued[readIndex..<end])
-        if packet.count < frames.count {
-            packet.append(contentsOf: frames.suffix(frames.count - packet.count))
-        }
+        queued.append(contentsOf: frames)
+        // WebRTC divides this input into its normal audio frames. Hand off a bounded
+        // extra block each time so the queue can catch up without removing samples.
+        let burst = min(frames.count, Self.maxReplayBurst)
+        let end = min(readIndex + frames.count + burst, queued.count)
+        let packet = Array(queued[readIndex..<end])
         readIndex = end
         if readIndex == queued.count {
             queued.removeAll(keepingCapacity: true)
             readIndex = 0
-        } else if readIndex >= Int(Self.sampleRate) {
+        } else if readIndex >= Int(Self.sampleRate), readIndex >= queued.count / 2 {
             queued.removeFirst(readIndex)
             readIndex = 0
         }

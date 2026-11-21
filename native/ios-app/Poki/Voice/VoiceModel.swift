@@ -315,6 +315,7 @@ final class VoiceModel {
     private var link: VoiceConnection?
     private var connectionOpen = false
     private var openingCapture: OpeningVoiceCapture?
+    private var openingSpeechAuthorized = false
     private var openingDictation: Task<Void, Never>?
     private var usesLive = false
     private var liveCloseTimeout: Task<Void, Never>?
@@ -507,20 +508,20 @@ final class VoiceModel {
     private let connection: @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection
     private var connectionAttempt: Int?
     private let time: VoiceClock
-    private let transcribeOpening: @MainActor (AVAudioPCMBuffer) async throws -> String
+    private let openingSpeech: OpeningSpeech
 
     init(clearTap: @escaping @MainActor (String, String?, String?) async -> TapClearance,
          phoneTool: @escaping @MainActor (String, String, PhoneOperationCancellation?) async -> PhoneAnswer,
          holdMicrophone: @escaping @MainActor (Bool) -> Void = { _ in },
          connection: @escaping @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection = { VoiceLink(onEvent: $0, onClosed: $1) },
          time: VoiceClock = VoiceClock(),
-         transcribeOpening: @escaping @MainActor (AVAudioPCMBuffer) async throws -> String = { try await Dictation.transcribeLocally($0) }) {
+         openingSpeech: OpeningSpeech = .system) {
         self.clearTap = clearTap
         self.phoneTool = phoneTool
         self.holdMicrophone = holdMicrophone
         self.connection = connection
         self.time = time
-        self.transcribeOpening = transcribeOpening
+        self.openingSpeech = openingSpeech
         // Poki in the background goes on with the talk (the owner, 2026-11-13): you speak to it from the
         // app you went to, and the Live Activity says what it is doing and carries End. It ends there as
         // it does in front, when nobody speaks for `followUp` after an answer. Only the wait for a server
@@ -669,7 +670,8 @@ final class VoiceModel {
         #endif
     }
 
-    func start(microphone: Bool = true, captureOpening: Bool = false) async {
+    func start(microphone: Bool = true, captureOpening: Bool = false,
+               presentSpeechPermission: SpeechPermissionPresenter = { request in await request() }) async {
         if let liveCloseTimeout { await liveCloseTimeout.value }
         guard !isOn else { return }
         let account = VoiceDirect.account
@@ -681,6 +683,7 @@ final class VoiceModel {
         phase = .connecting
         session += 1
         let number = session
+        openingSpeechAuthorized = false
         let bridge = self.bridge
         func configuration() async throws -> VoiceBridge.Token {
             if rehearsing { return Self.rehearsalToken }
@@ -731,6 +734,11 @@ final class VoiceModel {
             if let openingLink {
                 holdingMicrophone = true
                 openingCapture = try openingLink.startOpeningCapture(session: number)
+                if openingCapture != nil {
+                    let authorized = await openingSpeech.authorize(present: presentSpeechPermission)
+                    guard number == session else { return }
+                    openingSpeechAuthorized = authorized
+                }
             }
             var token = try await configuration()
             // Ended (End, or the button again) while the key was exchanged.
@@ -784,6 +792,10 @@ final class VoiceModel {
         AppLocalization.text(LocalizedStringResource("The opening recording didn’t go through.", table: "Entry"))
     }
 
+    private static var openingSpeechUnavailable: String {
+        AppLocalization.text(LocalizedStringResource("Voice couldn’t connect, and I couldn’t turn the recording into text.", table: "Entry"))
+    }
+
     private func sendOpeningAudioIfReady() -> Bool {
         guard ready, connectionOpen, let capture = openingCapture else { return true }
         if capture.audio.allowSending(session: session) { return true }
@@ -794,6 +806,7 @@ final class VoiceModel {
     private func startOpeningDictation() -> Bool {
         let number = session
         guard let capture = openingCapture, let finished = capture.audio.finishUtterance(session: number) else { return false }
+        let authorized = openingSpeechAuthorized
         trace("voice connection failed before opening audio was sent")
         closeConnection("switching to on-device dictation")
         transcript = nil
@@ -802,31 +815,31 @@ final class VoiceModel {
         openingDictation = Task { [weak self] in
             guard let self else { return }
             defer { if session == number { openingDictation = nil } }
-            let deadline = Task { [time, weak audio = capture.audio] in
-                await time.sleep(.seconds(45))
-                guard !Task.isCancelled else { return }
-                audio?.timeOutUtterance(session: number)
+            if authorized {
+                let deadline = Task { [time, weak audio = capture.audio] in
+                    await time.sleep(.seconds(45))
+                    guard !Task.isCancelled else { return }
+                    audio?.timeOutUtterance(session: number)
+                }
+                for await _ in finished {}
+                deadline.cancel()
             }
-            for await _ in finished {}
-            deadline.cancel()
             guard session == number, !Task.isCancelled else { return }
-            let audio = releaseOpeningCapture(session: number, forDictation: true)
+            let audio = releaseOpeningCapture(session: number, forDictation: authorized)
             phase = .thinking
             let text: String?
-            if let audio { text = try? await transcribeOpening(audio) }
+            if let audio { text = try? await openingSpeech.transcribe(audio) }
             else { text = nil }
             guard session == number, !Task.isCancelled else { return }
-            guard let text, !text.isEmpty, let chat = AskPoki.chat, !chat.running else {
-                await Dictation().speakAndWait(Self.openingAudioUnsent)
-                if session == number { phase = .lost(Self.openingAudioUnsent) }
-                return
+            if let text, !text.isEmpty, openingSpeech.sendText(text) {
+                let notice = AppLocalization.text(LocalizedStringResource("Voice couldn’t connect. I’ll handle this as text.", table: "Entry"))
+                await openingSpeech.announce(notice)
+                if session == number { phase = .off }
+            } else {
+                let why = text?.isEmpty == false ? Self.openingAudioUnsent : Self.openingSpeechUnavailable
+                await openingSpeech.announce(why)
+                if session == number { phase = .lost(why) }
             }
-            let notice = AppLocalization.text(LocalizedStringResource("Voice couldn’t connect. I’ll handle this as text.", table: "Entry"))
-            let announcer = Dictation()
-            async let announcement: Void = announcer.speakAndWait(notice)
-            chat.send(text)
-            await announcement
-            if session == number { phase = .off }
         }
         return true
     }

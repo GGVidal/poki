@@ -81,13 +81,13 @@ final class TalkActivity {
     /// Talk Here (TalkHereIntent), with Poki in the background: the Live Activity starts first, while
     /// the intent runs, and the microphone only once it is up, because iOS ends an app that records in
     /// the background without one. false: the Live Activity did not start, and nothing else did.
-    func startHere() async -> Bool {
+    func startHere(presentSpeechPermission: SpeechPermissionPresenter = { request in await request() }) async -> Bool {
         show(.listening, fromIntent: true)
         guard activity.isRunning else {
             show(nil)
             return false
         }
-        await voice.start(captureOpening: true)
+        await voice.start(captureOpening: true, presentSpeechPermission: presentSpeechPermission)
         // Not connected: the talk's phase says why, and the Live Activity goes (`follow` sees no talk).
         show(Self.state(of: voice))
         return true

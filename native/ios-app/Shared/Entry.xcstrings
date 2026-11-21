@@ -449,6 +449,38 @@
         }
       }
     },
+    "Open Poki to allow on-device speech recognition for when voice can’t connect." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 Poki 授权本机听写，以便语音接不通时把录音转成文字。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打開 Poki 授權本機聽寫，以便語音接不通時把錄音轉成文字。"
+          }
+        }
+      }
+    },
+    "Voice couldn’t connect, and I couldn’t turn the recording into text." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音没连上，也没法转文字。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "語音沒連上，也沒辦法轉成文字。"
+          }
+        }
+      }
+    },
     "Allow Poki to use the microphone first." : {
       "localizations" : {
         "zh-Hans" : {
