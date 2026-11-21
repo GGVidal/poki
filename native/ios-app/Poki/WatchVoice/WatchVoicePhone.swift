@@ -86,7 +86,7 @@ enum WatchVoiceNotice {
     static func postUnlockPrompt(for id: UUID) {
         let content = UNMutableNotificationContent()
         content.title = AppLocalization.text(LocalizedStringResource("Unlock iPhone for Watch Task"))
-        content.body = AppLocalization.text(LocalizedStringResource("Poki received your Apple Watch request. Unlock your iPhone to continue."))
+        content.body = AppLocalization.text(LocalizedStringResource("Poki received your Apple Watch request. Unlock your iPhone, or tap to open Poki and continue."))
         content.sound = .default
         content.interruptionLevel = .timeSensitive
         content.threadIdentifier = "watch-voice"
@@ -376,7 +376,9 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
 
     private func run(_ id: UUID, audio: Data) async {
         beginBackgroundTask()
+        var watchLease: AppModel.BackgroundWatchLease?
         defer {
+            app.endBackgroundWatchSession(watchLease)
             if waitingUnlockID != id { endBackgroundTask() }
             work = nil
             activeID = nil
@@ -386,20 +388,22 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
             return
         }
         do {
-            await prepareAutomationForBackground()
+            try checkPreconditionsBeforeSession()
+            watchLease = await app.beginBackgroundWatchSession()
             try Task.checkCancellation()
             if phoneLocked {
                 parkForUnlock(id, audio: audio, publishToWatch: true)
                 return
             }
-            try checkReady()
+            try checkSessionReady()
             let transcript = try await Dictation.transcribe(recording: audio)
             try Task.checkCancellation()
             if phoneLocked {
                 parkForUnlock(id, audio: audio, publishToWatch: true)
                 return
             }
-            try checkReady()
+            try checkPreconditionsBeforeSession()
+            try checkSessionReady()
             removePendingAudio(for: id)
             let running = WatchVoiceUpdate(id: id, phase: .running, text: nil)
             try store(running)
@@ -426,12 +430,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         }
     }
 
-    private func prepareAutomationForBackground() async {
-        guard app.automationPath == .inProcess, !app.ownerPaused else { return }
-        _ = await app.ensureSessionOnForBackgroundTask()
-    }
-
-    private func checkReady() throws {
+    private func checkPreconditionsBeforeSession() throws {
         if let message = app.signer.installMessage { throw WatchVoiceStartError(text: message) }
         guard ModelKeys.hasUsableKey else {
             throw WatchVoiceStartError(message: "Choose a model in Poki’s settings on iPhone, then try again.")
@@ -439,6 +438,12 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         guard !chat.running, !app.voice.isOn, ChatModel.delegatedBusy == nil else {
             throw WatchVoiceStartError(message: "Poki is busy on iPhone. Wait for the current task and try again.")
         }
+        guard app.automationPath == .inProcess, !app.ownerPaused else {
+            throw WatchVoiceStartError(message: "Turn on Poki with on-device automation on iPhone, then try again.")
+        }
+    }
+
+    private func checkSessionReady() throws {
         guard app.automationPath == .inProcess, app.sessionOn, !app.ownerPaused else {
             throw WatchVoiceStartError(message: "Turn on Poki with on-device automation on iPhone, then try again.")
         }

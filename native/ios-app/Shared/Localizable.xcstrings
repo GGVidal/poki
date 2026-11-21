@@ -39469,25 +39469,25 @@
         }
       }
     },
-    "Poki received your Apple Watch request. Unlock your iPhone to continue." : {
+    "Poki received your Apple Watch request. Unlock your iPhone, or tap to open Poki and continue." : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki received your Apple Watch request. Unlock your iPhone to continue."
+            "value" : "Poki received your Apple Watch request. Unlock your iPhone, or tap to open Poki and continue."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 已收到来自 Apple Watch 的请求，解锁手机后将继续执行。"
+            "value" : "Poki 已收到来自 Apple Watch 的请求。解锁 iPhone 后将继续，或点此打开 Poki 继续。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 已收到來自 Apple Watch 的請求，解鎖手機後將繼續執行。"
+            "value" : "Poki 已收到來自 Apple Watch 的請求。解鎖 iPhone 後將繼續，或點此打開 Poki 繼續。"
           }
         }
       }

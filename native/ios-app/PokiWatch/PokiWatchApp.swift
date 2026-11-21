@@ -65,7 +65,7 @@ private struct WatchVoiceView: View {
                                 .font(.headline)
                                 .multilineTextAlignment(.center)
                             if update.phase == .waitingForUnlock {
-                                Text("Unlock your iPhone to continue.")
+                                Text("Unlock your iPhone to continue, or open Poki if it doesn’t start.")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                                     .multilineTextAlignment(.center)

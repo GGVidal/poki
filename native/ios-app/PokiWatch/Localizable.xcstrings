@@ -921,25 +921,25 @@
         }
       }
     },
-    "Unlock your iPhone to continue." : {
+    "Unlock your iPhone to continue, or open Poki if it doesn’t start." : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Unlock your iPhone to continue."
+            "value" : "Unlock your iPhone to continue, or open Poki if it doesn’t start."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "解锁手机后将继续执行。"
+            "value" : "解锁 iPhone 后将继续；若未自动开始，请打开 Poki。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "解鎖手機後將繼續執行。"
+            "value" : "解鎖 iPhone 後將繼續；若未自動開始，請打開 Poki。"
           }
         }
       }
