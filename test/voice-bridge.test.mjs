@@ -9,9 +9,12 @@ import { join } from 'node:path';
 import { fixture } from './fixture.mjs';
 import { root } from '../src/config.mjs';
 
-async function sessionBridge(t) {
+async function sessionBridge(t, { screenError } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'poki-voice-token-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
+  const screenResponse = screenError
+    ? `Response.json({ error: { message: ${JSON.stringify(screenError.message)} } }, { status: ${screenError.status} })`
+    : `Response.json({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'Screen description' }] }] })`;
   const preload = `
     import { writeFile } from 'node:fs/promises';
     import { join } from 'node:path';
@@ -19,9 +22,7 @@ async function sessionBridge(t) {
       await writeFile(join(process.env.POKI_MCP_STATE_DIR, 'request.json'), JSON.stringify({ url, body: JSON.parse(options.body) }));
       if (url === 'https://api.openai.com/v1/realtime/client_secrets') return Response.json({ value: 'ek_test' });
       if (url === 'https://api.openai.com/v1/live/sessions') return Response.json({ transport: { sdp: 'sdp-answer' } }, { status: 201 });
-      if (url === 'https://api.openai.com/v1/responses') return Response.json({ output: [{
-        type: 'message', content: [{ type: 'output_text', text: 'Screen description' }],
-      }] });
+      if (url === 'https://api.openai.com/v1/responses') return ${screenResponse};
       throw new Error('Unexpected upstream URL');
     };
   `;
@@ -110,6 +111,55 @@ test('each Live screenshot uses its own unsaved vision request', async t => {
     assert.deepEqual(images.map(image => image.image_url), [url(screen)]);
     assert.ok(!JSON.stringify(upstream.body).includes(url(previous)));
   }
+});
+
+test('Live and Realtime voice prompts instruct reading the screen before claiming blindness', async t => {
+  const { base, request } = await sessionBridge(t);
+  const liveResponse = await fetch(`${base}/session?language=zh-Hans`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'sdp-offer' }),
+  });
+  assert.equal(liveResponse.status, 200);
+  const { body: { session: live } } = await request();
+  assert.match(live.instructions, /read and operate the user's iPhone screen through the backend/i);
+  assert.match(live.instructions, /asks what is on the screen/i);
+  assert.match(live.instructions, /delegate to the backend/i);
+  assert.match(live.instructions, /Never say you cannot see the screen/i);
+  assert.match(live.instructions, /reading the screen or describing the screenshot failed/i);
+
+  const backend = live.delegation.responses;
+  assert.match(backend.instructions, /call look first/i);
+  assert.match(backend.instructions, /Never say you cannot see the screen before calling look/i);
+  assert.match(backend.instructions, /state that actual reason honestly/i);
+  const liveLook = backend.tools.find(tool => tool.name === 'look');
+  assert.ok(liveLook);
+  assert.match(liveLook.description, /text description of the current screenshot/i);
+  assert.match(liveLook.description, /Call this first whenever the user asks what is on the screen/i);
+
+  const realtimeResponse = await fetch(`${base}/token?language=zh-Hans`);
+  assert.equal(realtimeResponse.status, 200);
+  const { body: { session: realtime } } = await request();
+  assert.match(realtime.instructions, /call look first/i);
+  assert.match(realtime.instructions, /Never say you cannot see the screen before calling look/i);
+  assert.match(realtime.instructions, /state that actual reason honestly/i);
+  const realtimeLook = realtime.tools.find(tool => tool.name === 'look');
+  assert.ok(realtimeLook);
+  assert.match(realtimeLook.description, /screenshot image/i);
+  assert.match(realtimeLook.description, /Call this first whenever the user asks what is on the screen/i);
+});
+
+test('Live screenshot description failures surface the upstream reason without leaking API keys', async t => {
+  const { base } = await sessionBridge(t, {
+    screenError: { status: 503, message: 'vision backend down for sk-secret123456' },
+  });
+  const url = `data:image/jpeg;base64,${Buffer.from('synthetic screenshot').toString('base64')}`;
+  const response = await fetch(`${base}/screen`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: url }),
+  });
+  assert.equal(response.status, 503);
+  const payload = await response.json();
+  assert.match(payload.error, /vision backend down/);
+  assert.match(payload.error, /the API key/);
+  assert.ok(!payload.error.includes('sk-secret123456'));
 });
 
 // The voice bridge in front of a fixture daemon and phone, as the Poki app reaches it.

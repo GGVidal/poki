@@ -10,32 +10,59 @@ final class BridgeStub: URLProtocol {
     static let secureLiveAddress = "https://voice-live-bridge.test/voice/0123456789abcdef"
     private static let lock = NSLock()
     nonisolated(unsafe) private static var screenshots: [String] = []
+    nonisolated(unsafe) private static var screenError: (status: Int, body: String)?
+    nonisolated(unsafe) private static var screenDescriptionOverride: String?
     static var screenshotSchemes: [String] { lock.withLock { screenshots } }
-    static func resetScreenshots() { lock.withLock { screenshots.removeAll() } }
+    static func resetScreenshots() {
+        lock.withLock {
+            screenshots.removeAll()
+            screenError = nil
+            screenDescriptionOverride = nil
+        }
+    }
+    static func failScreen(status: Int, body: String) {
+        lock.withLock { screenError = (status, body) }
+    }
+    static func setScreenDescription(_ text: String?) {
+        lock.withLock { screenDescriptionOverride = text }
+    }
     override class func canInit(with request: URLRequest) -> Bool {
         ["voice-bridge.test", "voice-live-bridge.test"].contains(request.url?.host())
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        var statusCode = 200
         let body: String
         if request.url?.host() == "voice-live-bridge.test" {
             switch request.url?.lastPathComponent {
             case "session": body = #"{"sdp":"sdp-answer"}"#
             case "screen":
-                Self.lock.withLock { Self.screenshots.append(request.url?.scheme ?? "") }
-                let data = requestBody(request)
-                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                let image = json?["image"] as? String
-                let first = "data:image/jpeg;base64," + Data("first synthetic screenshot".utf8).base64EncodedString()
-                let second = "data:image/jpeg;base64," + Data("second synthetic screenshot".utf8).base64EncodedString()
-                body = image == first ? #"{"text":"First screen description"}"# : image == second
-                    ? #"{"text":"Second screen description"}"# : #"{"text":"Unrecognized screenshot"}"#
+                let (failure, overrideText) = Self.lock.withLock { () -> ((Int, String)?, String?) in
+                    Self.screenshots.append(request.url?.scheme ?? "")
+                    return (Self.screenError, Self.screenDescriptionOverride)
+                }
+                if let failure {
+                    statusCode = failure.0
+                    body = failure.1
+                } else if let overrideText {
+                    let encoded = (try? JSONSerialization.data(withJSONObject: ["text": overrideText]))
+                        .flatMap { String(data: $0, encoding: .utf8) } ?? #"{"text":""}"#
+                    body = encoded
+                } else {
+                    let data = requestBody(request)
+                    let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                    let image = json?["image"] as? String
+                    let first = "data:image/jpeg;base64," + Data("first synthetic screenshot".utf8).base64EncodedString()
+                    let second = "data:image/jpeg;base64," + Data("second synthetic screenshot".utf8).base64EncodedString()
+                    body = image == first ? #"{"text":"First screen description"}"# : image == second
+                        ? #"{"text":"Second screen description"}"# : #"{"text":"Unrecognized screenshot"}"#
+                }
             default: body = #"{"live":true,"model":"gpt-live-1.1","local_tools":["get_ios_version","look","open_app","do"]}"#
             }
         } else {
             body = #"{"value":"ek_test","model":"gpt-realtime","local_tools":["get_ios_version","look","do"]}"#
         }
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
@@ -713,6 +740,230 @@ final class VoiceModelTests: XCTestCase {
         h.voice.stop()
     }
 
+    func testLiveVoiceReadsCurrentScreenForWhatIsOnMyScreenQuestion() async throws {
+        URLProtocol.registerClass(OpenAIStub.self)
+        defer { URLProtocol.unregisterClass(OpenAIStub.self) }
+        _ = try await VoiceDirect.exchangeLiveOffer("offer", model: "gpt-live-1.1", apiKey: "sk-test")
+        let liveSession = try XCTUnwrap(OpenAIStub.session)
+        let foregroundInstructions = try XCTUnwrap(liveSession["instructions"] as? String)
+        let delegation = try XCTUnwrap(liveSession["delegation"] as? [String: Any])
+        let backend = try XCTUnwrap(delegation["responses"] as? [String: Any])
+        let backendInstructions = try XCTUnwrap(backend["instructions"] as? String)
+        let delegatesScreenReads = foregroundInstructions.localizedCaseInsensitiveContains("asks what is on the screen")
+            && foregroundInstructions.localizedCaseInsensitiveContains("delegate to the backend")
+            && backendInstructions.localizedCaseInsensitiveContains("call look first")
+
+        let priorLogs = Set(AppLog.shared.lines)
+        var executed: [String] = []
+        let privateMessage = "PRIVATE_CHAT_SECRET_9876"
+        let screenOutput = """
+        app: Settings (com.apple.Preferences)   read: 2026-11-21T11:10:00Z (120 ms)
+        1 NavigationBar "Settings" (0,44,390,44)
+        2 StaticText "\(privateMessage)" (16,120,240,20)
+        """
+        BridgeStub.setScreenDescription("Settings main page showing General and Wi-Fi options.")
+        let h = Harness(phoneTool: { name, _ in
+            executed.append(name)
+            return (screenOutput, false, Data("first synthetic screenshot".utf8))
+        })
+        await h.liveTalk(address: BridgeStub.secureLiveAddress)
+
+        h.link.play(["type": "session.input_transcript.delta", "delta": "我屏幕上有什么", "start_ms": 0, "end_ms": 400])
+        if delegatesScreenReads {
+            h.link.play(["type": "session.delegation.created", "delegation": ["id": "d-screen"]])
+            h.link.call("look-1", "look", delegation: "d-screen")
+            let sent = expectation(for: NSPredicate { _, _ in
+                h.link.sent.contains { ($0["item"] as? [String: String])?["call_id"] == "look-1" }
+            }, evaluatedWith: nil)
+            await fulfillment(of: [sent], timeout: 2)
+            let output = h.link.sent.compactMap { $0["item"] as? [String: String] }
+                .first { $0["call_id"] == "look-1" }?["output"] ?? ""
+            let reply = output.contains("Settings") && output.contains("Current screen description:")
+                ? "当前屏幕是设置页面，显示了通用和 Wi-Fi 选项。"
+                : "我这边看不到你当前的页面。"
+            h.link.play(["type": "session.output_transcript.delta", "delta": reply, "start_ms": 600, "end_ms": 1100])
+        } else {
+            h.link.play(["type": "session.output_transcript.delta", "delta": "我这边看不到你当前的页面。", "start_ms": 500, "end_ms": 900])
+        }
+
+        XCTAssertEqual(executed, ["look"], "Asking what is on screen must delegate and call look before answering.")
+        let spoken = h.voice.lines.filter { $0.role == .poki }.map(\.text).joined()
+        XCTAssertFalse(spoken.contains("看不到"), "Poki must answer from the read screen instead of claiming blindness: \(spoken)")
+        XCTAssertTrue(spoken.contains("设置"), "Poki must name the foreground app from the screen read: \(spoken)")
+
+        let newLogs = AppLog.shared.lines.filter { !priorLogs.contains($0) }
+        XCTAssertTrue(newLogs.contains { $0.contains("delegation d-screen created") }, "Logs must record Live delegation: \(newLogs)")
+        let toolLog = try XCTUnwrap(newLogs.first { $0.contains("tool look done |") }, "Logs must record a tool return summary: \(newLogs)")
+        XCTAssertTrue(toolLog.contains("elements=2"), toolLog)
+        XCTAssertTrue(toolLog.contains("screen=26B"), toolLog)
+        XCTAssertTrue(toolLog.contains("desc=ok("), toolLog)
+        XCTAssertTrue(toolLog.contains("app: Settings (com.apple.Preferences)"), toolLog)
+        XCTAssertFalse(toolLog.contains(privateMessage), "Tool return summary must not leak screen element text: \(toolLog)")
+        XCTAssertFalse(toolLog.contains("General and Wi-Fi"), "Tool return summary must not leak screenshot description prose: \(toolLog)")
+        h.voice.stop()
+    }
+
+    func testLiveVoiceReadsRealSimulatorScreenForWhatIsOnMyScreenQuestion() async throws {
+        URLProtocol.registerClass(OpenAIStub.self)
+        defer { URLProtocol.unregisterClass(OpenAIStub.self) }
+        _ = try await VoiceDirect.exchangeLiveOffer("offer", model: "gpt-live-1.1", apiKey: "sk-test")
+        let liveSession = try XCTUnwrap(OpenAIStub.session)
+        let foregroundInstructions = try XCTUnwrap(liveSession["instructions"] as? String)
+        let backend = try XCTUnwrap((liveSession["delegation"] as? [String: Any])?["responses"] as? [String: Any])
+        let backendInstructions = try XCTUnwrap(backend["instructions"] as? String)
+        let delegatesScreenReads = foregroundInstructions.localizedCaseInsensitiveContains("asks what is on the screen")
+            && foregroundInstructions.localizedCaseInsensitiveContains("delegate to the backend")
+            && backendInstructions.localizedCaseInsensitiveContains("call look first")
+
+        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing(), automation: PKInProcess.shared())
+        let background = UIApplication.shared.beginBackgroundTask(withName: "Voice simulator screen check")
+        let prepared = await Task.detached { PKInProcess.shared().prepare() }.value
+        XCTAssertEqual(prepared["ok"] as? Bool, true, "Simulator in-process automation must prepare: \(prepared)")
+        app.inProcessReadyForProbe()
+        let ownBundle = Bundle.main.bundleIdentifier
+        var reactivated = false
+        defer {
+            if !reactivated, let ownBundle {
+                _ = PKInProcess.shared().app(ownBundle, action: "activate")
+            }
+            app.stopSession()
+            UIApplication.shared.endBackgroundTask(background)
+        }
+
+        let launchFailure = await Task.detached { PKInProcess.shared().app("com.apple.Preferences", action: "launch") }.value
+        XCTAssertNil(launchFailure, "Settings must launch on the simulator: \(launchFailure ?? "")")
+        let frontBundle = await Task.detached { PKInProcess.shared().frontApp()["bundleId"] as? String }.value
+        XCTAssertEqual(frontBundle, "com.apple.Preferences", "Settings must be in front before calling look.")
+
+        let priorLogs = Set(AppLog.shared.lines)
+        var realScreenshotBytes = 0
+        var realReadText = ""
+        BridgeStub.setScreenDescription("iOS Settings screen listing General, Accessibility, and Privacy options.")
+        let h = Harness(phoneTool: { name, arguments in
+            let answer = await app.phoneToolWithPicture(name, arguments: arguments)
+            realReadText = answer.text
+            realScreenshotBytes = answer.jpeg?.count ?? 0
+            return (answer.text, answer.isError, answer.jpeg)
+        })
+        await h.liveTalk(address: BridgeStub.secureLiveAddress)
+
+        h.link.play(["type": "session.input_transcript.delta", "delta": "我屏幕上有什么", "start_ms": 0, "end_ms": 400])
+        if delegatesScreenReads {
+            h.link.play(["type": "session.delegation.created", "delegation": ["id": "d-sim"]])
+            h.link.call("sim-look", "look", delegation: "d-sim")
+            let sent = expectation(for: NSPredicate { _, _ in
+                h.link.sent.contains { ($0["item"] as? [String: String])?["call_id"] == "sim-look" }
+            }, evaluatedWith: nil)
+            await fulfillment(of: [sent], timeout: 15)
+            let output = h.link.sent.compactMap { $0["item"] as? [String: String] }
+                .first { $0["call_id"] == "sim-look" }?["output"] ?? ""
+            let isSettings = output.contains("app: Settings") || output.contains("app: 设置") || output.contains("com.apple.Preferences")
+            let reply = isSettings && output.contains("Current screen description:")
+                ? "当前屏幕是设置（Settings），显示了通用、辅助功能和隐私选项。"
+                : "我这边看不到你当前的页面。"
+            h.link.play(["type": "session.output_transcript.delta", "delta": reply, "start_ms": 600, "end_ms": 1200])
+        } else {
+            h.link.play(["type": "session.output_transcript.delta", "delta": "我这边看不到你当前的页面。", "start_ms": 500, "end_ms": 900])
+        }
+
+        h.voice.stop()
+        if let ownBundle {
+            _ = await Task.detached { PKInProcess.shared().app(ownBundle, action: "activate") }.value
+            reactivated = true
+        }
+
+        let readSettings = realReadText.contains("app: Settings") || realReadText.contains("app: 设置") || realReadText.contains("com.apple.Preferences")
+        XCTAssertTrue(readSettings, "Real simulator look must read Settings: \(realReadText.prefix(200))")
+        XCTAssertGreaterThan(realScreenshotBytes, 1000, "Real simulator look must capture a JPEG screenshot.")
+        let spoken = h.voice.lines.filter { $0.role == .poki }.map(\.text).joined()
+        XCTAssertTrue(spoken.contains("Settings"), "Spoken reply must report the live simulator screen: \(spoken)")
+        XCTAssertFalse(spoken.contains("看不到"), spoken)
+
+        let newLogs = AppLog.shared.lines.filter { !priorLogs.contains($0) }
+        let toolLog = try XCTUnwrap(newLogs.first { $0.contains("tool look done |") }, "Logs must record the simulator tool return summary: \(newLogs)")
+        XCTAssertTrue(toolLog.contains("app: Settings") || toolLog.contains("app: 设置"), toolLog)
+        XCTAssertTrue(toolLog.contains("desc=ok("), toolLog)
+    }
+
+    func testLiveScreenshotDescriptionFailureIsReportedInsteadOfSwallowed() async throws {
+        let priorLogs = Set(AppLog.shared.lines)
+        BridgeStub.failScreen(status: 503, body: #"{"error":"vision backend unavailable"}"#)
+        let h = Harness(phoneTool: { _, _ in
+            ("app: Notes (com.apple.mobilenotes)   read: 2026-11-21T11:10:00Z (90 ms)\n1 StaticText \"Grocery list\" (10,20,100,20)",
+             false, Data("first synthetic screenshot".utf8))
+        })
+        await h.liveTalk(address: BridgeStub.secureLiveAddress)
+        h.link.call("desc-fail", "look")
+        let sent = expectation(for: NSPredicate { _, _ in
+            h.link.sent.contains { ($0["item"] as? [String: String])?["call_id"] == "desc-fail" }
+        }, evaluatedWith: nil)
+        await fulfillment(of: [sent], timeout: 2)
+        let output = h.link.sent.compactMap { $0["item"] as? [String: String] }
+            .first { $0["call_id"] == "desc-fail" }?["output"] ?? ""
+        XCTAssertTrue(output.contains("Current screen description failed:"), "Screen description failure must reach the model: \(output)")
+        XCTAssertTrue(output.contains("vision backend unavailable"), output)
+        let failureLog = try XCTUnwrap(AppLog.shared.lines.filter { !priorLogs.contains($0) }.first { $0.contains("tool look done |") })
+        XCTAssertTrue(failureLog.contains("desc=failed("), failureLog)
+        XCTAssertTrue(failureLog.contains("vision backend unavailable"), failureLog)
+        h.voice.stop()
+
+        BridgeStub.resetScreenshots()
+        let oversized = Data(repeating: 0xAB, count: 80_000)
+        let liveOversized = Harness(phoneTool: { _, _ in
+            ("app: Photos (com.apple.mobileslideshow)   read: 2026-11-21T11:10:00Z (90 ms)", false, oversized)
+        })
+        let oversizedPrior = Set(AppLog.shared.lines)
+        await liveOversized.liveTalk(address: BridgeStub.secureLiveAddress)
+        liveOversized.link.call("big-live", "look")
+        let bigLiveSent = expectation(for: NSPredicate { _, _ in
+            liveOversized.link.sent.contains { ($0["item"] as? [String: String])?["call_id"] == "big-live" }
+        }, evaluatedWith: nil)
+        await fulfillment(of: [bigLiveSent], timeout: 2)
+        let bigLiveOutput = liveOversized.link.sent.compactMap { $0["item"] as? [String: String] }
+            .first { $0["call_id"] == "big-live" }?["output"] ?? ""
+        XCTAssertTrue(bigLiveOutput.contains("Current screen description failed:"), bigLiveOutput)
+        XCTAssertTrue(bigLiveOutput.contains("upload size limit"), bigLiveOutput)
+        let bigLiveLog = try XCTUnwrap(AppLog.shared.lines.filter { !oversizedPrior.contains($0) }.first { $0.contains("tool look done |") })
+        XCTAssertTrue(bigLiveLog.contains("desc=failed("), bigLiveLog)
+        liveOversized.voice.stop()
+
+        let realtimeOversized = Harness(phoneTool: { _, _ in
+            ("app: Photos (com.apple.mobileslideshow)   read: 2026-11-21T11:10:00Z (90 ms)", false, oversized)
+        })
+        let realtimePrior = Set(AppLog.shared.lines)
+        await realtimeOversized.talk()
+        realtimeOversized.link.play(["type": "response.created", "response": ["id": "r-big"]],
+                                    ["type": "response.output_item.done", "item": ["type": "function_call", "call_id": "big-rt", "name": "look", "arguments": "{}"]],
+                                    ["type": "response.done", "response": ["id": "r-big"]])
+        await realtimeOversized.time.settle()
+        let bigRtOutput = realtimeOversized.link.sent.compactMap { $0["item"] as? [String: String] }
+            .first { $0["call_id"] == "big-rt" }?["output"] ?? ""
+        XCTAssertTrue(bigRtOutput.contains("Screenshot unavailable:"), bigRtOutput)
+        XCTAssertTrue(bigRtOutput.contains("data channel size limit"), bigRtOutput)
+        let bigRtLog = try XCTUnwrap(AppLog.shared.lines.filter { !realtimePrior.contains($0) }.first { $0.contains("tool look done |") })
+        XCTAssertTrue(bigRtLog.contains("image=failed("), bigRtLog)
+        realtimeOversized.voice.stop()
+
+        let statusPrior = Set(AppLog.shared.lines)
+        var step = 0
+        let statusHarness = Harness(phoneTool: { _, _ in
+            step += 1
+            if step == 1 { return ("error: automation session is not ready", true, nil) }
+            return ("app: Poki (nz.zheha.poki)   read: 2026-11-21T11:10:00Z (40 ms)\npoki: Poki is in front. The owner's chat is private, so this read has no screenshot or element numbers.", false, nil)
+        })
+        await statusHarness.liveTalk(address: BridgeStub.secureLiveAddress)
+        statusHarness.link.call("read-failed", "look")
+        statusHarness.link.call("poki-front", "look")
+        let bothSent = expectation(for: NSPredicate { _, _ in
+            statusHarness.link.sent.contains { ($0["item"] as? [String: String])?["call_id"] == "poki-front" }
+        }, evaluatedWith: nil)
+        await fulfillment(of: [bothSent], timeout: 2)
+        let statusLogs = AppLog.shared.lines.filter { !statusPrior.contains($0) }
+        XCTAssertTrue(statusLogs.contains { $0.contains("tool look failed |") && $0.contains("error: automation session is not ready") }, "\(statusLogs)")
+        XCTAssertTrue(statusLogs.contains { $0.contains("tool look done |") && $0.contains("screen=none") && $0.contains("poki: Poki is in front.") }, "\(statusLogs)")
+        statusHarness.voice.stop()
+    }
+
     private var savedBridge: String?
     private var savedDirect: Any?
 
@@ -1036,11 +1287,18 @@ final class VoiceModelTests: XCTestCase {
 /// OpenAI's client_secrets endpoint, served without the network: it keeps the session Poki asked for.
 final class OpenAIStub: URLProtocol {
     nonisolated(unsafe) static var session: [String: Any]?
+    nonisolated(unsafe) static var responsesReply: (status: Int, body: String)?
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host() == "api.openai.com" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let body = requestBody(request)
         Self.session = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["session"] as? [String: Any]
+        if request.url?.path() == "/v1/responses", let reply = Self.responsesReply {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(reply.body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
         let reply = request.url?.path() == "/v1/live/sessions" ? #"{"transport":{"sdp":"sdp-answer"}}"# : #"{"value":"ek_test"}"#
         client?.urlProtocol(self, didLoad: Data(reply.utf8))
@@ -1095,6 +1353,60 @@ final class VoiceLanguageTests: XCTestCase {
         let transcription = ((session["audio"] as? [String: Any])?["input"] as? [String: Any])?["transcription"] as? [String: Any]
         XCTAssertNotNil(transcription)
         XCTAssertEqual(transcription?["language"] as? String, "zh", "input transcription uses the requested Chinese language hint")
+    }
+
+    func testVoicePromptsRequireReadingTheScreenBeforeClaimingBlindness() async throws {
+        URLProtocol.registerClass(OpenAIStub.self)
+        defer { URLProtocol.unregisterClass(OpenAIStub.self) }
+        _ = try await VoiceDirect.exchangeLiveOffer("offer", model: "gpt-live-1.1", apiKey: "sk-test")
+        let liveSession = try XCTUnwrap(OpenAIStub.session)
+        let foreground = try XCTUnwrap(liveSession["instructions"] as? String)
+        for rule in [
+            "read and operate the user's iPhone screen through the backend",
+            "asks what is on the screen",
+            "delegate to the backend",
+            "Never say you cannot see the screen",
+            "reading the screen or describing the screenshot failed",
+        ] {
+            XCTAssertTrue(foreground.localizedCaseInsensitiveContains(rule), "Foreground Live prompt missing: \(rule)")
+        }
+
+        let backend = try XCTUnwrap((liveSession["delegation"] as? [String: Any])?["responses"] as? [String: Any])
+        let backendInstructions = try XCTUnwrap(backend["instructions"] as? String)
+        let backendTools = try XCTUnwrap(backend["tools"] as? [[String: Any]])
+        let liveLook = try XCTUnwrap(backendTools.first { $0["name"] as? String == "look" }?["description"] as? String)
+        XCTAssertTrue(liveLook.localizedCaseInsensitiveContains("text description of the current screenshot"), liveLook)
+        XCTAssertTrue(liveLook.localizedCaseInsensitiveContains("Call this first whenever the user asks what is on the screen"), liveLook)
+
+        let realtimeInstructions = try XCTUnwrap(VoiceDirect.session["instructions"] as? String)
+        let realtimeTools = try XCTUnwrap(VoiceDirect.session["tools"] as? [[String: Any]])
+        let realtimeLook = try XCTUnwrap(realtimeTools.first { $0["name"] as? String == "look" }?["description"] as? String)
+        XCTAssertTrue(realtimeLook.localizedCaseInsensitiveContains("screenshot image"), realtimeLook)
+        XCTAssertTrue(realtimeLook.localizedCaseInsensitiveContains("Call this first whenever the user asks what is on the screen"), realtimeLook)
+
+        for prompt in [backendInstructions, realtimeInstructions] {
+            XCTAssertTrue(prompt.localizedCaseInsensitiveContains("call look first"), prompt)
+            XCTAssertTrue(prompt.localizedCaseInsensitiveContains("Never say you cannot see the screen before calling look"), prompt)
+            XCTAssertTrue(prompt.localizedCaseInsensitiveContains("state that actual reason honestly"), prompt)
+        }
+    }
+
+    func testDirectScreenDescriptionErrorSurfacesSanitizedReason() async {
+        URLProtocol.registerClass(OpenAIStub.self)
+        OpenAIStub.responsesReply = (503, #"{"error":{"message":"vision backend overloaded for sk-secret999"}}"#)
+        defer {
+            OpenAIStub.responsesReply = nil
+            URLProtocol.unregisterClass(OpenAIStub.self)
+        }
+        do {
+            _ = try await VoiceDirect.describeLiveScreen("data:image/jpeg;base64,e30=", apiKey: "sk-test")
+            XCTFail("Expected describeLiveScreen to throw on HTTP 503")
+        } catch {
+            let reason = error.localizedDescription
+            XCTAssertTrue(reason.contains("vision backend overloaded"), reason)
+            XCTAssertTrue(reason.contains("the API key"), reason)
+            XCTAssertFalse(reason.contains("sk-secret999"), reason)
+        }
     }
 }
 
