@@ -29,33 +29,48 @@ enum Harness {
     private static let chineseExamplesHeader = "\n\n### 简体中文\n\n"
 
     private static let urlPattern = try! NSRegularExpression(pattern: #"https?://\S+"#, options: [.caseInsensitive])
-    private static let explicitEnglishPattern = try! NSRegularExpression(pattern: #"\benglish\b|英文|英语|英語"#, options: [.caseInsensitive])
-    private static let explicitChinesePattern = try! NSRegularExpression(pattern: #"\bchinese\b|中文|汉语|漢語|国语|國語"#, options: [.caseInsensitive])
+    private static let languageCuePattern = try! NSRegularExpression(
+        pattern: #"\b(chinese|mandarin|cantonese|english|japanese|korean|spanish|french|german|italian|portuguese|russian|arabic|hindi|thai|vietnamese|indonesian|malay|dutch|turkish|polish|swedish|greek|hebrew|ukrainian|bilingual)\b|\b(reply|answer|respond|write|speak|say|translate)\s+in\b|中文|汉语|漢語|普通话|普通話|粤语|粵語|国语|國語|英文|英语|英語|日文|日语|日語|韩文|韩语|韓文|韓語|法文|法语|法語|德文|德语|德語|西语|西班牙语|西班牙語|俄文|俄语|俄語|意语|意大利语|意大利語|葡语|葡萄牙语|葡萄牙語|阿拉伯语|阿拉伯語|泰语|泰語|双语|雙語|(?:用|以).{0,4}(?:语|語|文)(?:回复|回覆|回答|说|說|写|寫)"#,
+        options: [.caseInsensitive]
+    )
+    private static let englishClauseWords: Set<String> = [
+        "the", "and", "or", "to", "in", "on", "for", "of", "with", "is", "are",
+        "please", "open", "check", "reply", "tell", "show", "find", "send", "scroll", "read",
+    ]
     private static let hanPattern = try! NSRegularExpression(pattern: #"\p{Script=Han}"#)
-    private static let kanaPattern = try! NSRegularExpression(pattern: #"\p{Script=Hiragana}|\p{Script=Katakana}"#)
-    private static let latinPattern = try! NSRegularExpression(pattern: #"[A-Za-z]"#)
+    private static let latinWordPattern = try! NSRegularExpression(pattern: #"[A-Za-z]+"#)
     private static let screenshotIDLinePattern = try! NSRegularExpression(pattern: #"^screenshot_id: [0-9A-Fa-f-]+$"#)
 
     nonisolated static func replyExamplesLanguage(for task: String) -> ReplyExamplesLanguage {
         let fullRange = NSRange(task.startIndex..., in: task)
         let stripped = urlPattern.stringByReplacingMatches(in: task, range: fullRange, withTemplate: " ")
         let range = NSRange(stripped.startIndex..., in: stripped)
-        let hasHan = hanPattern.firstMatch(in: stripped, range: range) != nil
-        let hasKana = kanaPattern.firstMatch(in: stripped, range: range) != nil
-        let hasLatin = latinPattern.firstMatch(in: stripped, range: range) != nil
-        let asksEnglish = explicitEnglishPattern.firstMatch(in: stripped, range: range) != nil
-        let asksChinese = explicitChinesePattern.firstMatch(in: stripped, range: range) != nil
-        if (hasHan && asksEnglish) || (hasLatin && !hasHan && asksChinese) {
+        if languageCuePattern.firstMatch(in: stripped, range: range) != nil {
             return .both
         }
-        if hasKana {
-            return .english
+        var hanCount = 0
+        for scalar in stripped.unicodeScalars where !scalar.isASCII && scalar.properties.isAlphabetic {
+            let s = String(scalar)
+            if hanPattern.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil {
+                hanCount += 1
+            } else {
+                return .both
+            }
         }
-        if hasHan {
+        let latinWords = latinWordPattern.matches(in: stripped, range: range).compactMap { match -> String? in
+            Range(match.range, in: stripped).map { String(stripped[$0]).lowercased() }
+        }
+        if hanCount == 0 {
+            return latinWords.isEmpty ? .both : .english
+        }
+        if latinWords.isEmpty {
             return .chinese
         }
-        if hasLatin {
-            return .english
+        if hanCount >= 4,
+           latinWords.count <= 2,
+           hanCount >= latinWords.count * 2,
+           !latinWords.contains(where: { englishClauseWords.contains($0) }) {
+            return .chinese
         }
         return .both
     }
@@ -124,8 +139,10 @@ enum Harness {
     Check the target field and content before typing, and verify the result in the same pane. Wait for the owner's decision on approvals, leave password manager apps unopened, stop on checkout or payment pages unless purchase was explicitly requested, and use handoff for passwords, verification, or owner-only prompts. Call finish_task after verifying the final result, setting success=false when unverified.
     """
 
+    private static let screenScrollInstruction = "For a request measured in pages or screens, scroll the requested number of screens and verify those moves with the screen tools."
+
     private static let countedScrollCoreInstructions = """
-    For a request measured in pages or screens, scroll the requested number of screens and verify those moves with the screen tools. Use count_messages only for requests measured in individual messages.
+    Use count_messages only for requests measured in individual messages.
     For a request to scroll back an exact number of messages, open the conversation and take a full read before scrolling. Call count_messages with the requested target and one current ref per distinct message bubble, oldest to newest. Use the screenshot to exclude headers, dates, controls, and duplicate labels or OCR lines in the same bubble. Include every distinguishable message in view, including any overlapping messages. Do not skip a message you cannot identify.
     Send one vertical drag at a time with full=true, using two explicit screen points with the same x coordinate. Poki bounds the distance and slows the drag before lifting. After each drag, call count_messages with the same target and the new screen's refs. Keep at least one third of the previous messages in view, including at least three consecutive messages, using the same kind of ref for each overlapping bubble. Shorten the drag near the target or the end of the list. If count_messages asks you to reverse the last drag, reverse it and check the resulting page before trying the shorter forward drag. If that cannot be verified, stop. Use the confirmed total from count_messages. Call finish_task with success=true only after it confirms the target on screen. If you cannot continue, call finish_task with success=false and give the specific reason. Poki reports the confirmed count and last verified message.
     """
@@ -240,7 +257,7 @@ enum Harness {
         let countedScroll = includeCountedScroll ?? (MessageScrollTarget.parse(task)?.messageCount != nil)
         let countedScrollReply = includeCountedScrollReply ?? countedScroll
         if inSplitView {
-            var parts = [splitViewInstructions]
+            var parts = [splitViewInstructions, screenScrollInstruction]
             if countedScroll { parts.append(countedScrollSection(includeReply: countedScrollReply)) }
             if HistoryCapture.agentQueryAllowed { parts.append(PokiCore.screenHistoryInstructions) }
             if ApprovalClassifier.mode == .reply { parts.append(replyApprovals) }
@@ -248,7 +265,7 @@ enum Harness {
         }
         let namedBundleIDs = AppIconStore.bundleIDs(namedIn: task)
         let brief = SkillStore.shared.taskBrief(for: task, apps: namedBundleIDs)
-        var parts = [systemPrompt(for: task, includeAutomaticUnlock: includeAutomaticUnlock)]
+        var parts = [systemPrompt(for: task, includeAutomaticUnlock: includeAutomaticUnlock), screenScrollInstruction]
         if countedScroll { parts.append(countedScrollSection(includeReply: countedScrollReply)) }
         parts.append(PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed))
         parts.append(WebTools.instructions)
@@ -438,8 +455,7 @@ enum Harness {
         return ToolSpec(
             name: "finish_task",
             description: "Finish after observing the requested result. On failure set success=false and say what worked, what blocked completion and what you tried. In details give the requested facts as whole current labels or values. Set answer.kind to action only for an executed change, field for fixed values, or list for requested entries. For field, use current refs and label/value. For a label like Capacity,90%, use prefix Capacity, and suffix % to identify the field. For list, include all requested current rows in order with names/times. Use start_ref/end_ref only for unique labels immediately outside the rows. Never invent refs or report a heading as a requested value.",
-            // Omit additionalProperties: false so obsolete keys such as used_memory_ids are ignored instead of failing validation.
-            schema: ["type": "object", "properties": properties, "required": ["success", "summary", "details", "answer"]])
+            schema: object(properties, ["success", "summary", "details", "answer"]))
     }
 
     /// finish_task's card, scoped to `apps`'s dedicated layouts plus generic `list` (`ResultCardLooks`).

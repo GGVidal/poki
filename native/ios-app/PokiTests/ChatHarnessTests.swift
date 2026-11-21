@@ -1206,6 +1206,10 @@ final class ChatHarnessTests: XCTestCase {
                 "success": false, "summary": "The archived checklist app is unavailable.",
                 "details": [], "answer": ["kind": "action"], "used_memory_ids": [memory.id],
             ]),
+            FakeCompletions.tool("finish_task", [
+                "success": false, "summary": "The archived checklist app is unavailable.",
+                "details": [], "answer": ["kind": "action"],
+            ]),
             FakeCompletions.text("The archived checklist app is unavailable."),
         ])
         let chat = chat(on: server, transport: SessionScreenTransport(session: automation, unavailableApp: unavailable),
@@ -2957,7 +2961,7 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertEqual(Self.cards(in: chat).count, 1, "Direct engine widened task must render the 12306 result card")
     }
 
-    func testZeroNoteTasksOmitMemoryAttributionAndCountedScrollWhenUnused() async throws {
+    func testZeroNoteTasksOmitMemoryAttributionAndObsoleteFinishField() async throws {
         let priorNotes = SkillStore.shared.notes
         let backup = priorNotes.isEmpty ? nil : try SkillStore.shared.exportData()
         for note in priorNotes { MemoryLibrary.shared.forget(note.id) }
@@ -2976,19 +2980,10 @@ final class ChatHarnessTests: XCTestCase {
         try await Self.ask(chat, "打开设置查看通用里的关于本机")
 
         let first = try XCTUnwrap(server.requests.first)
-        let system = FakeCompletions.system(first)
-        XCTAssertFalse(system.contains("used_memory_ids"), "memory attribution instructions leaked when no notes exist")
-        XCTAssertFalse(system.contains("count_messages"), "counted scroll instructions leaked on an ordinary task")
-        XCTAssertFalse(system.contains(Harness.countedScrollReplyTool), "counted scroll reply instructions leaked on an ordinary task")
-        XCTAssertFalse(system.contains("Automatic Unlock"), "disabled Automatic Unlock wording leaked into the prompt")
-        XCTAssertFalse(system.contains("### English"), "English reply examples leaked on a Chinese request")
-        XCTAssertTrue(system.contains("### 简体中文"), "Chinese reply examples must stay on a Chinese request")
+        XCTAssertFalse(FakeCompletions.system(first).contains("used_memory_ids"),
+                       "memory attribution instructions leaked when no notes exist")
 
         let tools = first["tools"] as? [[String: Any]] ?? []
-        let toolNames = Set(tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
-        XCTAssertFalse(toolNames.contains("count_messages"), "count_messages tool leaked on an ordinary task")
-        XCTAssertFalse(toolNames.contains(Harness.countedScrollReplyTool), "wait_for_counted_scroll_reply tool leaked on an ordinary task")
-
         for tool in tools {
             guard let fn = tool["function"] as? [String: Any],
                   let name = fn["name"] as? String,
@@ -3024,6 +3019,8 @@ final class ChatHarnessTests: XCTestCase {
                 XCTAssertNotNil(props["used_memory_ids"], "\(name) must keep used_memory_ids when saved notes exist")
             } else if name == "finish_task" {
                 XCTAssertNil(props["used_memory_ids"], "finish_task must not expose the obsolete used_memory_ids field")
+                XCTAssertEqual(params["additionalProperties"] as? Bool, false,
+                               "finish_task must keep additionalProperties=false")
             }
         }
     }
@@ -3045,13 +3042,15 @@ final class ChatHarnessTests: XCTestCase {
             return Set(tools.compactMap { (($0["function"] as? [String: Any]) ?? $0)["name"] as? String })
         }
 
-        try await Self.ask(chat, "Open Settings and check About")
+        let screenScrollRule = "For a request measured in pages or screens, scroll the requested number of screens and verify those moves with the screen tools."
+
+        try await Self.ask(chat, "打开设置查看通用里的关于本机")
         let firstTaskReq = try XCTUnwrap(server.requests.first)
         XCTAssertFalse(toolNames(in: firstTaskReq).contains("count_messages"))
         XCTAssertFalse(toolNames(in: firstTaskReq).contains(Harness.countedScrollReplyTool))
         XCTAssertFalse(FakeCompletions.system(firstTaskReq).contains("count_messages"))
-        XCTAssertTrue(FakeCompletions.system(firstTaskReq).contains("### English"))
-        XCTAssertFalse(FakeCompletions.system(firstTaskReq).contains("### 简体中文"))
+        XCTAssertFalse(FakeCompletions.system(firstTaskReq).contains(Harness.countedScrollReplyTool))
+        XCTAssertTrue(FakeCompletions.system(firstTaskReq).contains(screenScrollRule))
 
         let beforeCounted = server.requests.count
         try await Self.ask(chat, "往上翻 5 条消息")
@@ -3071,6 +3070,8 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertFalse(toolNames(in: screensReq).contains(Harness.countedScrollReplyTool),
                        "screen-unit scroll must omit wait_for_counted_scroll_reply")
         XCTAssertFalse(FakeCompletions.system(screensReq).contains("count_messages"))
+        XCTAssertTrue(FakeCompletions.system(screensReq).contains(screenScrollRule),
+                      "screen-unit scroll must keep the page/screen verification rule")
 
         let delegatedServer = try FakeCompletions(replies: [
             FakeCompletions.tool("finish_task", ["success": false, "summary": "Stopped.", "details": [], "answer": ["kind": "action"]]),
@@ -3087,23 +3088,34 @@ final class ChatHarnessTests: XCTestCase {
     }
 
     func testReplyExamplesLanguageSelectionAndAutomaticUnlockGating() {
-        let chinese = Harness.systemPrompt(for: "打开 https://example.com/ 查看标题和域名", includeAutomaticUnlock: false)
-        XCTAssertTrue(chinese.contains("### 简体中文"))
-        XCTAssertFalse(chinese.contains("### English"))
-        XCTAssertFalse(chinese.contains("Automatic Unlock"))
-
-        let english = Harness.systemPrompt(for: "Open Settings and check About", includeAutomaticUnlock: false)
-        XCTAssertTrue(english.contains("### English"))
-        XCTAssertFalse(english.contains("### 简体中文"))
-
-        let bilingual = Harness.systemPrompt(for: "帮我查一下快递，用英文回复", includeAutomaticUnlock: false)
-        XCTAssertTrue(bilingual.contains("### English"))
-        XCTAssertTrue(bilingual.contains("### 简体中文"))
-
-        let empty = Harness.systemPrompt(for: "", includeAutomaticUnlock: true)
-        XCTAssertTrue(empty.contains("### English"))
-        XCTAssertTrue(empty.contains("### 简体中文"))
-        XCTAssertTrue(empty.contains("Automatic Unlock"))
+        enum ExpectedExamples { case chinese, english, both }
+        let cases: [(request: String, expected: ExpectedExamples)] = [
+            ("Open Settings and check About. 再告诉我系统版本。", .both),
+            ("Open Settings and reply in 中文", .both),
+            ("Open Settings and reply in Spanish.", .both),
+            ("打开设置查看英文键盘是否开启", .both),
+            ("打开 Safari 看看天气", .chinese),
+            ("Open Settings", .english),
+            ("帮我打开设置看一下关于本机", .chinese),
+            ("打开设置然后用日语回复我", .both),
+            ("打开 https://example.com/ 查看标题和域名", .chinese),
+            ("", .both),
+        ]
+        for (request, expected) in cases {
+            let prompt = Harness.taskInstructions(for: request).text
+            switch expected {
+            case .chinese:
+                XCTAssertTrue(prompt.contains("### 简体中文"), "\(request) must include Chinese examples")
+                XCTAssertFalse(prompt.contains("### English"), "\(request) must omit English examples")
+            case .english:
+                XCTAssertTrue(prompt.contains("### English"), "\(request) must include English examples")
+                XCTAssertFalse(prompt.contains("### 简体中文"), "\(request) must omit Chinese examples")
+            case .both:
+                XCTAssertTrue(prompt.contains("### English"), "\(request) must keep English examples")
+                XCTAssertTrue(prompt.contains("### 简体中文"), "\(request) must keep Chinese examples")
+            }
+        }
+        XCTAssertFalse(Harness.taskInstructions(for: "打开设置查看通用里的关于本机").text.contains("Automatic Unlock"))
     }
 
     func testScreenshotIDStrippedForNonCardTasksAndKeptAfterWideningToCardApp() async throws {
