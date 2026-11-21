@@ -1195,6 +1195,68 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertTrue(server.requests.isEmpty, "Named Continue sent the old call to the text model", file: file, line: line)
     }
 
+    func testCompletedLegacyTextTaskCanStillBeContinuedByName() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let start = Date(timeIntervalSince1970: 1_700_000_000.125)
+        let typed = "Show me the ferry timetable"
+        let spoken = "Open the train schedule"
+        let spokenReply = "The train schedule is open."
+        var textTime = ChatEntry(.time(start))
+        textTime.at = start.addingTimeInterval(0.25)
+        var textRequest = ChatEntry(.you(typed, delivered: true))
+        textRequest.at = start.addingTimeInterval(60)
+        var textReply = ChatEntry(.poki("The first ferry is at nine."))
+        textReply.at = start.addingTimeInterval(61)
+        let earlierCall = legacyTalk([VoiceLine(role: .you, text: spoken, at: start.addingTimeInterval(1)),
+                                      VoiceLine(role: .tool, text: "Read the screen", at: start.addingTimeInterval(2)),
+                                      VoiceLine(role: .poki, text: spokenReply, at: start.addingTimeInterval(3))], started: start)
+        let formats = [
+            (name: "voice then text on disk", rows: earlierCall + [textRequest, textReply], backup: false),
+            (name: "text backup", rows: [textTime, textRequest, textReply], backup: true),
+            (name: "text then voice on disk", rows: [textTime, textRequest, textReply]
+                + legacyTalk([VoiceLine(role: .you, text: spoken, at: start.addingTimeInterval(91)),
+                              VoiceLine(role: .poki, text: spokenReply, at: start.addingTimeInterval(92))],
+                             started: start.addingTimeInterval(90)), backup: false),
+        ]
+        for format in formats {
+            let id = UUID().uuidString
+            let folder = root.appendingPathComponent(id)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let suite = "ChatHarnessTests.completedLegacyText.\(id)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set(true, forKey: SessionStore.archivedEarlierKey)
+            let saved = SavedSession(id: id, kind: .poki, title: "Travel plans", started: start,
+                                     updated: start.addingTimeInterval(95),
+                                     live: false, outcome: .done, entries: format.rows, calls: [])
+            let encoder = JSONEncoder()
+            let store: SessionStore
+            if format.backup {
+                encoder.dateEncodingStrategy = .iso8601
+                store = SessionStore(folder: folder, defaults: defaults)
+                try store.restore(encoder.encode(saved))
+            } else {
+                try encoder.encode(saved).write(to: folder.appendingPathComponent(id + ".json"))
+                store = SessionStore.launchStore(folder: folder, defaults: defaults)
+                await store.waitUntilLoaded()
+                try await assertLegacyTalkIsHistory(id, in: store, request: spoken, reply: spokenReply)
+            }
+            let server = try FakeCompletions(replies: [FakeCompletions.text("It leaves from the north pier.")])
+            let chat = chat(on: server, kind: .poki, store: store)
+            chat.newConversation()
+            chat.send("Continue \(typed)")
+            try await waitForTask(chat)
+            XCTAssertEqual(chat.sessionID, id, format.name)
+            guard let request = server.requests.first else {
+                XCTFail("Named Continue did not reach the text model: \(format.name)")
+                continue
+            }
+            XCTAssertTrue(FakeCompletions.system(request).contains("The owner selected this saved task to resume: \(typed)"), format.name)
+        }
+    }
+
     func testLegacyMixedDiskAndTextBackupCanRetryAndContinueTypedTasks() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
