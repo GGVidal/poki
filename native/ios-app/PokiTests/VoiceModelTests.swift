@@ -388,6 +388,42 @@ final class VoiceModelTests: XCTestCase {
         h.voice.stop()
     }
 
+    func testLateLiveTranscriptCannotRejectADifferentCommittedItem() async {
+        for speechStart in [false, true] {
+            for lateCaption in [false, true] {
+                var actions: [String] = []
+                let h = Harness(phoneTool: { _, arguments in
+                    actions.append(arguments)
+                    return ("Verified.", false, nil)
+                })
+                await h.liveTalk()
+                let first = UUID().uuidString
+                let second = UUID().uuidString
+                func commit(_ id: String) {
+                    if speechStart { h.link.play(["type": "input_audio_buffer.speech_started", "item_id": id]) }
+                    h.link.play(["type": "input_audio_buffer.committed", "item_id": id])
+                }
+                func request(_ id: String) async {
+                    h.link.play(["type": "session.delegation.created", "delegation": ["id": id]])
+                    h.link.call(id, "do", arguments: id, delegation: id)
+                    await h.time.settle()
+                }
+
+                commit(first)
+                await request("first scroll")
+                commit(second)
+                if lateCaption {
+                    h.link.play(["type": "session.input_transcript.delta", "item_id": first, "delta": "向下滚动"])
+                }
+                await request("second scroll")
+                h.link.play(["type": "session.input_transcript.delta", "item_id": second, "delta": "向下滚动"])
+                XCTAssertEqual(actions, ["first scroll", "second scroll"], "Speech start: \(speechStart), late caption: \(lateCaption)")
+                h.voice.stop()
+                h.link.play(["type": "session.closed", "reason": "confirmed"])
+            }
+        }
+    }
+
     func testLiveDiscardedReplayDoesNotChangeTheNextTurn() async {
         var operations: [String] = []
         let h = Harness(phoneTool: { _, arguments in
@@ -484,6 +520,42 @@ final class VoiceModelTests: XCTestCase {
         commit(secondItem)
         XCTAssertEqual(responseCount(), 2)
         h.voice.stop()
+    }
+
+    func testManualRealtimeReturnsToListeningAfterReplayedSpeech() async {
+        let item = UUID().uuidString
+        let original = Harness()
+        func open(_ h: Harness) async {
+            await h.connect()
+            h.link.play(["type": "session.created", "session": ["audio": ["input": ["turn_detection": ["create_response": false]]]]])
+        }
+        func commit(_ id: String, on h: Harness) {
+            h.link.play(["type": "input_audio_buffer.speech_started", "item_id": id],
+                        ["type": "input_audio_buffer.speech_stopped", "item_id": id],
+                        ["type": "input_audio_buffer.committed", "item_id": id])
+        }
+        func responses(_ h: Harness) -> Int { h.link.sent.filter { $0["type"] as? String == "response.create" }.count }
+
+        await open(original)
+        commit(item, on: original)
+        XCTAssertEqual(responses(original), 1)
+        original.link.play(["type": "response.created", "response": ["id": "answer"]],
+                           ["type": "response.done", "response": ["id": "answer"]])
+        original.voice.stop()
+
+        let reopened = Harness()
+        await open(reopened)
+        commit(item, on: reopened)
+        XCTAssertEqual(responses(reopened), 0)
+        XCTAssertEqual(reopened.voice.phase, .listening)
+        XCTAssertFalse(reopened.voice.midTurn)
+
+        let fresh = UUID().uuidString
+        commit(fresh, on: reopened)
+        XCTAssertEqual(responses(reopened), 1)
+        XCTAssertEqual(reopened.voice.phase, .thinking)
+        XCTAssertTrue(reopened.voice.midTurn)
+        reopened.voice.stop()
     }
 
     func testLiveStopPreventsTheNextRunnerRequestInAnActiveBatch() async {

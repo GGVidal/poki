@@ -1063,6 +1063,53 @@ final class ChatHarnessTests: XCTestCase {
 
     }
 
+    func testNormallyEndedLegacyVoiceDoesNotBecomeATextContinuation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "ChatHarnessTests.normalVoice.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: SessionStore.archivedEarlierKey)
+
+        for withEarlierTool in [false, true] {
+            let id = UUID().uuidString
+            let folder = root.appendingPathComponent(id)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let start = Date(timeIntervalSince1970: 1_700_000_000.125)
+            let spoken = "Which train leaves at noon?"
+            var speech = [VoiceLine(role: .you, text: spoken, at: start.addingTimeInterval(4.25)),
+                          VoiceLine(role: .poki, text: "The northbound train.", at: start.addingTimeInterval(5.5))]
+            if withEarlierTool {
+                speech.insert(contentsOf: [
+                    VoiceLine(role: .you, text: "Read the timetable", at: start.addingTimeInterval(1.25)),
+                    VoiceLine(role: .tool, text: "Read the screen", at: start.addingTimeInterval(2.5)),
+                    VoiceLine(role: .poki, text: "I have the timetable.", at: start.addingTimeInterval(3.75)),
+                ], at: 0)
+            }
+            // The old writer used these same timestamps and entry kinds, without the speech flag.
+            let entries = SessionStore.entries(voice: speech, started: start).map { row in
+                var row = row
+                row.spoken = nil
+                return row
+            }
+            let saved = SavedSession(id: id, kind: .poki, title: speech[0].text, started: start, updated: start.addingTimeInterval(6.25),
+                                     live: false, outcome: nil, entries: entries, calls: [])
+            let file = folder.appendingPathComponent(id + ".json")
+            try JSONEncoder().encode(saved).write(to: file)
+            let store = SessionStore.launchStore(folder: folder, defaults: defaults)
+            await store.waitUntilLoaded()
+            let server = try FakeCompletions(replies: [FakeCompletions.text("Done.")])
+            let chat = chat(on: server, kind: .poki, store: store)
+            chat.restore(try XCTUnwrap(store.session(id)))
+            XCTAssertTrue(chat.entries.contains { $0.kind == .poki("The northbound train.") })
+            chat.retry()
+            try await waitForTask(chat)
+            chat.send("Continue \(spoken)")
+            try await waitForTask(chat)
+            XCTAssertTrue(server.requests.isEmpty, "Named Continue sent a normally ended voice request. Earlier tool: \(withEarlierTool)")
+        }
+    }
+
     func testLegacyMixedDiskAndTextBackupCanRetryAndContinueTypedTasks() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
