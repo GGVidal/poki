@@ -322,6 +322,14 @@ public struct RelayResponse: Sendable, Equatable {
 
 /// Poki on the phone: the MCP server behind the relay.
 public final class PokiCore: @unchecked Sendable {
+    /// Reverse-DNS shorthand for an explicit bundle ID. Names like "tutti.ch" and "A.B.C"
+    /// still go through name lookup. A caller can pass a shorter ID in an explicit bundle field.
+    public static func looksLikeBundleID(_ text: String) -> Bool {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count >= 3 && text.count <= 155 && parts.contains { $0.count > 1 }
+            && parts.allSatisfy { !$0.isEmpty && $0.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" } }
+    }
+
     public let config: CoreConfig
     weak var host: CoreHost?
     let runner: Runner

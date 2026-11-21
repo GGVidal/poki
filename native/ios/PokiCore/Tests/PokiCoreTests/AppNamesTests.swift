@@ -46,11 +46,24 @@ final class AppNamesTests: XCTestCase {
         XCTAssertEqual(launched(wda), [])
     }
 
-    func testABundleIdStillLaunchesAsItIs() async {
+    func testAnExplicitBundleIDOpensAnAppMissingFromTheLocalLookup() async {
         let (core, wda) = core()
         _ = await core.call("look", [:])
-        _ = await core.call("do", ["actions": [["launch": "com.example.shop"]]])
-        XCTAssertEqual(launched(wda), ["com.example.shop"])
+        wda.set("POST /wda/apps/activate") { [wda] body in
+            guard body?["bundleId"]?.string == "com.tencent.xin" else {
+                return (404, ["value": ["error": "unknown error", "message": "not installed"]])
+            }
+            wda.set("GET /wda/activeAppInfo") { _ in
+                (200, ["value": ["bundleId": "com.tencent.xin", "name": "WeChat"]])
+            }
+            wda.tree([Node("Button", "Chats", [16, 100, 358, 44])], app: "WeChat")
+            return (200, ["value": .null])
+        }
+
+        let result = await core.call("do", ["actions": [["launch": "com.tencent.xin"]]])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertTrue(result.text.contains("Chats"), result.text)
     }
 
     func testWithNamesOffALaunchIsSentAsGiven() async {

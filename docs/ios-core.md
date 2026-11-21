@@ -374,12 +374,13 @@ on the phone; the next first `look` of a task in that app names the saved skills
   stops the path, as a `do` sending it there is refused; a step not read for itself asks the runner
   which app is in front first. A swipe in a path takes no `in: n`.
 - **Apps by name, and the session's app** (`CoreConfig.appNames`, on by default; a switch in the
-  app's Testing Options). `{launch: "Clock"}` first matches an installed bundle ID exactly, then
-  looks up an installed app by name through `CoreConfig.resolveInstalledApp`. This works for names
-  with dots, too. If a string does not match an installed app, the whole batch or path is refused
-  before it sends any action. `{launch: {name: "Clock"}}` uses `CoreConfig.resolveApp`, and
-  `{launch: {bundle: "com.apple.mobiletimer"}}` passes the ID to the runner as given.
-  `do {app: "Clock", actions: […]}` uses the same installed-app lookup and names the app once
+  app's Testing Options). `{launch: "Clock"}` looks up an installed app by name through
+  `CoreConfig.resolveInstalledApp`. If the name is unknown, the whole batch or path is refused
+  before it sends any action. Reverse-DNS shorthand such as `{launch: "com.apple.mobiletimer"}`
+  goes directly to the runner, which reports whether iOS can open the app. For shorter bundle IDs,
+  use the explicit `bundle` field. `{launch: {name: "Clock"}}` uses `CoreConfig.resolveApp` and
+  also lets the caller explicitly pass a name that looks like a bundle ID.
+  `do {app: "Clock", actions: […]}` uses the installed-app lookup and names the app once
   for the session: it is brought to the front first when it is not there already (the latest read
   says so, checked with the runner when that read is over 10 s old), and later calls in
   the same session need not name it. The handle outlives every change of screen; an answer says so
