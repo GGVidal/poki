@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
-import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture } from './fixture.mjs';
 import { root } from '../src/config.mjs';
+import { buildVoicePrompt, compareVoicePrompts, VOICE_SECTION_IDS, VOICE_SPEC_VERSION } from '../src/voice-behavior-spec.mjs';
 
-async function sessionBridge(t) {
+async function sessionBridge(t, { extraArgs = [], extraEnv = {}, failUpstream = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'poki-voice-token-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const preload = `
@@ -17,6 +19,7 @@ async function sessionBridge(t) {
     import { join } from 'node:path';
     globalThis.fetch = async (url, options) => {
       await writeFile(join(process.env.POKI_MCP_STATE_DIR, 'request.json'), JSON.stringify({ url, body: JSON.parse(options.body) }));
+      if (${JSON.stringify(failUpstream)}) return Response.json({ error: { message: 'upstream failed' } }, { status: 502 });
       if (url === 'https://api.openai.com/v1/realtime/client_secrets') return Response.json({ value: 'ek_test' });
       if (url === 'https://api.openai.com/v1/live/sessions') return Response.json({ transport: { sdp: 'sdp-answer' } }, { status: 201 });
       if (url === 'https://api.openai.com/v1/responses') return Response.json({ output: [{
@@ -25,17 +28,20 @@ async function sessionBridge(t) {
       throw new Error('Unexpected upstream URL');
     };
   `;
-  const child = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, join(root, 'bin/voice-bridge.mjs'), '--port', '0', '--host', '127.0.0.1'], {
-    env: { ...process.env, POKI_MCP_STATE_DIR: dir, POKI_VOICE_MODEL: '', OPENAI_API_KEY: 'unused' }, stdio: ['ignore', 'pipe', 'inherit'],
+  const child = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, join(root, 'bin/voice-bridge.mjs'), '--port', '0', '--host', '127.0.0.1', ...extraArgs], {
+    env: { ...process.env, POKI_MCP_STATE_DIR: dir, POKI_VOICE_MODEL: '', OPENAI_API_KEY: 'unused', ...extraEnv }, stdio: ['ignore', 'pipe', 'inherit'],
   });
   const exited = once(child, 'exit');
   t.after(async () => { child.kill(); await exited; });
   const lines = createInterface({ input: child.stdout });
+  const events = [];
   const [line] = await Promise.race([once(lines, 'line'), exited.then(() => { throw new Error('Voice bridge exited before it was ready'); })]);
+  lines.on('line', entry => { try { events.push(JSON.parse(entry)); } catch {} });
   const { port } = JSON.parse(line);
   const { secret } = JSON.parse(await readFile(join(dir, 'voice-bridge.json'), 'utf8'));
   return {
     base: `http://127.0.0.1:${port}/voice/${secret}`,
+    events,
     request: async () => JSON.parse(await readFile(join(dir, 'request.json'), 'utf8')),
   };
 }
@@ -170,4 +176,133 @@ test('a voice tap_text on an element known only by its identifier shows the phon
   assert.equal(check.state, 'check', JSON.stringify(check));
   assert.match(check.target.says, /\bSend\b/);
   assert.equal((await f.events()).filter(e => e.op === 'tap').length, 0);
+});
+
+test('voice bridge uses the shared behavior spec, keeps all stable sections, and stays within the prompt budget', async t => {
+  const { base, request } = await sessionBridge(t);
+  const phoneTools = ['get_ios_version', 'look', 'open_app', 'do'];
+  const liveTools = [...phoneTools, 'cancel_current_task'];
+  const budgets = {
+    'zh-Hans': { realtime: 3381, liveVoice: 1870, liveExecutor: 3418 },
+    en: { realtime: 3370, liveVoice: 1859, liveExecutor: 3407 },
+  };
+
+  for (const [language, budget] of Object.entries(budgets)) {
+    assert.equal((await fetch(`${base}/token?language=${language}`)).status, 200);
+    const realtime = (await request()).body.session;
+    const expectedRealtime = buildVoicePrompt({ role: 'realtime', language, tools: phoneTools, host: 'phone' });
+    assert.equal(realtime.instructions, expectedRealtime.text);
+    assert.deepEqual(expectedRealtime.sectionIds, VOICE_SECTION_IDS);
+    assert.ok(realtime.instructions.length <= budget.realtime, `${language} realtime ${realtime.instructions.length} > ${budget.realtime}`);
+
+    assert.equal((await fetch(`${base}/session?language=${language}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'sdp-offer' }),
+    })).status, 200);
+    const live = (await request()).body.session;
+    const expectedVoice = buildVoicePrompt({ role: 'live_voice', language, tools: liveTools, host: 'phone' });
+    const expectedExecutor = buildVoicePrompt({ role: 'live_executor', language, tools: liveTools, host: 'phone' });
+    assert.equal(live.instructions, expectedVoice.text);
+    assert.equal(live.delegation.responses.instructions, expectedExecutor.text);
+    assert.deepEqual(expectedExecutor.sectionIds, VOICE_SECTION_IDS);
+    assert.ok(live.instructions.length <= budget.liveVoice, `${language} live voice ${live.instructions.length} > ${budget.liveVoice}`);
+    assert.ok(live.delegation.responses.instructions.length <= budget.liveExecutor, `${language} live executor ${live.delegation.responses.instructions.length} > ${budget.liveExecutor}`);
+    assert.equal(compareVoicePrompts(expectedRealtime, buildVoicePrompt({ role: 'realtime', language, tools: phoneTools, host: 'phone' })).equal, true);
+  }
+});
+
+test('hiding a tool removes its promises from voice bridge prompts', async t => {
+  const withoutOpenApp = await sessionBridge(t, { extraEnv: { POKI_VOICE_HIDDEN_TOOLS: 'open_app' } });
+  assert.equal((await fetch(`${withoutOpenApp.base}/token?language=zh-Hans`)).status, 200);
+  const rtNoOpen = (await withoutOpenApp.request()).body.session;
+  assert.ok(!rtNoOpen.tools.some(tool => tool.name === 'open_app'));
+  assert.ok(!rtNoOpen.instructions.includes('open_app'));
+  assert.ok(!rtNoOpen.instructions.includes('Settings page'));
+
+  const withoutDo = await sessionBridge(t, { extraEnv: { POKI_VOICE_HIDDEN_TOOLS: 'do' } });
+  assert.equal((await fetch(`${withoutDo.base}/token?language=en`)).status, 200);
+  const rtNoDo = (await withoutDo.request()).body.session;
+  assert.ok(!rtNoDo.tools.some(tool => tool.name === 'do'));
+  assert.ok(!rtNoDo.instructions.includes('one do'));
+  assert.ok(!rtNoDo.instructions.includes('button: "home"'));
+  assert.ok(!rtNoDo.instructions.includes('Tapping something'));
+
+  const withoutCancel = await sessionBridge(t, { extraEnv: { POKI_VOICE_HIDDEN_TOOLS: 'cancel_current_task' } });
+  assert.equal((await fetch(`${withoutCancel.base}/session?language=zh-Hans`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'sdp-offer' }),
+  })).status, 200);
+  const liveNoCancel = (await withoutCancel.request()).body.session;
+  assert.ok(!liveNoCancel.delegation.responses.tools.some(tool => tool.name === 'cancel_current_task'));
+  assert.ok(!liveNoCancel.instructions.includes('cancel_current_task'));
+  assert.ok(!liveNoCancel.delegation.responses.instructions.includes('cancel_current_task'));
+});
+
+test('voice bridge logs template version, voice mode, and commit state on startup', async t => {
+  const okBridge = await sessionBridge(t);
+  assert.equal((await fetch(`${okBridge.base}/token?language=zh-Hans`)).status, 200);
+  assert.equal((await fetch(`${okBridge.base}/token?transport=live`)).status, 200);
+  assert.equal((await fetch(`${okBridge.base}/session?language=zh-Hans`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'sdp-offer' }),
+  })).status, 200);
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  const startupEvents = okBridge.events.filter(event => event.event === 'voice_startup');
+  assert.ok(startupEvents.some(e => e.template_version === VOICE_SPEC_VERSION && e.mode === 'realtime' && e.commit_state === 'confirmed'));
+  assert.ok(startupEvents.some(e => e.template_version === VOICE_SPEC_VERSION && e.mode === 'live' && e.commit_state === 'queued'));
+  assert.ok(startupEvents.some(e => e.template_version === VOICE_SPEC_VERSION && e.mode === 'live' && e.commit_state === 'confirmed'));
+
+  const failingBridge = await sessionBridge(t, { failUpstream: true });
+  assert.equal((await fetch(`${failingBridge.base}/token?language=en`)).status, 502);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(failingBridge.events.some(e => e.event === 'voice_startup' && e.template_version === VOICE_SPEC_VERSION && e.mode === 'realtime' && e.commit_state === 'failed'));
+});
+
+test('phone direct Swift renderer and Node voice bridge produce identical sections and semantics', async t => {
+  if (process.platform !== 'darwin') {
+    t.skip('Swift parity check runs on macOS');
+    return;
+  }
+  const execFileAsync = promisify(execFile);
+  const dir = await mkdtemp(join(tmpdir(), 'poki-voice-parity-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cases = [
+    { role: 'realtime', language: 'zh-Hans', tools: ['get_ios_version', 'look', 'open_app', 'do'], host: 'phone' },
+    { role: 'realtime', language: 'en', tools: ['get_ios_version', 'look', 'open_app', 'do'], host: 'phone' },
+    { role: 'live_voice', language: 'zh-Hans', tools: ['get_ios_version', 'look', 'open_app', 'do', 'cancel_current_task'], host: 'phone' },
+    { role: 'live_executor', language: 'zh-Hans', tools: ['get_ios_version', 'look', 'open_app', 'do', 'cancel_current_task'], host: 'phone' },
+    { role: 'realtime', language: 'zh-Hans', tools: ['get_ios_version', 'look', 'do'], host: 'phone' },
+    { role: 'realtime', language: 'en', tools: ['get_ios_version', 'look', 'open_app'], host: 'phone' },
+    { role: 'live_executor', language: 'zh-Hans', tools: ['get_ios_version', 'look', 'open_app', 'do'], host: 'phone' },
+    { role: 'realtime', language: 'en', tools: ['get_ios_version', 'open_settings', 'read_screen', 'open_app', 'tap_text', 'go_home'], host: 'mac' },
+  ];
+  const inputPath = join(dir, 'cases.json');
+  const mainPath = join(dir, 'main.swift');
+  const binPath = join(dir, 'parity');
+  await writeFile(inputPath, JSON.stringify(cases));
+  await writeFile(mainPath, `
+import Foundation
+struct CaseInput: Decodable { let role: String; let language: String; let tools: [String]; let host: String }
+struct CaseOutput: Encodable { let templateVersion: String; let sectionIds: [String]; let clauseIds: [String]; let text: String }
+let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+let inputs = try JSONDecoder().decode([CaseInput].self, from: data)
+let outputs = inputs.map { item -> CaseOutput in
+    let built = VoiceBehaviorSpec.shared.build(
+        role: VoicePromptRole(rawValue: item.role)!,
+        language: item.language,
+        tools: item.tools,
+        host: VoicePromptHost(rawValue: item.host)!
+    )
+    return CaseOutput(templateVersion: built.templateVersion, sectionIds: built.sectionIds, clauseIds: built.clauseIds, text: built.text)
+}
+let encoded = try JSONEncoder().encode(outputs)
+FileHandle.standardOutput.write(encoded)
+`);
+  await execFileAsync('swiftc', ['-DDEBUG', join(root, 'native/ios-app/Poki/Voice/VoiceBehaviorSpec.swift'), mainPath, '-o', binPath]);
+  const { stdout } = await execFileAsync(binPath, [inputPath]);
+  const swiftResults = JSON.parse(stdout);
+  assert.equal(swiftResults.length, cases.length);
+  for (let i = 0; i < cases.length; i += 1) {
+    const nodeResult = buildVoicePrompt(cases[i]);
+    const comparison = compareVoicePrompts(swiftResults[i], nodeResult);
+    assert.equal(comparison.equal, true, `case ${i} (${cases[i].role}/${cases[i].language}): ${comparison.differences.join('; ')}`);
+  }
 });

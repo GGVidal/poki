@@ -1459,4 +1459,96 @@ extension VoiceModelTests {
             XCTAssertFalse(description.contains("takes nothing but buttons"), name)
         }
     }
+
+    func testSharedVoiceSpecCoversStableSectionsAndStaysWithinBaselineBudget() throws {
+        let expectedSections = ["executor", "language", "brevity", "capabilities", "evidence", "interruption", "recovery"]
+        let phoneTools = ["get_ios_version", "look", "open_app", "do"]
+        let liveTools = phoneTools + [VoiceDirect.cancelCurrentTask]
+        let budgets: [(language: String, realtime: Int, liveVoice: Int, liveExecutor: Int)] = [
+            ("zh-Hans", 3382, 1871, 3419),
+            ("en", 3370, 1859, 3407),
+        ]
+
+        for entry in budgets {
+            let realtime = VoiceDirect.realtimeSession(for: .openai, language: entry.language)
+            let realtimePrompt = try XCTUnwrap(realtime["instructions"] as? String)
+            let builtRealtime = VoiceBehaviorSpec.shared.build(role: .realtime, language: entry.language, tools: phoneTools, host: .phone)
+            XCTAssertEqual(realtimePrompt, builtRealtime.text)
+            XCTAssertEqual(builtRealtime.sectionIds, expectedSections)
+            XCTAssertLessThanOrEqual(realtimePrompt.count, entry.realtime, "\(entry.language) realtime exceeded budget")
+
+            let live = VoiceDirect.liveSession(model: "gpt-live-1.1", language: entry.language)
+            let liveVoicePrompt = try XCTUnwrap(live["instructions"] as? String)
+            let delegation = try XCTUnwrap(live["delegation"] as? [String: Any])
+            let backend = try XCTUnwrap(delegation["responses"] as? [String: Any])
+            let liveExecutorPrompt = try XCTUnwrap(backend["instructions"] as? String)
+            let builtVoice = VoiceBehaviorSpec.shared.build(role: .liveVoice, language: entry.language, tools: liveTools, host: .phone)
+            let builtExecutor = VoiceBehaviorSpec.shared.build(role: .liveExecutor, language: entry.language, tools: liveTools, host: .phone)
+            XCTAssertEqual(liveVoicePrompt, builtVoice.text)
+            XCTAssertEqual(liveExecutorPrompt, builtExecutor.text)
+            XCTAssertEqual(builtExecutor.sectionIds, expectedSections)
+            XCTAssertLessThanOrEqual(liveVoicePrompt.count, entry.liveVoice, "\(entry.language) live voice exceeded budget")
+            XCTAssertLessThanOrEqual(liveExecutorPrompt.count, entry.liveExecutor, "\(entry.language) live executor exceeded budget")
+        }
+    }
+
+    func testHiddenToolsAreNotPromisedInDirectVoicePrompts() throws {
+        let withoutOpenApp = VoiceDirect.realtimeSession(for: .openai, language: "zh-Hans", hiddenTools: ["open_app"])
+        let rtNoOpenTools = try XCTUnwrap(withoutOpenApp["tools"] as? [[String: Any]])
+        let rtNoOpenPrompt = try XCTUnwrap(withoutOpenApp["instructions"] as? String)
+        XCTAssertFalse(rtNoOpenTools.contains { $0["name"] as? String == "open_app" })
+        XCTAssertFalse(rtNoOpenPrompt.contains("open_app"))
+        XCTAssertFalse(rtNoOpenPrompt.contains("Settings page"))
+
+        let withoutDo = VoiceDirect.realtimeSession(for: .openai, language: "en", hiddenTools: ["do"])
+        let rtNoDoTools = try XCTUnwrap(withoutDo["tools"] as? [[String: Any]])
+        let rtNoDoPrompt = try XCTUnwrap(withoutDo["instructions"] as? String)
+        XCTAssertFalse(rtNoDoTools.contains { $0["name"] as? String == "do" })
+        XCTAssertFalse(rtNoDoPrompt.contains("one do"))
+        XCTAssertFalse(rtNoDoPrompt.contains("button: \"home\""))
+        XCTAssertFalse(rtNoDoPrompt.contains("Tapping something"))
+
+        let withoutCancel = VoiceDirect.liveSession(model: "gpt-live-1.1", language: "zh-Hans", hiddenTools: [VoiceDirect.cancelCurrentTask])
+        let delegation = try XCTUnwrap(withoutCancel["delegation"] as? [String: Any])
+        let backend = try XCTUnwrap(delegation["responses"] as? [String: Any])
+        let liveTools = try XCTUnwrap(backend["tools"] as? [[String: Any]])
+        let liveVoicePrompt = try XCTUnwrap(withoutCancel["instructions"] as? String)
+        let liveExecutorPrompt = try XCTUnwrap(backend["instructions"] as? String)
+        XCTAssertFalse(liveTools.contains { $0["name"] as? String == VoiceDirect.cancelCurrentTask })
+        XCTAssertFalse(liveVoicePrompt.contains(VoiceDirect.cancelCurrentTask))
+        XCTAssertFalse(liveExecutorPrompt.contains(VoiceDirect.cancelCurrentTask))
+    }
+
+    func testVoiceStartupLogsTemplateVersionModeAndCommitState() async {
+        AppLog.shared.clear()
+        let realtime = Harness()
+        await realtime.talk()
+        let realtimeLogs = AppLog.shared.lines.joined(separator: "\n")
+        XCTAssertTrue(realtimeLogs.contains("template=\(VoiceBehaviorSpec.version)"), realtimeLogs)
+        XCTAssertTrue(realtimeLogs.contains("mode=realtime_bridge"), realtimeLogs)
+        XCTAssertTrue(realtimeLogs.contains("commit_state=submitted"), realtimeLogs)
+        XCTAssertTrue(realtimeLogs.contains("commit_state=confirmed"), realtimeLogs)
+        realtime.voice.stop()
+
+        AppLog.shared.clear()
+        let live = Harness()
+        await live.liveTalk()
+        let liveLogs = AppLog.shared.lines.joined(separator: "\n")
+        XCTAssertTrue(liveLogs.contains("template=\(VoiceBehaviorSpec.version)"), liveLogs)
+        XCTAssertTrue(liveLogs.contains("mode=live_bridge"), liveLogs)
+        XCTAssertTrue(liveLogs.contains("commit_state=submitted"), liveLogs)
+        XCTAssertTrue(liveLogs.contains("commit_state=confirmed"), liveLogs)
+        live.voice.stop()
+
+        URLProtocol.registerClass(BridgeTroubleStub.self)
+        defer { URLProtocol.unregisterClass(BridgeTroubleStub.self) }
+        AppLog.shared.clear()
+        let failing = Harness()
+        XCTAssertTrue(failing.voice.setBridge(BridgeTroubleStub.gone))
+        await failing.connect()
+        let failLogs = AppLog.shared.lines.joined(separator: "\n")
+        XCTAssertTrue(failLogs.contains("template=\(VoiceBehaviorSpec.version)"), failLogs)
+        XCTAssertTrue(failLogs.contains("mode=realtime_bridge"), failLogs)
+        XCTAssertTrue(failLogs.contains("commit_state=failed"), failLogs)
+    }
 }
