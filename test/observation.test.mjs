@@ -5,6 +5,64 @@ import { Devices } from '../src/device.mjs';
 import { join } from 'node:path';
 import { fixture, value } from './fixture.mjs';
 
+test('action readback distinguishes disabled, zero, off, empty, and unavailable control values', async t => {
+  const f = await fixture(t);
+  const frame = { x: 10, y: 10, width: 40, height: 20 };
+  await f.set({ elements: [
+    { role: 'Button', label: 'Disabled sample', enabled: 0, frame },
+    { role: 'Slider', label: 'Volume', value: 0, frame },
+    { role: 'Switch', label: 'Notifications', value: false, frame },
+    { role: 'ProgressIndicator', label: 'Upload', value: '', frame },
+    { role: 'Slider', label: 'Brightness', value: null, frame },
+  ] });
+  const result = value(await f.call('tap', { x: 12, y: 12 }));
+  const text = result.screen.text.join('\n');
+  assert.match(text, /Disabled sample.*disabled/i);
+  assert.match(text, /Volume = 0\b/);
+  assert.match(text, /Notifications = off\b/i);
+  assert.match(text, /Upload.*empty/i);
+  assert.match(text, /Brightness.*unknown/i);
+});
+
+test('wait_for returns a visible AX match even when screenshots are unavailable', async t => {
+  const f = await fixture(t);
+  await f.set({ label: 'Ready', screenshotUnavailable: true });
+  const reply = await f.call('wait_for', { text: 'Ready', timeout_seconds: 3 });
+  assert.equal(reply.isError, undefined);
+  const result = value(reply);
+  assert.equal(result.matched, true);
+  assert.equal(result.source, 'accessibility');
+  assert.equal(result.elements[0].label, 'Ready');
+  assert.ok(reply.content.every(block => block.type === 'text'));
+  await f.set({ label: 'Ready' });
+  const pictured = await f.call('wait_for', { text: 'Ready', include_image: true, timeout_seconds: 3 });
+  assert.equal(value(pictured).matched, true);
+  assert.ok(pictured.content.some(block => block.type === 'image'));
+});
+
+test('wait_for timeout reports the last OCR lookalike and the time spent reading', async t => {
+  const f = await fixture(t);
+  await f.set({ label: 'Other', ocrLabel: 'Rei Al' });
+  const reply = await f.call('wait_for', { text: 'Rei AI', timeout_seconds: 2 });
+  assert.equal(reply.isError, true);
+  const result = value(reply);
+  assert.equal(result.matched, false);
+  assert.ok(result.candidates.some(candidate => candidate.text === 'Rei Al' && candidate.source === 'ocr'));
+  for (const key of ['accessibility', 'screen_capture', 'ocr', 'polling']) assert.equal(typeof result.timing_ms[key], 'number');
+});
+
+test('a delayed page change returns a stable observation of the new page', async t => {
+  const f = await fixture(t);
+  await f.set({ label: 'Open', afterInput: { label: 'Destination', staleReads: 2, staleLabel: 'Open' } });
+  const response = await f.call('tap', { x: 12, y: 12, return_observation: true });
+  assert.ok(!response.isError, response.content[0].text);
+  const receipt = value(response);
+  assert.equal(receipt.screen_change, 'changed');
+  assert.ok(receipt.screen.text.includes('Button: Destination'));
+  assert.notEqual(receipt.screen.screen_stable, false);
+  assert.equal(receipt.post_action_observation?.elements[0].label, 'Destination');
+});
+
 // A phone over a network tunnel takes seconds per accessibility read; the fixture's delay stands in for it.
 test('a tap on a phone with slow accessibility reads still ends with the screen', { timeout: 30000 }, async t => {
  const f=await fixture(t);await f.set({axDelayMs:2200});
@@ -28,8 +86,9 @@ test('a readback cut off by its deadline reports the last complete read instead 
 test('screen_change says changed, unchanged, or unknown, and only unchanged carries the no-change advice', { timeout: 60000 }, async t => {
  const f=await fixture(t);await f.set({label:'Row 1',afterInput:{label:'Row 9',axDelays:[300,20000]}});
  // The readback is cut off, but its one complete read already differs from the screen before the scroll.
- const moved=value(await f.call('scroll',{direction:'down'}));
+ const moved=value(await f.call('scroll',{direction:'down', return_observation:true}));
  assert.equal(moved.screen.partial,true);assert.equal(moved.screen_change,'changed');assert.equal(moved.screen_changed,true);
+ assert.equal(moved.post_action_observation,undefined,'An unconfirmed post-input tree must not supply refs');
  await f.set({label:'Same',afterInput:{axDelays:[300,20000]}});
  const unknown=value(await f.call('tap',{x:10,y:10}));
  assert.equal(unknown.screen_change,'unknown');assert.equal(unknown.screen_changed,undefined);assert.equal(unknown.instruction,undefined);
@@ -94,8 +153,8 @@ test('a screen that only lags behind the touch is not called unchanged', { timeo
  // An app icon is given longer to bring its app to the front.
  await f.set({label:'Settings',role:'Icon',afterInput:{label:'General',staleReads:5,staleLabel:'Settings'}});
  assert.equal(value(await f.call('tap_text',{text:'Settings'})).screen_change,'changed');
- // Anything else gets one more look, not a long wait.
- await f.set({label:'Settings',afterInput:{label:'General',staleReads:5,staleLabel:'Settings'}});
+ // A stationary page should still report an unchanged action.
+ await f.set({label:'Settings'});
  assert.equal(value(await f.call('tap_text',{text:'Settings'})).screen_change,'unchanged');
 });
 

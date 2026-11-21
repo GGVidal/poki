@@ -12,7 +12,7 @@ import sharp from 'sharp';
 import { root, stateDir, idevice, noUsbDevice } from './config.mjs';
 import { definitions } from './tools.mjs';
 import { platformTool, inventorySimulators, simulatorModels, readSettings, closePlatform } from './platform.mjs';
-import { interaction, promptWarning, readScreen, describeScreen, screenChanged, whatMoved, justReadMs, confirmAfterMs, launchWithinMs, launchPollMs } from './interaction.mjs';
+import { interaction, promptWarning, readScreen, describeScreen, screenChanged, whatMoved, justReadMs, settleMinMs } from './interaction.mjs';
 import { askHuman } from './human.mjs';
 import { simulatorRequest } from './simulator.mjs';
 import { prepareRecordingInput, resumeRecordings } from './recording.mjs';
@@ -26,11 +26,8 @@ const usedSimulators = new Set();
 const approvedTools = new Set(['install_app', 'uninstall_app', 'build_and_run', 'open_url', 'download_app_container', 'get_clipboard', 'set_clipboard']);
 const platformTools = new Set(['start_simulator', 'shut_down_simulator', 'start_recording', 'stop_recording', 'set_appearance', 'set_accessibility', 'list_apps', 'launch_app', 'terminate_app', 'install_app', 'uninstall_app', 'open_settings', 'open_url', 'build_and_run', 'set_location', 'clear_location', 'get_clipboard', 'set_clipboard', 'list_crashes', 'get_crash', 'download_app_container']);
 
-// A simulator reads its screen in about 0.2 s, so five seconds covers the two reads that call a screen
-// still. A phone over a network tunnel can take two seconds or more per read, so its budget follows
-// the reads it has just measured, up to a cap.
 const springBoardId = 'com.apple.springboard', springBoardExecutable = /(?:^|\/)SpringBoard(?:\.app\/SpringBoard)?$/;
-const settleMs = 600, readbackMs = 5000, maxReadbackMs = 12000;
+const readbackMs = 5000, maxReadbackMs = 12000;
 const reportsScreen = new Set(['tap', 'double_tap', 'long_press', 'tap_text', 'swipe', 'drag', 'scroll', 'pinch', 'touch_path', 'draw_strokes', 'type_text', 'fill', 'press_key', 'press_button', 'go_back', 'handle_alert', 'system_gesture']);
 // These exist to act on a control, so the reply says when nothing was seen to change after one.
 const touchesControl = new Set(['tap', 'double_tap', 'long_press', 'tap_text', 'go_back', 'handle_alert']);
@@ -321,10 +318,13 @@ export class Devices {
     const observation = this.observation(frame);
     return { observation, source, width: frame.width, height: frame.height, units: 'points', foreground, elements: this.elements, total: count, truncated: count > this.elements.length, ...(source === 'ocr' && nativeError ? { fallback_reason: nativeError } : {}) };
   }
-  // One accessibility read and no screenshot, so polling costs one native request per attempt.
-  async structure(maxAge = 0) {
+  async structure(maxAge = 0, { captureViewport = true } = {}) {
     const target = await this.target();
-    if (this.seen?.device === target.id && performance.now() - this.seen.at <= maxAge) return this.seen;
+    if (maxAge > 0 && this.seen?.device === target.id && this.seen.revision === this.coordinator.revision(target.id) &&
+        !this.seen.reusedAfterInput && performance.now() - this.seen.at <= maxAge) {
+      if (this.seen.settledAfterInput) this.seen.reusedAfterInput = true;
+      return this.seen;
+    }
     const started = performance.now(), observedAt = new Date().toISOString(), timings = timingCount();
     const tree = await phase('accessibility', () => this.bridge({ op: 'ax', include_offscreen: false }));
     this.readCosts.set(target.id, performance.now() - started);
@@ -336,26 +336,29 @@ export class Devices {
     const previousSize = this.size?.device === target.id ? this.size : undefined;
     // Rotation may occur externally between inputs. A verified AX root is
     // checked before filtering or converting any coordinates.
-    if (axRootOrientation(rawElements, previousSize) === 'rotated') {
-      this.structureViewport = undefined; this.elements = []; this.elementsAt = 0; this.frame = undefined;
-      await this.capture();
+    const rotated = axRootOrientation(rawElements, previousSize) === 'rotated';
+    if (rotated) {
+      this.structureViewport = undefined; this.elements = []; this.elementsAt = 0; this.frame = undefined; this.size = undefined;
     }
-    const viewport = this.size?.device === target.id ? this.size : await this.capture();
+    if ((!previousSize || rotated) && captureViewport) await this.capture();
+    const viewport = this.size?.device === target.id ? this.size : undefined;
     const rootVerified = axRootOrientation(rawElements, viewport) === 'same';
     if (!rootVerified) this.structureViewport = undefined;
-    const elements = rawElements.filter(onScreen(viewport));
+    const elements = viewport ? rawElements.filter(onScreen(viewport)) : rawElements;
     // Preserve upstream foreground-based identity, including PID-only roots.
     const front = [tree.foreground?.pid ?? null, tree.foreground?.bundle_id ?? null];
     const signature = JSON.stringify([front, ...elements.map(e => {
       const box = e.frame ?? e;
       return [e.type ?? e.role, e.label, e.text, e.value, e.focused, Boolean(e.selected), flagOn(e.enabled), box.x, box.y, box.width, box.height];
     })]);
-    return this.seen = {
+    const seen = {
       device: target.id, revision: this.coordinator.revision(target.id), foreground: tree.foreground,
-      elements, signature, rootVerified, at: performance.now(), startedAt: started, observedAt,
+      elements, signature, rootVerified, viewport, at: performance.now(), startedAt: started, observedAt,
       structure_started_at: observedAt, structure_completed_at: new Date().toISOString(),
       ...(served ? { served } : {}),
     };
+    if (viewport) this.seen = seen;
+    return seen;
   }
   // A simulator's size only changes when it rotates. A physical device maps touches through its
   // current orientation, so it keeps taking a fresh frame.
@@ -385,18 +388,14 @@ export class Devices {
   observationBudget(target) {
     const cost = this.readCosts.get(target.id);
     if (target.kind === 'simulator' || cost === undefined) return readbackMs;
-    return Math.min(maxReadbackMs, Math.max(readbackMs, 3 * cost + settleMs));
+    return Math.min(maxReadbackMs, Math.max(readbackMs, 3 * cost + settleMinMs));
   }
-  // How long an "unchanged" waits for a lagging screen before it is believed (see confirmUnchanged).
-  confirmation() { return this.expectsForeground ? { intervalMs: launchPollMs, withinMs: launchWithinMs } : { intervalMs: confirmAfterMs, withinMs: confirmAfterMs }; }
-  confirmationBudget(before) { return before === undefined ? 0 : this.confirmation().withinMs + this.readCost() + 100; }
   async readback(before, options = {}) {
     try {
       const target = await this.target();
-      const confirmation = this.confirmation();
       const { signature, screen, structuredObservation } = await deadline(
-        this.observationBudget(target) + this.confirmationBudget(before) + (options.structured ? 3000 : 0),
-        () => readScreen(this, { ...options, before, confirmation }));
+        this.observationBudget(target) + (options.structured ? 3000 : 0),
+        () => readScreen(this, { ...options, before }));
       const reusable = structuredObservation && this.lastInputCompletedAt;
       const receiptId = reusable ? randomUUID() : undefined;
       return { screen, ...screenChange(before, signature),
@@ -407,7 +406,6 @@ export class Devices {
       // Input clears the last read, so one left now was taken after the action: report it rather than nothing.
       const seen = this.seen && this.seen.device === this.resolved?.id && this.seen.elements.length ? this.seen : undefined;
       if (!seen) return { ...screenChange(), screen: { unavailable: error.message } };
-      // One read that differs settles a change; a matching one needed a second read to confirm it.
       return { ...screenChange(before, before !== undefined && seen.signature !== before ? seen.signature : undefined), screen: { ...describeScreen(seen), ...(seen.startedAt < this.lastInputAt ? { stale: true } : {}), partial: true, reason: `${error.message}: the screen may still have been changing; this is the last complete read.` } };
     }
   }
@@ -416,33 +414,33 @@ export class Devices {
     try { return await deadline(readbackMs, () => this.structure(maxAge)); } catch { checkWork(); }
   }
   // A batch step reports only whether its touch changed the screen; the batch ends with the screen itself.
-  async changedSince(before) {
+  async changedSince(before, foregroundBefore) {
     try {
-      const changed = await deadline(this.observationBudget(await this.target()) + this.confirmationBudget(before), () => screenChanged(this, before, this.confirmation()));
+      const changed = await deadline(this.observationBudget(await this.target()), () => screenChanged(this, before, foregroundBefore));
       return changed === undefined ? screenChange() : { screen_change: changed ? 'changed' : 'unchanged', screen_change_verified: true, screen_changed: changed };
     } catch {
       try { checkWork(); } catch (stop) { return { stopped: true, stop_reason: stoppingReason(stop) }; }
       return screenChange();
     }
   }
-  // Lets the app react to the last input, so a read shows the new page rather than the old one.
-  async settle() {
-    const remaining = this.lastInputAt + settleMs - performance.now();
+  // An alert can report its final position before it starts accepting taps.
+  async waitUntilTouchReady() {
+    const remaining = this.lastInputAt + settleMinMs - performance.now();
     if (remaining > 0) await pause(remaining);
   }
   observation(frame = this.frame) {
     return { id: frame.id, device: frame.device, width: frame.width, height: frame.height, units: 'points', capture_started_at: frame.capture_started_at, capture_completed_at: frame.capture_completed_at, structure_completed_at: frame.structure_completed_at, structure_source: frame.source ?? null, atomic: false, revision: frame.revision };
   }
-  observationFromStructure(seen, frame) {
-    const size = this.size;
+  observationFromStructure(seen, frame, { requireViewport = true } = {}) {
+    const size = requireViewport ? this.size : frame ?? seen.viewport;
     const revision = this.coordinator.revision(seen.device);
     // The first post-input screenshot may advance the revision because it
     // differs from the old pre-input picture. This is not a second input.
-    if (!size || size.device !== seen.device ||
+    if ((requireViewport && !size) || (size && size.device !== seen.device) ||
         (frame ? frame.revision !== revision || (frame.revision !== seen.revision && frame.revision !== seen.revision + 1)
           : seen.revision !== revision)) return null;
     return { id: randomUUID(), device: seen.device, revision,
-      width: size.width, height: size.height, units: 'points', atomic: false,
+      ...(size ? { width: size.width, height: size.height } : {}), units: 'points', atomic: false,
       structure_source: 'accessibility',
       structure_started_at: seen.structure_started_at, structure_completed_at: seen.structure_completed_at,
       ...(frame ? { capture_started_at: frame.capture_started_at,
@@ -552,26 +550,49 @@ export class Devices {
           if (args.include_settings) info.settings = await readSettings(target);
           return text(info);
         }
+        case 'save_screenshot':
         case 'take_screenshot': {
+          const includeImage = name === 'take_screenshot' && (args.include_image ?? args.path === undefined);
+          const save = !includeImage || args.path !== undefined;
+          let path, extension;
+          if (save) {
+            path = args.path ?? join(homedir(), 'Pictures', 'Poki MCP');
+            if (path.startsWith('~/')) path = join(homedir(), path.slice(2));
+            if (!isAbsolute(path)) throw new Error('Screenshot path must be absolute.');
+            const isDirectory = await stat(path).then(s => s.isDirectory(), error => {
+              if (error.code !== 'ENOENT') throw error;
+              return !extname(path);
+            });
+            if (isDirectory) {
+              const target = await this.target();
+              await mkdir(path, { recursive: true, mode: 0o700 });
+              path = join(path, `${target.name.replace(/[^\p{L}\p{N}._-]/gu, '_')}-${Date.now()}-${randomUUID().slice(0, 8)}.png`);
+            }
+            extension = extname(path).toLowerCase();
+            if (!['.png', '.jpg', '.jpeg'].includes(extension)) throw new Error('Use a .png, .jpg or .jpeg path.');
+          }
           const frame = await this.capture();
-          const width = Math.round(args.max_width ?? frame.width);
-          const jpeg = await sharp(frame.data).resize({ width }).jpeg({ quality: 90 }).toBuffer();
+          let saved;
+          if (save) {
+            const data = extension === '.png' ? frame.original : await sharp(frame.original).jpeg({ quality: 95 }).toBuffer();
+            await writeFile(path, data, { flag: args.overwrite ? 'w' : 'wx', mode: 0o600 });
+            saved = { path, bytes: data.length };
+            if (!includeImage) return text(saved);
+          }
+          let image, width;
+          if (args.full_resolution) {
+            ({ width } = await sharp(frame.original).metadata());
+            image = { type: 'image', data: frame.original.toString('base64'), mimeType: 'image/png' };
+          } else {
+            width = Math.round(args.max_width ?? frame.width);
+            const source = args.max_width === undefined ? frame.data : frame.original;
+            const jpeg = await sharp(source).resize({ width }).jpeg({ quality: 90 }).toBuffer();
+            image = { type: 'image', data: jpeg.toString('base64'), mimeType: 'image/jpeg' };
+          }
           let prompt;
           try { prompt = { status:'checked', source:'ocr', warning:promptWarning(await this.ocr(frame)) }; }
           catch (error) { if (stopped(error)) throw error; prompt = { status:'unavailable', instruction:'Inspect the screenshot for system prompts before continuing.' }; }
-          return { content: [...text({ observation: this.observation(frame) }).content, { type: 'text', text: `Screen: ${frame.width} × ${frame.height} points. Image width: ${width} pixels. Coordinates for tools are screen points. Source: lossless device capture. Captured through the developer screenshot service; not saved to the device's Photos library.\nPrompt check: ${JSON.stringify(prompt)}` }, { type:'image',data:jpeg.toString('base64'),mimeType:'image/jpeg' }] };
-        }
-        case 'save_screenshot': {
-          let path = args.path ?? join(homedir(), 'Pictures', 'Poki MCP');
-          if (path.startsWith('~/')) path = join(homedir(),path.slice(2));
-          if (!isAbsolute(path)) throw new Error('Screenshot path must be absolute.');
-          const isDirectory = await stat(path).then(s=>s.isDirectory()).catch(()=>!extname(path));
-          if (isDirectory) { const target=await this.target(); await mkdir(path,{recursive:true,mode:0o700}); path=join(path,`${target.name.replace(/[^\p{L}\p{N}._-]/gu,'_')}-${Date.now()}-${randomUUID().slice(0,8)}.png`); }
-          const extension = extname(path).toLowerCase();
-          if (!['.png','.jpg','.jpeg'].includes(extension)) throw new Error('Use a .png, .jpg or .jpeg path.');
-          const frame = await this.capture();
-          const data = extension === '.png' ? frame.original : await sharp(frame.original).jpeg({quality:95}).toBuffer();
-          await writeFile(path,data,{flag:args.overwrite?'w':'wx',mode:0o600}); return text({path,bytes:data.length});
+          return { content: [...text({ ...saved, observation: this.observation(frame) }).content, { type: 'text', text: `Screen: ${frame.width} × ${frame.height} points. Image width: ${width} pixels. Coordinates for tools are screen points. Source: lossless device capture. Captured through the developer screenshot service; not saved to the device's Photos library.\nPrompt check: ${JSON.stringify(prompt)}` }, image] };
         }
         case 'list_elements': return text(await this.recognize(args));
         case 'observe_device': {
@@ -650,8 +671,9 @@ export class Devices {
           const delivered = result.sent === true && !result.isError && !result.stopped;
           // A target that had to be waited for is compared with the screen it was found on, not the one before the wait.
           const sentTo = this.beforeInput ?? before, signature = sentTo?.elements.length ? sentTo.signature : undefined;
-          if (looks && delivered) result = { ...result, ...await this.readback(signature, { structured: args.return_observation === true, structuredVisual: args.post_action_ocr === true }) };
-          else if (touches && delivered && signature !== undefined) result = { ...result, ...await this.changedSince(signature) };
+          const foregroundBefore = this.expectsForeground ? sentTo?.foreground ?? {} : undefined;
+          if (looks && delivered) result = { ...result, ...await this.readback(signature, { foregroundBefore, structured: args.return_observation === true, structuredVisual: args.post_action_ocr === true }) };
+          else if (touches && delivered && signature !== undefined) result = { ...result, ...await this.changedSince(signature, foregroundBefore) };
           // Which list the scroll moved, from the reads on either side of it.
           if (name === 'scroll' && looks && delivered && sentTo?.elements.length && this.seen?.elements.length && this.seen.startedAt > this.lastInputAt) result = { ...result, moved: whatMoved(sentTo.elements, this.seen.elements) };
           // The input layers answer screen_change_verified false before anything is read, which means not looked at, not unchanged.
@@ -664,7 +686,10 @@ export class Devices {
           // The user's answer is the result: a confirmed dialog is a success, and an unanswered one an ordinary failure for stop_on_error to decide.
           if (name === 'request_human_action') return { ...(result.completed ? {} : { isError: true, _meta: { stop_reason: 'error' } }), ...text(result) };
           if (result.stopped || result.isError) return { isError: true, ...text(result), _meta: { stop_reason: result.stop_reason ?? (result.stopped ? 'cancelled' : 'unknown') } };
-          if (name === 'wait_for') return { content: [...text(result).content, { type: 'image', data: this.frame.data.toString('base64'), mimeType: 'image/png' }] };
+          if (name === 'wait_for') {
+            const { frame, ...waitResult } = result;
+            return { content: [...text(waitResult).content, ...(frame ? [{ type: 'image', data: frame.data.toString('base64'), mimeType: 'image/png' }] : [])] };
+          }
           return { ...text(result), ...(unchanged || result.screen_change ? { _meta: { ...(unchanged ? { stop_reason: 'no_change' } : {}), ...(result.screen_change ? { verdict: result.screen_change } : {}) } } : {}) };
         }
       }
