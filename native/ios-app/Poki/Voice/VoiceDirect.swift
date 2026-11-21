@@ -295,6 +295,37 @@ final class Dictation: NSObject, AVSpeechSynthesizerDelegate {
         return speech && microphone
     }
 
+    /// A failed network connection's recording stays on this iPhone.
+    static func transcribeLocally(_ audio: AVAudioPCMBuffer) async throws -> String {
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized,
+              let recognizer = SFSpeechRecognizer(), recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else { return "" }
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = true
+        request.shouldReportPartialResults = false
+        let (results, continuation) = AsyncThrowingStream<String, Error>.makeStream()
+        let recognition = recognizer.recognitionTask(with: request) { result, error in
+            if let result, result.isFinal {
+                continuation.yield(result.bestTranscription.formattedString)
+                continuation.finish()
+            } else if let error {
+                continuation.finish(throwing: error)
+            }
+        }
+        request.append(audio)
+        request.endAudio()
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(10))
+            if !Task.isCancelled { continuation.finish() }
+        }
+        defer {
+            timeout.cancel()
+            recognition.cancel()
+        }
+        for try await text in results { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return ""
+    }
+
     func listen() throws {
         speaker.stopSpeaking(at: .immediate)
         heard = ""
@@ -370,6 +401,19 @@ final class Dictation: NSObject, AVSpeechSynthesizerDelegate {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
         speaker.speak(utterance)
+    }
+
+    func speakAndWait(_ text: String) async {
+        let (finished, continuation) = AsyncStream<Void>.makeStream()
+        onSpoken = { continuation.finish() }
+        speak(text)
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(8))
+            if !Task.isCancelled { continuation.finish() }
+        }
+        for await _ in finished {}
+        timeout.cancel()
+        stopSpeaking()
     }
 
     func stopSpeaking() { speaker.stopSpeaking(at: .immediate) }

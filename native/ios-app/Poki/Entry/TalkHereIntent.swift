@@ -32,6 +32,7 @@ struct TalkHereIntent: AudioRecordingIntent, LiveActivityIntent, ForegroundConti
             return .result()
         }
         if let why = Self.whyPokiOpens(app, chat) { return try await openPoki(why) }
+        VoiceOpeningFeedback.play()
         AppLog.shared.add("voice", "Talk Here: starting a talk with Poki in the background")
         app.prepareForTask()
         guard await app.talkHere() else {

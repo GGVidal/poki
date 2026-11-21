@@ -312,6 +312,9 @@ final class VoiceModel {
     private(set) var clock = TurnClock()
 
     private var link: VoiceConnection?
+    private var connectionOpen = false
+    private var openingCapture: OpeningVoiceCapture?
+    private var openingDictation: Task<Void, Never>?
     private var usesLive = false
     private var liveCloseTimeout: Task<Void, Never>?
     private var liveUsageSeconds: Double?
@@ -539,7 +542,7 @@ final class VoiceModel {
     /// On from the tap: while the key is exchanged and the connection opens (a second or two, longer
     /// while AirPods switch to their microphone) the button and the bar already show it, and a second
     /// tap ends it instead of starting another one.
-    var isOn: Bool { liveCloseTimeout == nil && (link != nil || dictation != nil || isConnecting) }
+    var isOn: Bool { liveCloseTimeout == nil && (link != nil || dictation != nil || openingDictation != nil || isConnecting) }
     private var isConnecting: Bool { if case .connecting = phase { return true }; return false }
 
     /// Voice can start: the OpenAI key on this iPhone (Realtime, no bridge), the Mac's voice bridge, or
@@ -662,9 +665,9 @@ final class VoiceModel {
         #endif
     }
 
-    func start(microphone: Bool = true) async {
+    func start(microphone: Bool = true, captureOpening: Bool = false) async {
         if let liveCloseTimeout { await liveCloseTimeout.value }
-        guard link == nil, dictation == nil, !isConnecting else { return }
+        guard !isOn else { return }
         let account = VoiceDirect.account
         let key = VoiceDirect.apiKey(for: account)
         if key == nil, bridge == nil, !rehearsing {
@@ -687,7 +690,7 @@ final class VoiceModel {
             guard let bridge else { throw VoiceError.noBridge }
             return try await bridge.token(preferLive: microphone)
         }
-        func connect(_ token: VoiceBridge.Token, attempt: Int, direct: Bool) async throws {
+        func makeLink(attempt: Int, direct: Bool) -> VoiceConnection {
             connectionAttempt = attempt
             let link = connection({ [weak self] event in
                 guard let self, self.session == number, self.connectionAttempt == attempt else { return }
@@ -701,6 +704,9 @@ final class VoiceModel {
             if microphone {
                 link.diagnose { [log] line in log.add("voice", "session \(number) connection \(attempt): \(line)") }
             }
+            return link
+        }
+        func connect(_ link: VoiceConnection, _ token: VoiceBridge.Token, direct: Bool) async throws {
             usesLive = token.live == true
             localTools = Set(token.local_tools)
             if usesLive {
@@ -717,37 +723,101 @@ final class VoiceModel {
             }
         }
         do {
+            let openingLink = captureOpening && microphone ? makeLink(attempt: 1, direct: false) : nil
+            if let openingLink {
+                holdingMicrophone = true
+                openingCapture = try openingLink.startOpeningCapture()
+            }
             var token = try await configuration()
             // Ended (End, or the button again) while the key was exchanged.
             guard number == session else { return }
             transcript = ("voice-\(UUID().uuidString.prefix(8).lowercased())", Date(), lines.count)
             if microphone { holdingMicrophone = true }
             do {
-                try await connect(token, attempt: 1, direct: false)
+                let first = openingLink ?? makeLink(attempt: 1, direct: false)
+                try await connect(first, token, direct: false)
             } catch VoiceError.noPath {
                 // No path opened: once more, off VPN interfaces (Poki's loopback, a proxy
                 // app) and with a fresh key, before telling the owner.
                 guard number == session else { return }
                 closeConnection("network path failed; retrying without VPN interfaces")
+                ready = false
+                phase = .connecting
                 token = try await configuration()
                 guard number == session else { return }
-                try await connect(token, attempt: 2, direct: true)
+                let second = makeLink(attempt: 2, direct: true)
+                second.useOpeningCapture(openingCapture)
+                try await connect(second, token, direct: true)
             }
             guard number == session, liveCloseTimeout == nil, let link else { return }
+            connectionOpen = true
+            trace("connection open")
+            if !sendOpeningAudioIfReady() {
+                await openingDictation?.value
+                return
+            }
             lastActivity = time.now()
             watchForStall(session: number)
             link.setRemoteVolume(muted || liveSpeechStopped ? 0 : 1)
             if usesLive { watchLivePlayback(link, session: number) }
-            trace("connection open")
         } catch {
             // Ended while connecting: stop() already put everything back.
             guard number == session, liveCloseTimeout == nil else { return }
+            if startOpeningDictation() {
+                await openingDictation?.value
+                return
+            }
             transcript = nil
             closeConnection("could not connect")
+            _ = openingCapture?.audio.stopCapture()
+            openingCapture = nil
             holdingMicrophone = false
-            phase = .lost(VoiceError.reason(for: error))
+            phase = .lost(captureOpening ? Self.openingAudioUnsent : VoiceError.reason(for: error))
             log.add("voice", "could not connect: \(error.localizedDescription)")
         }
+    }
+
+    private static var openingAudioUnsent: String {
+        AppLocalization.text(LocalizedStringResource("The opening recording didn’t go through.", table: "Entry"))
+    }
+
+    private func sendOpeningAudioIfReady() -> Bool {
+        guard ready, connectionOpen, let capture = openingCapture else { return true }
+        if capture.audio.allowSending() { return true }
+        return !startOpeningDictation()
+    }
+
+    @discardableResult
+    private func startOpeningDictation() -> Bool {
+        guard let capture = openingCapture, capture.audio.keepForDictation() else { return false }
+        trace("voice connection failed before opening audio was sent")
+        closeConnection("switching to on-device dictation")
+        openingCapture = nil
+        let audio = capture.audio.stopCapture()
+        transcript = nil
+        endSession()
+        phase = .thinking
+        let number = session
+        openingDictation = Task { [weak self] in
+            guard let self else { return }
+            defer { if session == number { openingDictation = nil } }
+            let text: String?
+            if let audio { text = try? await Dictation.transcribeLocally(audio) }
+            else { text = nil }
+            guard session == number, !Task.isCancelled else { return }
+            guard let text, !text.isEmpty, let chat = AskPoki.chat, !chat.running else {
+                await Dictation().speakAndWait(Self.openingAudioUnsent)
+                if session == number { phase = .lost(Self.openingAudioUnsent) }
+                return
+            }
+            let notice = AppLocalization.text(LocalizedStringResource("Voice couldn’t connect. I’ll handle this as text.", table: "Entry"))
+            let announcer = Dictation()
+            async let announcement: Void = announcer.speakAndWait(notice)
+            chat.send(text)
+            await announcement
+            if session == number { phase = .off }
+        }
+        return true
     }
 
     private func trace(_ event: String) {
@@ -759,6 +829,7 @@ final class VoiceModel {
         guard let link, let attempt = connectionAttempt else { return }
         trace("connection closing: \(reason)")
         connectionAttempt = nil
+        connectionOpen = false
         self.link = nil
         link.close()
         log.add("voice", "session \(session) connection \(attempt): connection closed")
@@ -862,6 +933,10 @@ final class VoiceModel {
         liveCloseTimeout?.cancel()
         liveCloseTimeout = nil
         closeConnection("session ended")
+        _ = openingCapture?.audio.stopCapture()
+        openingCapture = nil
+        openingDictation?.cancel()
+        openingDictation = nil
         usesLive = false
         screenItem = nil
         holdingMicrophone = false
@@ -909,7 +984,7 @@ final class VoiceModel {
                 if waitingOnServer {
                     log.add("voice", "the server said nothing for \(inBackground ? Self.backgroundStall : Self.stall) while Poki waited on it: conversation ended")
                     lines.append(VoiceLine(role: .note, text: AppLocalization.text(LocalizedStringResource("The server did not answer. The talk ended."))))
-                    stop()
+                    if !startOpeningDictation() { stop() }
                     return
                 }
                 wait = inBackground ? Self.backgroundStall : Self.stall
@@ -1141,6 +1216,7 @@ final class VoiceModel {
             finishLiveClose(reason, confirmed: confirmed)
             return
         }
+        if startOpeningDictation() { return }
         if usesLive && ready { logLiveClose(reason, confirmed: confirmed) }
         endSession()
         session += 1
@@ -1176,6 +1252,7 @@ final class VoiceModel {
             ready = true
             watchForStall(session: number)
             phase = .listening
+            guard sendOpeningAudioIfReady() else { return }
             carryOver(link)
             catchUp(link)
             endIfDone()

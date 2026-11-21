@@ -87,7 +87,7 @@ final class TalkActivity {
             show(nil)
             return false
         }
-        await voice.start()
+        await voice.start(captureOpening: true)
         // Not connected: the talk's phase says why, and the Live Activity goes (`follow` sees no talk).
         show(Self.state(of: voice))
         return true
