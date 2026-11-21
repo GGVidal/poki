@@ -125,6 +125,30 @@ test('wait_for gone confirms an empty OCR screen after transient absence', async
   assert.deepEqual(channels.slice(0, 3).map(channel => channel.mean), [0, 0, 255]);
 });
 
+test('wait_for gone ignores unrelated changing pixels', async t => {
+  const f = await fixture(t);
+  const scenes = await screenshotScenes(f, Array.from({ length: 16 }, (_, index) => [`#${(0x380000 + index * 0x100).toString(16)}`, 'Playback']));
+  await f.set({ label: 'Playback', screenshotScenes: scenes });
+  const reply = await f.call('wait_for', { text: 'Loading', gone: true, timeout_seconds: 5 });
+  assert.ok(!reply.isError, reply.content[0].text);
+  assert.equal(value(reply).matched, true);
+  assert.deepEqual(value(reply).elements, []);
+});
+
+test('a completed progress control neither holds disappearance nor blocks a stable action receipt', async t => {
+  const f = await fixture(t);
+  await f.set({ ocrElements: [], elements: [
+    { role: 'Button', label: 'Done', frame: { x: 8, y: 15, width: 40, height: 30 } },
+    { role: 'ProgressIndicator', label: 'Storage used', value: 100, frame: { x: 8, y: 60, width: 50, height: 10 } },
+  ] });
+  const gone = await f.call('wait_for', { text: 'Uploading', gone: true, timeout_seconds: 8 });
+  assert.ok(!gone.isError, gone.content[0].text);
+  assert.equal(value(gone).matched, true);
+  const tap = await f.call('tap', { x: 12, y: 20, return_observation: true });
+  assert.ok(!tap.isError, tap.content[0].text);
+  assert.ok(value(tap).post_action_observation?.elements.some(element => element.label === 'Storage used'));
+});
+
 test('wait_for matches provide usable tap refs with and without an attached screenshot', async t => {
   const f = await fixture(t);
   await f.set({ label: 'Continue' });
@@ -137,6 +161,50 @@ test('wait_for matches provide usable tap refs with and without an attached scre
     assert.equal(value(tap).sent, true);
   }
   assert.equal((await f.events()).filter(event => event.op === 'tap').length, 2);
+});
+
+test('tap follows a wait ref after rotation even when the first tree still reports portrait', async t => {
+  const f = await fixture(t);
+  const control = (x, y) => ({ role: 'Button', label: 'Continue', identifier: 'continue-action', frame: { x, y, width: 40, height: 20 } });
+  const portrait = [control(10, 60)], landscape = [control(120, 40)];
+  await f.set({ elements: portrait });
+  const ref = value(await f.call('wait_for', { text: 'Continue' })).elements[0].ref;
+  await sharp({ create: { width: 200, height: 100, channels: 3, background: 'white' } }).png().toFile(f.image);
+  await f.set({ elements: landscape, staleReads: 1, staleElements: portrait });
+  const reply = await f.call('tap', { ref, verify: false });
+  assert.ok(!reply.isError, reply.content[0].text);
+  const taps = (await f.events()).filter(event => event.op === 'tap');
+  assert.equal(taps.length, 1);
+  assert.deepEqual([taps[0].request.x, taps[0].request.y], [
+    Math.round(140 / 199 * 65535), Math.round(50 / 99 * 65535),
+  ]);
+
+  const nextRef = value(await f.call('wait_for', { text: 'Continue' })).elements[0].ref;
+  await f.set({ elements: [{ ...landscape[0], identifier: 'cancel-action', label: 'Cancel' }] });
+  const missing = await f.call('tap', { ref: nextRef, verify: false });
+  assert.equal(missing.isError, true);
+  assert.match(missing.content[0].text, /same control could not be confirmed.*No input was sent/i);
+  assert.equal((await f.events()).filter(event => event.op === 'tap').length, 1);
+});
+
+test('a slow post-action receipt can tap the same control after it moves', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const control = y => ({ role: 'Button', label: 'Destination', identifier: 'destination-action', frame: { x: 20, y, width: 40, height: 20 } });
+  await f.set({ label: 'Open', afterInput: { axDelayMs: 1700, elements: [control(20)] } });
+  const action = await f.call('tap', { x: 12, y: 12, return_observation: true });
+  assert.ok(!action.isError, action.content[0].text);
+  const receipt = value(action);
+  assert.equal(receipt.screen_change, 'changed');
+  const ref = receipt.post_action_observation?.elements.find(element => element.identifier === 'destination-action')?.ref;
+  assert.match(ref ?? '', /^e\d+$/, JSON.stringify(receipt.screen));
+  await f.set({ axDelayMs: 1700, elements: [control(105)] });
+  const reply = await f.call('tap', { ref, verify: false });
+  assert.ok(!reply.isError, reply.content[0].text);
+  const taps = (await f.events()).filter(event => event.op === 'tap');
+  assert.equal(taps.length, 2);
+  assert.deepEqual([taps[1].request.x, taps[1].request.y], [
+    Math.round(40 / 99 * 65535), Math.round(115 / 199 * 65535),
+  ]);
 });
 
 // A phone over a network tunnel takes seconds per accessibility read; the fixture's delay stands in for it.
