@@ -64,6 +64,7 @@ struct PokiStatusCard: View {
     @Environment(\.colorScheme) private var scheme
     /// Settings › Models, for Add Model.
     var openModel: () -> Void
+    var openCustomization: (() -> Void)? = nil
     @State private var open: Row?
     private enum Row { case model, approvals }
     /// Bumped when the chosen model changes (ModelKeys is not observable).
@@ -86,6 +87,18 @@ struct PokiStatusCard: View {
                 rule
                 approvalRow
                 if open == .approvals { approvalChoices }
+                if let openCustomization {
+                    rule
+                    Button(action: openCustomization) {
+                        HStack(spacing: 8) {
+                            Text("Customize Poki").foregroundStyle(Color(.label)).frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(Color(.tertiaryLabel))
+                        }
+                        .padding(.horizontal, 20).frame(minHeight: min(64, max(44, rowHeight))).contentShape(.rect)
+                    }
+                    .buttonStyle(CardRowStyle())
+                    .accessibilityIdentifier("status.customizePoki")
+                }
             }
             .padding(.vertical, 6)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
@@ -266,8 +279,15 @@ extension View {
     /// It opens under `under`, the bottom of Poki's picture over the home page's greeting in global
     /// points, and under the top bar where that is nil. `leading` is where the chat begins: beside the
     /// conversations on iPad.
-    func pokiStatusCard(isPresented: Binding<Bool>, under: CGFloat? = nil, leading: CGFloat = 0, openModel: @escaping () -> Void) -> some View {
-        modifier(PokiStatusCardOverlay(isPresented: isPresented, under: under, leading: leading, openModel: openModel))
+    func pokiStatusCard(
+        isPresented: Binding<Bool>,
+        under: CGFloat? = nil,
+        leading: CGFloat = 0,
+        openModel: @escaping () -> Void,
+        openCustomization: (() -> Void)? = nil
+    ) -> some View {
+        modifier(PokiStatusCardOverlay(isPresented: isPresented, under: under, leading: leading,
+                                       openModel: openModel, openCustomization: openCustomization))
     }
 }
 
@@ -276,6 +296,7 @@ private struct PokiStatusCardOverlay: ViewModifier {
     var under: CGFloat?
     var leading: CGFloat
     var openModel: () -> Void
+    var openCustomization: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The top of the overlay in global points, to place the card under the picture on the home page.
     @State private var origin: CGFloat = 0
@@ -293,10 +314,19 @@ private struct PokiStatusCardOverlay: ViewModifier {
                             .onTapGesture { isPresented = false }
                             .accessibilityLabel(Text("Close"))
                             .accessibilityAddTraits(.isButton)
-                        PokiStatusCard(maximumHeight: max(120, geometry.size.height - top - 16), openModel: {
-                            isPresented = false
-                            openModel()
-                        })
+                        PokiStatusCard(
+                            maximumHeight: max(120, geometry.size.height - top - 16),
+                            openModel: {
+                                isPresented = false
+                                openModel()
+                            },
+                            openCustomization: openCustomization.map { action in
+                                {
+                                    isPresented = false
+                                    action()
+                                }
+                            }
+                        )
                         .padding(.horizontal, 16)
                         .padding(.top, top)
                         .transition(reduceMotion ? .opacity : .scale(scale: 0.9, anchor: .top).combined(with: .opacity))

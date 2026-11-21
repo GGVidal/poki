@@ -118,6 +118,8 @@ struct RootView: View {
     @State private var statusOpen = false
     /// Where the card opens: under Poki's picture on the home page (global points), or under the top bar.
     @State private var cardUnder: CGFloat?
+    @State private var statusShowsCustomization = false
+    @State private var customizationOpen = false
     @State private var detailsPath = NavigationPath()
     /// The first run is up, over everything (`FirstRunGuide`).
     @State private var welcoming = false
@@ -180,8 +182,10 @@ struct RootView: View {
             sharedDraft: $draft,
             openDetails: { under in
                 cardUnder = under
+                statusShowsCustomization = true
                 statusOpen = true
             },
+            openCustomization: { customizationOpen = true },
             openVoice: openLiveVoice,
             openSetup: { fix(.setup, split: split) },
             openSetupStep: { fix(.step($0), split: split) },
@@ -195,7 +199,7 @@ struct RootView: View {
         )
         // The bear stops drawing where it is out of sight: behind the open drawer or the profile over the
         // chat. Poki's card opens beside the picture and leaves it in sight.
-        .environment(\.bearCovered, threadsOpen || welcoming || (detailsOpen && !showsSidebar))
+        .environment(\.bearCovered, threadsOpen || welcoming || customizationOpen || (detailsOpen && !showsSidebar))
     }
 
     @ViewBuilder private func destination(_ route: HomeRoute, split: Bool) -> some View {
@@ -208,6 +212,7 @@ struct RootView: View {
                 back: split ? nil : { show(.chat) },
                 openDetails: {
                     cardUnder = nil
+                    statusShowsCustomization = false
                     statusOpen = true
                 },
                 openModel: { openDetails([DetailsRoute.model]) },
@@ -252,10 +257,20 @@ struct RootView: View {
             // Every page's top scroll edge is the system's soft one: the chat, the conversations, and
             // the pages pushed over them under the system's bar.
             .softTopEdge()
+            .fullScreenCover(isPresented: $customizationOpen) {
+                BearCustomizationView()
+                    .environment(\.bearOutfitPreview, true)
+            }
             // Settings opens from the bottom of the conversations.
             .environment(\.openPokiSettings, { openDetails() })
             .environment(\.pokiDetailsOpen, detailsOpen)
-            .pokiStatusCard(isPresented: $statusOpen, under: cardUnder, leading: sidebarWidth.map { $0 + 1 } ?? 0, openModel: { openDetails([DetailsRoute.model]) })
+            .pokiStatusCard(
+                isPresented: $statusOpen,
+                under: cardUnder,
+                leading: sidebarWidth.map { $0 + 1 } ?? 0,
+                openModel: { openDetails([DetailsRoute.model]) },
+                openCustomization: statusShowsCustomization ? { customizationOpen = true } : nil
+            )
             // Settings covers the whole screen on iPhone (ESP-469: nothing of the chat shows around it), with
             // its Close button; beside the list on iPad it stays a sheet at a page's width (ESP-376).
             .fullScreenCover(isPresented: Binding(get: { detailsOpen && !showsSidebar }, set: { detailsOpen = $0 })) {
@@ -521,6 +536,7 @@ struct RootView: View {
             openDetails()
         case "statusCard":
             cardUnder = nil
+            statusShowsCustomization = true
             statusOpen = true
         case "hands", "connection":
             openDetails([DetailsRoute.connection])

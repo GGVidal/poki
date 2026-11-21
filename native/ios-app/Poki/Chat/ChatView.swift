@@ -15,6 +15,7 @@ struct ChatView: View {
     /// Opens Poki's card: under Poki's picture over the greeting on the home page (the bottom of the
     /// picture, in global points), under the top bar in the chat (nil).
     var openDetails: (_ under: CGFloat?) -> Void
+    var openCustomization: () -> Void = {}
     var openVoice: () -> Void
     var openSetup: () -> Void
     var openSetupStep: (SetupStep) -> Void = { _ in }
@@ -37,17 +38,16 @@ struct ChatView: View {
     @State private var homeBottom: CGFloat?
     /// How far Poki's picture rises from the home page into the top bar.
     @State private var flightRise: CGFloat = 0
-    @State private var wardrobeOpen = false
-    @State private var wardrobeMixing = false
-    @State private var wardrobeOpensSettings = false
-    @Environment(\.openPokiSettings) private var openPokiSettings
-    @Environment(\.bearCovered) private var bearCovered
 
     private func tapPoki() {
         writing = false
         adding = false
         pokes += 1
-        wardrobeOpen = true
+        if isGreeting {
+            showPokiStatus()
+        } else {
+            openCustomization()
+        }
     }
 
     private func showPokiStatus() {
@@ -123,23 +123,6 @@ struct ChatView: View {
 
     var body: some View {
         chatContent
-            .environment(\.bearOutfitPreview, wardrobeOpen)
-            .environment(\.bearCovered, bearCovered || wardrobeMixing)
-            .sheet(isPresented: $wardrobeOpen, onDismiss: wardrobeDismissed) {
-                BearWardrobeSheet(mixing: $wardrobeMixing) {
-                    wardrobeOpensSettings = true
-                    wardrobeOpen = false
-                }
-                .environment(\.bearOutfitPreview, true)
-            }
-    }
-
-    private func wardrobeDismissed() {
-        wardrobeMixing = false
-        if wardrobeOpensSettings {
-            wardrobeOpensSettings = false
-            openPokiSettings?()
-        }
     }
 
     @ViewBuilder private var chatContent: some View {
@@ -205,9 +188,7 @@ struct ChatView: View {
             GeometryReader { proxy in
                 if !bare {
                     PokiFlight(status: status, home: home, writing: writing, places: anchors.mapValues { proxy[$0] }, pokes: pokes,
-                               tap: tapPoki, statusCard: showPokiStatus, landed: { homeBottom = $0 }, travel: { flightRise = $0 })
-                        .offset(y: home && wardrobeOpen ? -46 : 0)
-                        .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.14), value: wardrobeOpen)
+                               tap: tapPoki, landed: { homeBottom = $0 }, travel: { flightRise = $0 })
                 }
             }
         }

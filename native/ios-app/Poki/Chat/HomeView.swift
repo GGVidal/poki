@@ -150,7 +150,7 @@ extension View {
 /// under it on the same animation (`HomeMotion.flight`), and a new conversation brings both back;
 /// with Reduce Motion it is just there. While the message field takes the home page up, the picture
 /// moves with the greeting on the page's own animation. It is one view all the way, and the bear in it
-/// is drawn at one size, so nothing is made again on the way. A tap opens the wardrobe.
+/// is drawn at one size, so nothing is made again on the way.
 struct PokiFlight: View {
     var sizes = HomeSizes()
     var status: PokiStatus
@@ -159,7 +159,6 @@ struct PokiFlight: View {
     var places: [PicturePlace: CGRect]
     var pokes: Int
     var tap: () -> Void
-    var statusCard: (() -> Void)? = nil
     /// The bottom of the picture over the greeting, in global points, for Poki's card to open under it.
     var landed: (CGFloat) -> Void = { _ in }
     /// How far the picture rises from over the greeting to the top bar, for the greeting to rise with it.
@@ -173,11 +172,8 @@ struct PokiFlight: View {
                 PokiPicture(mood: status.mood, side: side, pokes: pokes).contentShape(.circle)
             }
             .buttonStyle(.plain)
-            .contextMenu {
-                if let statusCard { Button("Status", systemImage: "info.circle", action: statusCard) }
-            }
-            .accessibilityLabel(Text("Outfits"))
-            .accessibilityIdentifier(home ? "home.poki" : "chat.header.outfits")
+            .accessibilityLabel(home ? Text(verbatim: "Poki, " + PokiStatusCopy.word(status)) : Text("Customize Poki"))
+            .accessibilityIdentifier(home ? "home.poki" : "chat.header.avatar")
             .onGeometryChange(for: CGFloat?.self) { home ? $0.frame(in: .global).maxY : nil } action: {
                 if let bottom = $0 { landed(bottom) }
             }
