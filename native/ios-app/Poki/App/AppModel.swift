@@ -846,36 +846,87 @@ final class AppModel {
         }
     }
 
-    /// Starts or warms Poki when a Watch task wakes the app in the background without activating a foreground scene.
-    func ensureSessionOnForBackgroundTask(timeout: Duration = .seconds(15)) async -> Bool {
-        guard automationPath == .inProcess, !ownerPaused else { return false }
+    struct BackgroundWatchLease {
+        let startedSession: Bool
+        let startedBackground: Bool
+    }
+
+    /// Starts or warms Poki for a Watch background task and returns a lease to release when the task ends.
+    func beginBackgroundWatchSession(timeout: Duration = .seconds(15)) async -> BackgroundWatchLease? {
+        guard automationPath == .inProcess, !ownerPaused else { return nil }
         if sessionOn {
-            if !background.isOn { background.start() }
+            let hadBackground = background.isOn
+            if !hadBackground { background.start() }
             if runnerPaused { prepareForTask() }
-            return true
+            return BackgroundWatchLease(startedSession: false, startedBackground: !hadBackground)
         }
-        guard wantsOn else { return false }
+        guard wantsOn else { return nil }
         await tunnel.refresh()
         await diskImage.ensureChecked()
-        guard Self.onSimulator || (pairingPath != nil && diskImage.hasFiles) else { return false }
+        guard Self.onSimulator || (pairingPath != nil && diskImage.hasFiles) else { return nil }
         if !sessionOn, !sessionStarting {
             startSession(reconnectLocal: setup.loopback == .builtIn)
         }
         if let startTask = sessionStartTask {
             await Self.waitForSessionStart(startTask, timeout: timeout)
         }
-        guard sessionOn else { return false }
+        guard sessionOn else { return nil }
         if !background.isOn { background.start() }
         if runnerPaused { prepareForTask() }
-        return true
+        return BackgroundWatchLease(startedSession: true, startedBackground: true)
+    }
+
+    func endBackgroundWatchSession(_ lease: BackgroundWatchLease?) {
+        guard let lease else { return }
+        guard !inFront, !voice.isOn, outsideAgentsAtWork.isEmpty, approvals.isEmpty,
+              ChatModel.delegatedBusy == nil, AskPoki.chat?.running != true else { return }
+        if lease.startedSession {
+            sessionStartTask?.cancel()
+            pendingPrepareForTask = false
+            preparingCellularImage = false
+            if !HistoryCapture.isEnabled { loopback.pause() }
+            if automationPath == .inProcess { closeInProcess("Watch task ended") }
+            core.stop()
+            launcher.stop()
+            if setup.loopback == .builtIn { tunnel.disconnect() }
+            idleTimer?.invalidate()
+            idleTimer = nil
+            runnerPaused = false
+            host.setPaused(false)
+            background.stop()
+            activity.end()
+            sessionOn = false
+            chatTaskActive = false
+            stepUnderWay = nil
+            runner = .idle
+            relayStatus = .off
+            activityText = "Idle"
+            log.add("watch", "ended Watch background session and keep-alive")
+        } else if lease.startedBackground {
+            background.stop()
+            log.add("watch", "ended Watch background keep-alive")
+        }
     }
 
     static func waitForSessionStart(_ startTask: Task<Void, Never>, timeout: Duration) async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await startTask.value }
-            group.addTask { try? await Task.sleep(for: timeout) }
-            await group.next()
-            group.cancelAll()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            let finish: @MainActor () -> Void = {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume()
+            }
+            let timer = Task { @MainActor in
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                startTask.cancel()
+                finish()
+            }
+            Task { @MainActor in
+                await startTask.value
+                timer.cancel()
+                finish()
+            }
         }
     }
 

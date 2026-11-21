@@ -49,6 +49,7 @@ final class WatchVoiceDeliveryController {
     private var archive = Archive()
     @ObservationIgnored private var reachabilityWait: Task<Void, Never>?
     @ObservationIgnored private var sendTimeout: Task<Void, Never>?
+    @ObservationIgnored private var waitingUnlockPoll: Task<Void, Never>?
     @ObservationIgnored private var sendToken = 0
     @ObservationIgnored private(set) var isActive = false
     @ObservationIgnored var onTerminalUpdate: (@MainActor (WatchVoiceUpdate) -> Void)?
@@ -82,8 +83,13 @@ final class WatchVoiceDeliveryController {
         }
     }
 
+    deinit {
+        waitingUnlockPoll?.cancel()
+    }
+
     func setActive(_ active: Bool) {
         isActive = active
+        updateWaitingUnlockPoll()
     }
 
     func enqueue(id: UUID = UUID(), audio: Data) -> Bool {
@@ -100,6 +106,7 @@ final class WatchVoiceDeliveryController {
     func discardPending() {
         guard archive.pending?.update == nil else { return }
         cancelInFlightDelivery()
+        stopWaitingUnlockPoll()
         var next = archive
         next.pending = nil
         if save(next) {
@@ -192,9 +199,13 @@ final class WatchVoiceDeliveryController {
         deliveryFailure = nil
         problem = nil
         if update.phase.isTerminal {
+            stopWaitingUnlockPoll()
             onTerminalUpdate?(update)
         } else if update.phase == .waitingForUnlock {
+            updateWaitingUnlockPoll()
             onWaitingForUnlock?()
+        } else {
+            stopWaitingUnlockPoll()
         }
     }
 
@@ -213,8 +224,10 @@ final class WatchVoiceDeliveryController {
                 sending = false
             }
             if archive.pending != nil { sync() }
+            updateWaitingUnlockPoll()
         } else {
             cancelInFlightDelivery()
+            stopWaitingUnlockPoll()
             failDelivery(.sessionInactive)
         }
     }
@@ -227,6 +240,38 @@ final class WatchVoiceDeliveryController {
             sending = false
         }
         if archive.pending != nil { sync() }
+        updateWaitingUnlockPoll()
+    }
+
+    private func stopWaitingUnlockPoll() {
+        waitingUnlockPoll?.cancel()
+        waitingUnlockPoll = nil
+    }
+
+    private func updateWaitingUnlockPoll() {
+        stopWaitingUnlockPoll()
+        guard isActive, let pending = archive.pending, pending.update?.phase == .waitingForUnlock else { return }
+        let id = pending.id
+        let interval = timing.unlockPollInterval
+        waitingUnlockPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self, self.isActive,
+                      self.archive.pending?.id == id,
+                      self.archive.pending?.update?.phase == .waitingForUnlock else { break }
+                guard !self.sending, self.link.isActivated, self.link.isCompanionInstalled,
+                      !self.link.needsUnlockAfterReboot, self.link.isReachable,
+                      let data = try? JSONEncoder().encode(WatchVoiceRequest.status(id: id)) else { continue }
+                self.link.sendMessageData(data) { [weak self] reply in
+                    Task { @MainActor in
+                        guard let self, self.archive.pending?.id == id,
+                              let update = try? JSONDecoder().decode(WatchVoiceUpdate.self, from: reply),
+                              update.id == id else { return }
+                        self.receive(update)
+                    }
+                } errorHandler: { _ in }
+            }
+        }
     }
 
     private func cancelInFlightDelivery() {
