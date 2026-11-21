@@ -1437,6 +1437,26 @@ final class InProcessPasscodeTests: XCTestCase {
         XCTAssertTrue(model.sessionOn, "Stopping the task should leave Poki on")
     }
 
+    func testStopCancelsAReopenAlreadyRequestedDuringClose() async {
+        useSystem(26)
+        await openSessionForATask()
+        let pausing = expectation(description: "Automation is still closing for standby")
+        session.holdNextPause { pausing.fulfill() }
+        model.checkIdle(now: Date().addingTimeInterval(Double(model.idleStopSeconds) + 60))
+        await fulfillment(of: [pausing], timeout: 5)
+
+        model.wakeRunner()
+        model.stopFromOutside(AppModel.liveActivityStop)
+        session.releasePause()
+
+        await waitFor("Stop closed the pending session") { self.model.lastInProcessClose != nil }
+        XCTAssertTrue(model.runnerPaused, "The reopen requested before Stop must be discarded")
+        XCTAssertFalse(session.isOpen)
+
+        await lookForTheNextTask()
+        XCTAssertTrue(session.isOpen, "A new request after Stop can still open automation")
+    }
+
     func testOnIOS26ClosingDuringAPauseDoesNotKeepTheSession() async {
         for action in ["owner stop", "Live Activity stop", "turn off", "update"] {
             useSystem(26)

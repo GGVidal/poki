@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import PokiCore
 
 @MainActor @Observable
 final class AutoUnlock {
@@ -62,13 +63,15 @@ final class AutoUnlock {
     func unlock(using automation: InProcessAutomation, session: Session, timeout: TimeInterval) async -> Bool {
         guard enabled else { return skip("the setting is off") }
         guard !needsPasscode else { return skip("the owner needs to update the saved passcode") }
-        guard !isAttempting, !Task.isCancelled, timeout > 0 else { return skip("another attempt is in progress or the request ended") }
+        guard !isAttempting, !PhoneOperationCancellation.stopped, timeout > 0 else { return skip("another attempt is in progress or the request ended") }
         guard let data = try? Keychain.read(Self.account),
               let passcode = String(data: data, encoding: .utf8), Self.accepts(passcode) else {
             return skip("the saved passcode is unavailable")
         }
         AppLog.shared.add("auto-unlock", "attempt started")
         let allowed = OSAllocatedUnfairLock(initialState: true)
+        let stopped = PhoneOperationCancellation.stopCheck()
+        let maySubmit: @Sendable () -> Bool = { !stopped() && allowed.withLock { $0 } }
         let version = configurationVersion
         attempt = allowed
         // Losing the app in the middle of entry must not cause another automatic attempt on launch.
@@ -78,7 +81,7 @@ final class AutoUnlock {
                 DispatchQueue.global(qos: .userInitiated).async {
                     let start = ProcessInfo.processInfo.systemUptime
                     let result: PKUnlockResult = {
-                        guard allowed.withLock({ $0 }) else { return .unavailable }
+                        guard maySubmit() else { return .unavailable }
                         defer { if session == .temporary { _ = automation.close() } }
                         if session != .current {
                             let ready = InProcessWDA.openThroughGate { ["ok": automation.prepareForUnlock()] }
@@ -86,7 +89,7 @@ final class AutoUnlock {
                         }
                         let remaining = timeout - (ProcessInfo.processInfo.systemUptime - start)
                         guard remaining > 0 else { return .unavailable }
-                        return automation.submitUnlockPasscode(passcode, timeout: remaining) { allowed.withLock { $0 } }
+                        return automation.submitUnlockPasscode(passcode, timeout: remaining, allowed: maySubmit)
                     }()
                     continuation.resume(returning: result)
                 }
@@ -109,7 +112,7 @@ final class AutoUnlock {
             needsPasscode = result == .submissionUnconfirmed || result == .submissionIncomplete
             UserDefaults.standard.set(needsPasscode, forKey: Self.retryKey)
         }
-        return result == .unlocked && !Task.isCancelled
+        return result == .unlocked && !PhoneOperationCancellation.stopped
     }
 
     private func skip(_ reason: String) -> Bool {

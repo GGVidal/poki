@@ -1302,33 +1302,87 @@ final class ApprovalTests: XCTestCase {
         XCTAssertTrue(result.text.contains("Timer"), result.text)
     }
 
-    func testUnconfirmedAutoUnlockReturnsTheCurrentScreenWithoutSendingTheAction() async {
+    func testStoppedUnlockCannotWakeAutomationWhenItReturnsLate() async {
+        let (core, wda, host) = makeCore { $0.runnerWait = 0 }
+        wda.reportsLockBeforeSession = true
+        host.state.value = .starting("standing by")
+        wda.set("GET /wda/locked") { _ in (200, ["value": true]) }
+        let pending = LockedBox<CheckedContinuation<Bool, Never>?>(nil)
+        let entered = expectation(description: "The task requested unlock")
+        host.waitForUnlock.value = {
+            await withCheckedContinuation {
+                pending.value = $0
+                entered.fulfill()
+            }
+        }
+        let automationRunning = LockedBox(false)
+        host.onRunnerState.value = { automationRunning.value = true }
+        let operation = PhoneOperationCancellation()
+        let task = Task {
+            await PhoneOperationCancellation.$current.withValue(operation) {
+                await core.callTool("do", arguments: #"{"actions":[{"launch":{"bundle":"com.apple.mobiletimer"}}]}"#, localTask: "stopped-task")
+            }
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        operation.cancel()
+        pending.update { continuation in
+            continuation?.resume(returning: true)
+            continuation = nil
+        }
+        let result = await task.value
+        XCTAssertFalse(automationRunning.value, "A stopped task cannot start automation after unlocking returns")
+        XCTAssertTrue(result.text.contains("Task stopped"), result.text)
+        XCTAssertTrue(wda.bodies("POST /wda/apps/activate").isEmpty)
+    }
+
+    func testEarlyUnlockTimeoutEndsTheOperationWithoutRetryOrInput() async {
+        for tool in ["look", "do"] {
+            for stillLocked in [true, false] {
+                let (core, wda, host) = makeCore()
+                wda.reportsLockBeforeSession = true
+                host.state.value = .starting("waiting to open automation")
+                let locked = LockedBox(true)
+                let attempts = LockedBox(0)
+                let state = host.state
+                wda.set("GET /wda/locked") { _ in (200, ["value": .bool(locked.value)]) }
+                host.unlock.value = { _ in
+                    attempts.update { $0 += 1 }
+                    state.value = .running
+                    locked.value = stillLocked
+                    return false
+                }
+                let args = tool == "do" ? #"{"actions":[{"launch":{"bundle":"com.apple.mobiletimer"}}]}"# : "{}"
+                let result = await core.callTool(tool, arguments: args, localTask: "owner-task")
+
+                XCTAssertEqual(attempts.value, 1, "Unlock gets one attempt per operation")
+                XCTAssertTrue(result.isError, result.text)
+                XCTAssertTrue(result.manualUnlockRequired, result.text)
+                XCTAssertTrue(result.text.contains("unlock the iPhone manually"), result.text)
+                XCTAssertTrue(wda.bodies("POST /wda/apps/activate").isEmpty)
+                XCTAssertFalse(wda.sent.contains("GET /source"), "The failed operation must end before reading the screen")
+            }
+        }
+    }
+
+    func testUnconfirmedAutoUnlockOnAReadySessionAsksForManualUnlock() async {
         for tool in ["do", "look"] {
             for remainsLocked in [false, true] {
                 let (core, wda, host) = makeCore()
                 let attempted = LockedBox(false)
                 wda.set("GET /wda/locked") { _ in (200, ["value": .bool(!attempted.value || remainsLocked)]) }
-                let caption = remainsLocked ? "Lock screen after the attempt" : "Home screen after manual unlock"
-                let freshPicture = Data("new screenshot".utf8)
-                host.unlock.value = { [weak wda] _ in
+                host.unlock.value = { _ in
                     attempted.value = true
-                    wda?.source([("StaticText", caption)])
-                    wda?.set("GET /screenshot") { _ in (200, ["value": .string(freshPicture.base64EncodedString())]) }
                     return false
                 }
 
                 let arguments = tool == "do" ? #"{"actions":[{"launch":{"bundle":"com.apple.mobiletimer"}}]}"# : "{}"
                 let result = await core.tool(tool, arguments: arguments)
 
-                XCTAssertTrue(result.text.contains(caption), result.text)
-                XCTAssertEqual(result.jpeg, Data("jpeg:\(freshPicture.count)".utf8))
-                XCTAssertEqual(result.waitingForOwner, remainsLocked, result.text)
-                XCTAssertEqual(result.text.contains("screen: locked"), remainsLocked, result.text)
-                if tool == "do" {
-                    XCTAssertTrue(result.isError, result.text)
-                    XCTAssertTrue(result.text.contains("Nothing was sent"), result.text)
-                    XCTAssertTrue(wda.bodies("POST /wda/apps/activate").isEmpty, result.text)
-                }
+                XCTAssertTrue(result.isError, result.text)
+                XCTAssertTrue(result.manualUnlockRequired, result.text)
+                XCTAssertTrue(result.text.contains("unlock the iPhone manually"), result.text)
+                XCTAssertNil(result.jpeg)
+                XCTAssertTrue(wda.bodies("POST /wda/apps/activate").isEmpty, result.text)
             }
         }
     }
