@@ -1604,7 +1604,7 @@ final class VoiceModel {
             return
         }
         let itemEvent = usesLive ? "response.item.create" : "conversation.item.create"
-        let reconnect = "While the connection was down, \(call.name) \(call.arguments) finished. It already ran; do not run it again. Tell the user in one sentence how it ended. Result: \(call.output)"
+        let reconnect = "A previous \(call.name) step \(call.state == .done ? "finished" : "failed"). It already ran; do not run it again. Tell the user in one sentence how it ended. Result: \(call.output)"
         let sent = sameSession
             ? link.send(["type": itemEvent, "item": ["type": "function_call_output", "call_id": call.id, "output": call.output]])
             : link.send(note(reconnect, spoken: true))
@@ -1655,7 +1655,7 @@ final class VoiceModel {
     private func catchUp(_ link: VoiceConnection) {
         let running = calls.filter { $0.state == .running && !$0.silentResult }
         if !running.isEmpty {
-            let steps = running.map { usesLive ? $0.name : "\($0.name) \($0.arguments)" }
+            let steps = running.map(\.name)
             link.send(note("Before the connection dropped, these were started and are still running. Their results will follow. Do not start them again: " + steps.joined(separator: ", ")))
         }
         for index in calls.indices where calls[index].state != .running && !calls[index].delivered { deliver(index) }

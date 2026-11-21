@@ -588,6 +588,7 @@ final class ChatModel {
         // A pause of half an hour or more gets its own time line, as in Messages.
         if !again, let lastAt = entries.last?.at, Date().timeIntervalSince(lastAt) > 1800 { entries.append(ChatEntry(.time(Date()))) }
         var you = ChatEntry(kind == .handoff ? .request(text, from: requester ?? "") : .you(text, delivered: false))
+        you.spoken = false
         you.continuedTask = linkedTask
         you.countedScrollRequestID = countedScrollRequestID
         if !thumbnails.isEmpty { you.attachments = thumbnails }

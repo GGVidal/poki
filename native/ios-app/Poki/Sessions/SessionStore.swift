@@ -33,6 +33,59 @@ struct SavedSession: Codable, Identifiable, Equatable {
     /// Its age for the limit: the later of its last change and its return from the archive.
     var keptSince: Date { max(updated, unarchived ?? .distantPast) }
 
+    static func decode(_ data: Data, using decoder: JSONDecoder) throws -> Self {
+        var session = try decoder.decode(Self.self, from: data)
+        session.markLegacySpeech()
+        return session
+    }
+
+    private mutating func markLegacySpeech() {
+        func mark(_ range: Range<Int>) {
+            for index in range where entries[index].spoken == nil {
+                entries[index].spoken = true
+            }
+        }
+
+        if kind == .voice {
+            mark(entries.indices)
+            return
+        }
+        guard kind == .poki else { return }
+
+        // The old voice recorder copied the talk start into both dates on its time row.
+        // It wrote delivered messages, replies, steps and a terminal problem without a task card.
+        var start: Int?
+        var lastRequest: Int?
+        for index in entries.indices {
+            let entry = entries[index]
+            if case .time(let date) = entry.kind {
+                if let start { mark(start..<index) }
+                start = entry.spoken == nil && entry.at == date ? index : nil
+                lastRequest = nil
+                continue
+            }
+            guard let voiceStart = start else { continue }
+            let end: Int
+            switch entry.kind {
+            case .you(_, true) where entry.spoken == nil && entry.attachments == nil
+                && entry.textDocuments == nil && entry.continuedTask == nil && entry.countedScrollRequestID == nil:
+                lastRequest = index
+                continue
+            case .poki where entry.continuationChoices == nil, .step:
+                continue
+            case .note(.problem):
+                end = index + 1
+            case .you:
+                end = index
+            default:
+                end = lastRequest ?? index
+            }
+            mark(voiceStart..<end)
+            start = nil
+        }
+        if let start { mark(start..<entries.endIndex) }
+    }
+
     mutating func markInterruptedTask() {
         guard live else { return }
         live = false
@@ -392,7 +445,7 @@ final class SessionStore {
                     loaded.reserveCapacity(slice.count)
                     for url in slice {
                         guard let data = try? Data(contentsOf: url) else { batchComplete = false; continue }
-                        if var session = try? decoder.decode(SavedSession.self, from: data) {
+                        if var session = try? SavedSession.decode(data, using: decoder) {
                             session.markInterruptedTask()
                             loaded.append(session)
                         }
@@ -491,7 +544,7 @@ final class SessionStore {
         var loaded: [SavedSession] = []
         for url in files ?? [] {
             guard let data = try? Data(contentsOf: url) else { complete = false; continue }
-            if let session = try? decoder.decode(SavedSession.self, from: data) { loaded.append(session) }
+            if let session = try? SavedSession.decode(data, using: decoder) { loaded.append(session) }
         }
         // Nothing is live after a relaunch.
         for i in loaded.indices { loaded[i].markInterruptedTask() }
@@ -643,6 +696,7 @@ final class SessionStore {
     static func entries(voice lines: [VoiceLine], started: Date) -> [ChatEntry] {
         var time = ChatEntry(.time(started))
         time.at = started
+        time.spoken = true
         return [time] + lines.map { line in
             var entry: ChatEntry
             switch line.role {
@@ -818,7 +872,7 @@ final class SessionStore {
     func restore(_ data: Data) throws {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        var session = try decoder.decode(SavedSession.self, from: data)
+        var session = try SavedSession.decode(data, using: decoder)
         session.live = false
         if let mine = self.session(session.id), mine.updated >= session.updated { return }
         put(session)
