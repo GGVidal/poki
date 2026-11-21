@@ -43,10 +43,17 @@ struct VoiceBridge: Equatable {
         /// state "check" (tap_text before the phone cleared it): the app in front and the element it would tap.
         var app: App?
         var target: Target?
+        var ms: Int?
+        var action_host: String?
+        var observation_source: String?
+        var effective_action: Bool?
+        var target_confirmed: Bool?
         struct App: Decodable { let bundle_id: String?; let name: String? }
         struct Target: Decodable { let text: String; let says: String }
 
-        enum CodingKeys: CodingKey { case state, output, replayed, app, target }
+        enum CodingKeys: CodingKey {
+            case state, output, replayed, app, target, ms, action_host, observation_source, effective_action, target_confirmed
+        }
         init(state: String, output: String) { self.state = state; self.output = output }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -55,6 +62,11 @@ struct VoiceBridge: Equatable {
             replayed = try c.decodeIfPresent(Bool.self, forKey: .replayed) ?? false
             app = try c.decodeIfPresent(App.self, forKey: .app)
             target = try c.decodeIfPresent(Target.self, forKey: .target)
+            ms = try c.decodeIfPresent(Int.self, forKey: .ms)
+            action_host = try c.decodeIfPresent(String.self, forKey: .action_host)
+            observation_source = try c.decodeIfPresent(String.self, forKey: .observation_source)
+            effective_action = try c.decodeIfPresent(Bool.self, forKey: .effective_action)
+            target_confirmed = try c.decodeIfPresent(Bool.self, forKey: .target_confirmed)
         }
     }
 
@@ -225,18 +237,89 @@ struct VoiceCall: Identifiable, Equatable {
 }
 
 /// When each step of one turn happened. `said` is the end of the person's speech (or when recorded
-/// speech was sent); the rest are measured from it.
+/// speech was sent); the rest are measured from it on the same monotonic clock when available.
 struct TurnClock {
-    var said: Date?
-    var heard: Date?
-    var call: Date?
-    var toolDone: Date?
-    var delivered: Date?
-    var spoken: Date?
+    var turn = 0
+    var entryRoute: VoiceEntryRoute?
+    var voiceHost: VoiceHost?
+    var actionHost: VoiceActionHost = .none
+    var observationSource: VoiceObservationSource = .none
+    var moments: [TurnMilestone: TurnMoment] = [:]
+    var phoneLocalMS = 0
+    var macToolsMS = 0
+    var actionCount = 0
     var callNames: [String] = []
     var reply = ""
     /// Tokens the turn's responses used, from `response.done` (text_in, audio_in, text_cached, audio_cached, text_out, audio_out).
     var tokens: [String: Int] = [:]
+
+    init(said: Date? = nil, turn: Int = 0, entryRoute: VoiceEntryRoute? = nil, voiceHost: VoiceHost? = nil) {
+        self.turn = turn
+        self.entryRoute = entryRoute
+        self.voiceHost = voiceHost
+        if let said { moments[.said] = TurnMoment(date: said) }
+    }
+
+    init(turn: Int, said: TurnMoment?, entryRoute: VoiceEntryRoute?, voiceHost: VoiceHost?) {
+        self.turn = turn
+        self.entryRoute = entryRoute
+        self.voiceHost = voiceHost
+        if let said { moments[.said] = said }
+    }
+
+    var said: Date? {
+        get { moments[.said]?.date }
+        set { setDate(newValue, for: .said) }
+    }
+    var heard: Date? {
+        get { moments[.heard]?.date }
+        set { setDate(newValue, for: .heard) }
+    }
+    var call: Date? {
+        get { moments[.call]?.date }
+        set { setDate(newValue, for: .call) }
+    }
+    var firstEffectiveAction: Date? {
+        get { moments[.firstEffectiveAction]?.date }
+        set { setDate(newValue, for: .firstEffectiveAction) }
+    }
+    var toolDone: Date? {
+        get { moments[.toolDone]?.date }
+        set { setDate(newValue, for: .toolDone) }
+    }
+    var targetConfirmed: Date? {
+        get { moments[.targetConfirmed]?.date }
+        set { setDate(newValue, for: .targetConfirmed) }
+    }
+    var delivered: Date? {
+        get { moments[.delivered]?.date }
+        set { setDate(newValue, for: .delivered) }
+    }
+    var spoken: Date? {
+        get { moments[.spoken]?.date }
+        set { setDate(newValue, for: .spoken) }
+    }
+
+    private mutating func setDate(_ date: Date?, for milestone: TurnMilestone) {
+        moments[milestone] = date.map { TurnMoment(date: $0) }
+    }
+
+    mutating func record(_ milestone: TurnMilestone, at moment: TurnMoment) {
+        moments[milestone] = moment
+    }
+
+    mutating func clear(_ milestone: TurnMilestone) {
+        moments.removeValue(forKey: milestone)
+    }
+
+    mutating func recordActionHost(_ host: VoiceActionHost) {
+        guard host != .none else { return }
+        switch (actionHost, host) {
+        case (.none, _): actionHost = host
+        case (let current, let next) where current == next: break
+        default: actionHost = .mixed
+        }
+    }
 
     mutating func add(usage: [String: Any]) {
         let input = usage["input_token_details"] as? [String: Any] ?? [:]
@@ -248,9 +331,25 @@ struct TurnClock {
         }
     }
 
+    func ms(_ milestone: TurnMilestone) -> Int? {
+        guard let base = moments[.said], let point = moments[milestone] else { return nil }
+        return VoiceTurnTiming.elapsedMS(from: base, to: point)
+    }
+
     func ms(_ step: KeyPath<TurnClock, Date?>) -> Int? {
-        guard let said, let at = self[keyPath: step] else { return nil }
-        return Int(at.timeIntervalSince(said) * 1000)
+        switch step {
+        case \.said: return ms(.said)
+        case \.heard: return ms(.heard)
+        case \.call: return ms(.call)
+        case \.firstEffectiveAction: return ms(.firstEffectiveAction)
+        case \.toolDone: return ms(.toolDone)
+        case \.targetConfirmed: return ms(.targetConfirmed)
+        case \.delivered: return ms(.delivered)
+        case \.spoken: return ms(.spoken)
+        default:
+            guard let said, let at = self[keyPath: step] else { return nil }
+            return Int(at.timeIntervalSince(said) * 1000)
+        }
     }
 }
 
@@ -282,7 +381,12 @@ enum VoicePhase: Equatable {
 /// The time VoiceModel reads and waits on.
 struct VoiceClock {
     var now: @MainActor () -> Date = { Date() }
+    var uptimeMS: @MainActor () -> UInt64 = { DispatchTime.now().uptimeNanoseconds / 1_000_000 }
     var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+
+    @MainActor func moment() -> TurnMoment {
+        TurnMoment(date: now(), uptimeMS: uptimeMS())
+    }
 }
 
 /// Talking to Poki: one Realtime session at a time over WebRTC, the calls it asked for, and what was
@@ -311,6 +415,10 @@ final class VoiceModel {
     private(set) var lastTurnMS: Int?
     /// Timestamps of the current turn, from the end of the person's speech.
     private(set) var clock = TurnClock()
+    private var sessionEntryRoute: VoiceEntryRoute?
+    private var sessionVoiceHost: VoiceHost?
+    private var sessionTurn = 0
+    private var callActions: [String: (index: Int, host: VoiceActionHost, observationSource: VoiceObservationSource)] = [:]
 
     private var link: VoiceConnection?
     private var connectionOpen = false
@@ -687,6 +795,16 @@ final class VoiceModel {
         let number = session
         openingSpeechAuthorized = false
         let bridge = self.bridge
+        let entryRoute = VoiceEntryRoute.resolve(
+            directAccount: account, hasDirectKey: key != nil, hasBridge: bridge != nil,
+            canDictate: VoiceDirect.canDictate, microphone: microphone,
+            chatProvider: ModelKeys.selectedProvider, chatGPTSignedIn: ChatGPTAccount.signedIn,
+            rehearsing: rehearsing
+        )
+        sessionEntryRoute = entryRoute
+        sessionVoiceHost = entryRoute?.voiceHost
+        sessionTurn = 0
+        callActions.removeAll()
         func configuration() async throws -> VoiceBridge.Token {
             if rehearsing { return Self.rehearsalToken }
             if let key, let account {
@@ -745,6 +863,7 @@ final class VoiceModel {
             var token = try await configuration()
             // Ended (End, or the button again) while the key was exchanged.
             guard number == session else { return }
+            recordEntrySelected(route: entryRoute, token: token, directAccount: key != nil ? account : nil)
             transcript = ("voice-\(UUID().uuidString.prefix(8).lowercased())", Date(), lines.count)
             if microphone { holdingMicrophone = true }
             do {
@@ -1006,6 +1125,7 @@ final class VoiceModel {
         committedRealtimeItems.removeAll()
         awaitingAnswer = false
         requestedAnswer = nil
+        callActions.removeAll()
     }
 
     /// Something is still to be said or done: an answer is expected, being given or about to be asked for,
@@ -1095,11 +1215,12 @@ final class VoiceModel {
                     }
                     quiet = 0
                     keepOpen()
-                    lastActivity = time.now()
+                    let spokenAt = time.moment()
+                    lastActivity = spokenAt.date
                     phase = .speaking
                     if liveAwaitingPlayback, !awaitingAnswer, activeResponse == nil {
                         liveAwaitingPlayback = false
-                        recordSpokenAnswer(at: lastActivity)
+                        recordSpokenAnswer(at: spokenAt)
                     }
                 } else if phase == .speaking || audible {
                     quiet += 1
@@ -1178,23 +1299,45 @@ final class VoiceModel {
     func released() {
         guard let dictation, phase == .hearing else { return }
         phase = .thinking
+        beginTurn(at: time.moment())
         Task {
             let text = await dictation.finish()
             guard self.dictation === dictation else { return }
             holdingMicrophone = false
             if lines.last?.role == .you, lines.last?.text != text { lines.removeLast() }
             guard !text.isEmpty else { phase = .listening; return }
+            recordHeard(at: time.moment())
             if lines.last?.text != text { lines.append(VoiceLine(role: .you, text: text)) }
             guard let chat = AskPoki.chat else { phase = .lost(VoiceError.noBridge.words); return }
             if chat.running { lines.append(VoiceLine(role: .note, text: AppLocalization.text(LocalizedStringResource("Poki is still on the last task.")))); phase = .listening; return }
             let before = chat.entries.count
+            let chatStarted = time.moment()
             chat.send(text)
             while chat.running { try? await Task.sleep(for: .milliseconds(200)) }
-            let reply = chat.entries.dropFirst(before).compactMap { entry -> String? in if case .poki(let t) = entry.kind { return t }; return nil }.last
+            let added = chat.entries.dropFirst(before)
+            let ranTools = added.contains { entry in
+                if case .step = entry.kind { return true }
+                if case .plan = entry.kind { return true }
+                return false
+            }
+            let chatFinished = time.moment()
+            clock.observationSource = .phoneChatLoop
+            if ranTools {
+                clock.recordActionHost(.phoneLocal)
+                clock.phoneLocalMS += VoiceTurnTiming.elapsedMS(from: chatStarted, to: chatFinished)
+                clock.record(.call, at: chatStarted)
+                clock.record(.firstEffectiveAction, at: chatStarted)
+                clock.record(.toolDone, at: chatFinished)
+                clock.record(.targetConfirmed, at: chatFinished)
+            }
+            clock.record(.delivered, at: chatFinished)
+            let reply = added.compactMap { entry -> String? in if case .poki(let t) = entry.kind { return t }; return nil }.last
                 ?? AppLocalization.text(LocalizedStringResource("Done."))
+            clock.reply = reply
             lines.append(VoiceLine(role: .poki, text: reply))
             guard self.dictation === dictation else { return }
             phase = .speaking
+            recordSpokenAnswer(at: time.moment())
             dictation.speak(reply.replacingOccurrences(of: "**", with: ""))
         }
     }
@@ -1213,6 +1356,19 @@ final class VoiceModel {
         do {
             try dictation.listen()
             phase = .hearing
+            let route: VoiceEntryRoute = ModelKeys.selectedProvider == .chatgpt && ChatGPTAccount.signedIn
+                ? .chatgptResponses : .dictationChatTTS
+            sessionEntryRoute = route
+            sessionVoiceHost = route.voiceHost
+            sessionTurn = 0
+            callActions.removeAll()
+            emitTiming("entry_selected", at: time.moment(), turn: 0, fields: [
+                ("entry_route", route.rawValue),
+                ("voice_host", route.voiceHost.rawValue),
+                ("default_action_host", VoiceActionHost.phoneLocal.rawValue),
+                ("transport", (route == .chatgptResponses ? VoiceSessionTransport.responses : .dictation).rawValue),
+                ("provider", ModelKeys.selectedProvider.rawValue),
+            ])
             log.add("voice", "dictation to the chat (no Realtime key or bridge)")
         } catch {
             self.dictation = nil
@@ -1263,7 +1419,7 @@ final class VoiceModel {
             sent = link.send(["type": "conversation.item.create", "item": ["type": "message", "role": "user", "content": [["type": "input_audio", "audio": audio]]]]) && sent
         }
         if !sent { log.add("voice", "the recorded speech did not go out on the data channel") }
-        clock = TurnClock(said: Date())
+        beginTurn(at: time.moment())
         wantsResponse = true
         flush()
     }
@@ -1346,8 +1502,10 @@ final class VoiceModel {
                     stopLivePlayback(on: link, note: "The user stopped the reply and cancelled the phone task. Drop the reply and stay silent until a new request.")
                 } else if !liveCallerSpeech.alreadyHandled, !utterance.isEmpty {
                     resumeLiveAudio(link)
-                    if !answerDue, phase != .thinking { clock = TurnClock(said: time.now()) }
-                    else if clock.call == nil { clock.said = time.now() }
+                    let moment = time.moment()
+                    if !answerDue, phase != .thinking { beginTurn(at: moment) }
+                    else if clock.call == nil { refreshTurnSaid(at: moment) }
+                    recordHeard(at: moment)
                 }
             } else {
                 if openingLiveInputObserved { openingCapture?.audio.markRemoteInputUsed(session: number) }
@@ -1425,7 +1583,7 @@ final class VoiceModel {
             guard !usesLive else { return }
             phase = .thinking
             awaitingAnswer = true
-            clock = TurnClock(said: Date())
+            beginTurn(at: time.moment())
         case "input_audio_buffer.committed":
             if usesLive {
                 liveCallerSpeech.recordInput(id: (event["item_id"] as? String) ?? (event["event_id"] as? String))
@@ -1436,9 +1594,10 @@ final class VoiceModel {
             pendingRealtimeTurns += 1
             flush()
         case "conversation.item.added":
-            if (event["item"] as? [String: Any])?["role"] as? String == "user" { clock.heard = clock.heard ?? Date() }
+            if (event["item"] as? [String: Any])?["role"] as? String == "user" { recordHeard(at: time.moment()) }
         case "conversation.item.input_audio_transcription.completed":
             if let text = event["transcript"] as? String, !text.isEmpty {
+                recordHeard(at: time.moment())
                 openingCapture?.audio.markRemoteInputUsed(session: number)
                 lines.append(VoiceLine(role: .you, text: text.trimmingCharacters(in: .whitespacesAndNewlines)))
             }
@@ -1480,7 +1639,7 @@ final class VoiceModel {
             guard !usesLive || !liveSpeechStopped else { return }
             trace("reply playback started (model event)")
             phase = .speaking
-            recordSpokenAnswer(at: Date())
+            recordSpokenAnswer(at: time.moment())
         case "output_audio_buffer.stopped", "output_audio_buffer.cleared":
             trace(type == "output_audio_buffer.cleared" ? "model cleared reply playback" : "reply playback stopped (model event)")
             // Cleared because the person started speaking over the answer: they are still being heard.
@@ -1517,12 +1676,191 @@ final class VoiceModel {
         }
     }
 
-    private func recordSpokenAnswer(at start: Date) {
-        guard let said = clock.said, let delivered = clock.delivered, clock.spoken == nil else { return }
-        clock.spoken = start
-        let elapsed = Int(start.timeIntervalSince(said) * 1000)
+    // MARK: Turn timing
+
+    /// Records an independent confirmation of the turn's target (for external verifiers and tests).
+    func confirmTarget(source: VoiceObservationSource = .independentObserver, at moment: TurnMoment? = nil) {
+        let confirmedAt = moment ?? time.moment()
+        ensureTurnContext()
+        clock.observationSource = source
+        clock.record(.targetConfirmed, at: confirmedAt)
+        var fields: [(String, String)] = [
+            ("action_host", clock.actionHost.rawValue),
+            ("observation_source", source.rawValue),
+        ]
+        if let sinceSaid = clock.ms(.targetConfirmed) { fields.append(("since_said_ms", "\(sinceSaid)")) }
+        if let first = clock.moments[.firstEffectiveAction] {
+            fields.append(("since_first_action_ms", "\(VoiceTurnTiming.elapsedMS(from: first, to: confirmedAt))"))
+        }
+        emitTiming("target_confirmed", at: confirmedAt, turn: clock.turn, fields: fields)
+    }
+
+    private func ensureTurnContext() {
+        if clock.entryRoute == nil { clock.entryRoute = sessionEntryRoute }
+        if clock.voiceHost == nil { clock.voiceHost = sessionVoiceHost }
+        if clock.turn == 0 {
+            if sessionTurn == 0 { sessionTurn = 1 }
+            clock.turn = sessionTurn
+        }
+    }
+
+    private func recordEntrySelected(route: VoiceEntryRoute?, token: VoiceBridge.Token, directAccount: VoiceAccount?) {
+        let defaultHost: VoiceActionHost = Self.phoneTools.isDisjoint(with: Set(token.local_tools)) ? .macTools : .phoneLocal
+        let transport: VoiceSessionTransport = rehearsing ? .rehearsal : (token.live == true ? .live : .realtime)
+        var fields: [(String, String)] = [
+            ("entry_route", route?.rawValue ?? "none"),
+            ("voice_host", (route?.voiceHost ?? .phoneDirect).rawValue),
+            ("default_action_host", defaultHost.rawValue),
+            ("transport", transport.rawValue),
+            ("model", token.model),
+        ]
+        if let directAccount {
+            let kind: String
+            switch directAccount {
+            case .openai: kind = "openai"
+            case .custom: kind = "custom"
+            }
+            fields.append(("account", kind))
+        }
+        emitTiming("entry_selected", at: time.moment(), turn: 0, fields: fields)
+    }
+
+    private func beginTurn(at moment: TurnMoment) {
+        sessionTurn += 1
+        clock = TurnClock(turn: sessionTurn, said: moment, entryRoute: sessionEntryRoute, voiceHost: sessionVoiceHost)
+        emitTiming("turn_said", at: moment, turn: clock.turn, fields: [
+            ("entry_route", clock.entryRoute?.rawValue ?? "none"),
+            ("voice_host", clock.voiceHost?.rawValue ?? "none"),
+        ])
+    }
+
+    private func refreshTurnSaid(at moment: TurnMoment) {
+        ensureTurnContext()
+        clock.record(.said, at: moment)
+    }
+
+    private func recordHeard(at moment: TurnMoment) {
+        guard clock.heard == nil else { return }
+        ensureTurnContext()
+        clock.record(.heard, at: moment)
+        var fields: [(String, String)] = []
+        if let sinceSaid = clock.ms(.heard) { fields.append(("since_said_ms", "\(sinceSaid)")) }
+        emitTiming("turn_heard", at: moment, turn: clock.turn, fields: fields)
+    }
+
+    private func recordActionStart(call: VoiceCall, actionHost: VoiceActionHost, at moment: TurnMoment) -> Int {
+        ensureTurnContext()
+        if clock.call == nil { clock.record(.call, at: moment) }
+        clock.actionCount += 1
+        let actionIndex = clock.actionCount
+        clock.callNames.append(call.name)
+        callActions[call.id] = (actionIndex, actionHost, .none)
+        var fields: [(String, String)] = [
+            ("action", "\(actionIndex)"),
+            ("tool", call.name),
+            ("call_id", call.id),
+            ("action_host", actionHost.rawValue),
+        ]
+        if let sinceSaid = clock.moments[.said].map({ VoiceTurnTiming.elapsedMS(from: $0, to: moment) }) {
+            fields.append(("since_said_ms", "\(sinceSaid)"))
+        }
+        emitTiming("action_start", at: moment, turn: clock.turn, fields: fields)
+        return actionIndex
+    }
+
+    private func recordActionEnd(call: VoiceCall, state: VoiceCall.State, timing: VoiceCallTiming) {
+        ensureTurnContext()
+        clock.record(.toolDone, at: timing.endMoment)
+        clock.recordActionHost(timing.actionHost)
+        switch timing.actionHost {
+        case .phoneLocal: clock.phoneLocalMS += timing.hostDurationMS
+        case .macTools: clock.macToolsMS += timing.hostDurationMS
+        case .none, .mixed: break
+        }
+        if timing.observationSource != .none {
+            clock.observationSource = timing.observationSource
+        }
+        callActions[call.id] = (timing.actionIndex, timing.actionHost, timing.observationSource)
+        if timing.effective {
+            if clock.firstEffectiveAction == nil {
+                clock.record(.firstEffectiveAction, at: timing.dispatchMoment)
+                var firstFields: [(String, String)] = [
+                    ("action", "\(timing.actionIndex)"),
+                    ("tool", call.name),
+                    ("call_id", call.id),
+                    ("action_host", timing.actionHost.rawValue),
+                ]
+                if let sinceSaid = clock.ms(.firstEffectiveAction) {
+                    firstFields.append(("since_said_ms", "\(sinceSaid)"))
+                }
+                emitTiming("first_effective_action", at: timing.dispatchMoment, turn: clock.turn, fields: firstFields)
+            }
+            clock.clear(.targetConfirmed)
+        }
+        var endFields: [(String, String)] = [
+            ("action", "\(timing.actionIndex)"),
+            ("tool", call.name),
+            ("call_id", call.id),
+            ("action_host", timing.actionHost.rawValue),
+            ("observation_source", timing.observationSource.rawValue),
+            ("ok", state == .done ? "true" : "false"),
+            ("tool_ms", "\(timing.hostDurationMS)"),
+            ("effective", timing.effective ? "true" : "false"),
+            ("confirmed", timing.confirmed ? "true" : "false"),
+        ]
+        if let bridgeMS = timing.bridgeMS { endFields.append(("bridge_ms", "\(bridgeMS)")) }
+        if let sinceSaid = clock.moments[.said].map({ VoiceTurnTiming.elapsedMS(from: $0, to: timing.endMoment) }) {
+            endFields.append(("since_said_ms", "\(sinceSaid)"))
+        }
+        emitTiming("action_end", at: timing.endMoment, turn: clock.turn, fields: endFields)
+        if timing.confirmed {
+            clock.record(.targetConfirmed, at: timing.endMoment)
+            var confirmedFields: [(String, String)] = [
+                ("action", "\(timing.actionIndex)"),
+                ("tool", call.name),
+                ("action_host", timing.actionHost.rawValue),
+                ("observation_source", timing.observationSource.rawValue),
+            ]
+            if let sinceSaid = clock.ms(.targetConfirmed) {
+                confirmedFields.append(("since_said_ms", "\(sinceSaid)"))
+            }
+            if let first = clock.moments[.firstEffectiveAction] {
+                confirmedFields.append(("since_first_action_ms", "\(VoiceTurnTiming.elapsedMS(from: first, to: timing.endMoment))"))
+            }
+            emitTiming("target_confirmed", at: timing.endMoment, turn: clock.turn, fields: confirmedFields)
+        }
+    }
+
+    private func recordResultDelivered(call: VoiceCall, at moment: TurnMoment) {
+        ensureTurnContext()
+        clock.record(.delivered, at: moment)
+        let info = callActions[call.id]
+        var fields: [(String, String)] = [
+            ("action", "\(info?.index ?? clock.actionCount)"),
+            ("tool", call.name),
+            ("call_id", call.id),
+            ("action_host", (info?.host ?? clock.actionHost).rawValue),
+            ("observation_source", (info?.observationSource ?? clock.observationSource).rawValue),
+        ]
+        if let sinceSaid = clock.ms(.delivered) { fields.append(("since_said_ms", "\(sinceSaid)")) }
+        emitTiming("result_delivered", at: moment, turn: clock.turn, fields: fields)
+    }
+
+    private func recordSpokenAnswer(at start: TurnMoment) {
+        guard clock.said != nil, clock.delivered != nil, clock.spoken == nil else { return }
+        ensureTurnContext()
+        clock.record(.spoken, at: start)
+        let elapsed = clock.ms(.spoken) ?? 0
+        let delivered = clock.ms(.delivered) ?? 0
         lastTurnMS = elapsed
-        log.add("voice", "turn: end of speech to spoken result \(elapsed) ms (tool result in \(Int(delivered.timeIntervalSince(said) * 1000)) ms)")
+        emitTiming("turn_spoken", at: start, turn: clock.turn, fields: VoiceTurnTiming.summaryFields(for: clock))
+        let firstAction = clock.ms(.firstEffectiveAction).map { "\($0) ms" } ?? "none"
+        let confirmed = clock.ms(.targetConfirmed).map { "\($0) ms" } ?? "none"
+        log.add("voice", "turn: end of speech to spoken result \(elapsed) ms (tool result in \(delivered) ms, first action in \(firstAction), target confirmed in \(confirmed); entry=\(clock.entryRoute?.rawValue ?? "none"), voice_host=\(clock.voiceHost?.rawValue ?? "none"), action_host=\(clock.actionHost.rawValue), observation=\(clock.observationSource.rawValue), phone_local_ms=\(clock.phoneLocalMS), mac_tools_ms=\(clock.macToolsMS))")
+    }
+
+    private func emitTiming(_ event: String, at moment: TurnMoment, turn: Int, fields: [(String, String)]) {
+        log.add(VoiceTurnTiming.logArea, VoiceTurnTiming.line(session: session, turn: turn, at: moment, event: event, fields: fields))
     }
 
     private func appendLiveCaption(_ text: String, role: VoiceLine.Role, start: Int, end: Int) {
@@ -1629,13 +1967,13 @@ final class VoiceModel {
         call.silentResult = usesLive && liveSpeechStopped
         openingCapture?.audio.markRemoteInputUsed(session: session, phoneAction: true)
         calls.append(call)
-        clock.call = clock.call ?? Date()
-        clock.callNames.append(call.name)
+        let local = localTools.contains(call.name)
+        let bridge = bridge
+        let callActionHost: VoiceActionHost = local ? .phoneLocal : (bridge != nil ? .macTools : .none)
+        let actionIndex = recordActionStart(call: call, actionHost: callActionHost, at: time.moment())
         phase = .thinking
         lines.append(VoiceLine(role: .tool, text: Self.describe(call)))
         log.add("voice", "tool \(call.name) \(call.arguments)")
-        let local = localTools.contains(call.name)
-        let bridge = bridge
         let live = usesLive
         let describeScreen = liveScreenDescription
         Task {
@@ -1665,16 +2003,32 @@ final class VoiceModel {
             var state = VoiceCall.State.done
             var output: String
             var screen: Data?
+            var dispatchMoment = time.moment()
+            var hostDurationMS = 0
+            var bridgeMS: Int? = nil
+            var checkedTap = call.name != "tap_text"
+            var bridgeObservationSource: String? = nil
+            var bridgeEffective: Bool? = nil
+            var bridgeConfirmed: Bool? = nil
+            var usedLiveVision = false
             if local, Self.phoneTools.contains(call.name) {
+                dispatchMoment = time.moment()
                 let answer = await phoneTool(call.name, call.arguments, operation)
+                hostDurationMS = VoiceTurnTiming.elapsedMS(from: dispatchMoment, to: time.moment())
                 output = answer.text.count > 6000 ? String(answer.text.prefix(6000)) + "…" : answer.text
                 screen = answer.screen
                 if answer.failed { state = .failed }
             } else if local {
+                dispatchMoment = time.moment()
                 output = Self.localTool(call.name)
+                hostDurationMS = VoiceTurnTiming.elapsedMS(from: dispatchMoment, to: time.moment())
             } else if let bridge {
                 do {
+                    let firstStart = time.moment()
+                    dispatchMoment = firstStart
                     var result = try await bridge.run(callID: call.id, name: call.name, arguments: call.arguments)
+                    hostDurationMS += VoiceTurnTiming.elapsedMS(from: firstStart, to: time.moment())
+                    if let ms = result.ms { bridgeMS = (bridgeMS ?? 0) + ms }
                     var note = ""
                     if result.state == "check", let target = result.target {
                         if stopped(call) {
@@ -1692,15 +2046,26 @@ final class VoiceModel {
                             if case .approved(let why) = clearance { note = "The user allowed it on the phone (\(why)). "; log.add("voice", "tap approved: \(why)") }
                             var checked = ["text": target.text]
                             checked["app"] = app?.bundle_id
+                            checkedTap = true
+                            let tapStart = time.moment()
+                            dispatchMoment = tapStart
                             result = try await bridge.run(callID: call.id, name: call.name, arguments: call.arguments, checked: checked)
+                            hostDurationMS += VoiceTurnTiming.elapsedMS(from: tapStart, to: time.moment())
+                            if let ms = result.ms { bridgeMS = (bridgeMS ?? 0) + ms }
                         } else {
+                            checkedTap = false
                             result = Self.refused(clearance)
                             log.add("voice", "tap not sent: \(result.output)")
                         }
                     }
+                    bridgeObservationSource = result.observation_source
+                    bridgeEffective = result.effective_action
+                    bridgeConfirmed = result.target_confirmed
+                    if let bridgeMS { hostDurationMS = max(hostDurationMS, bridgeMS) }
                     output = note + result.output
                     if result.state != "done" { state = .failed }
                 } catch {
+                    hostDurationMS = VoiceTurnTiming.elapsedMS(from: dispatchMoment, to: time.moment())
                     // The bridge may have run it; never send it again. The model hears that the outcome is unknown.
                     output = "unknown: the bridge did not answer (\(error.localizedDescription)); the action may have run. Read the screen before trying again."
                     state = .failed
@@ -1713,23 +2078,48 @@ final class VoiceModel {
                 if let describeScreen {
                     if call.session == session, ready, !stopped(call), let image = VoiceScreen.dataURL(screen),
                        let description = try? await describeScreen(image) {
+                        usedLiveVision = true
                         output += "\nCurrent screen description: " + description
                     }
                 } else {
                     output += "\nScreenshot descriptions require an HTTPS voice bridge. Use the screen elements."
                 }
             }
-            finish(call.id, state: state, output: output, screen: live ? nil : screen)
+            let endMoment = time.moment()
+            let observationSource = VoiceTurnTiming.observationSource(
+                name: call.name, actionHost: callActionHost, state: state,
+                output: output, hasScreen: screen != nil, usedLiveVision: usedLiveVision,
+                bridgeSource: bridgeObservationSource
+            )
+            let effective = VoiceTurnTiming.didTakeEffect(
+                name: call.name, arguments: call.arguments, state: state,
+                output: output, checkedTap: checkedTap, bridgeEffective: bridgeEffective
+            )
+            let confirmed = VoiceTurnTiming.isTargetIndependentlyConfirmed(
+                name: call.name, actionHost: callActionHost, state: state,
+                output: output, observationSource: observationSource, bridgeConfirmed: bridgeConfirmed
+            )
+            let callTiming = VoiceCallTiming(
+                actionIndex: actionIndex, actionHost: callActionHost, observationSource: observationSource,
+                dispatchMoment: dispatchMoment, endMoment: endMoment, hostDurationMS: hostDurationMS,
+                bridgeMS: bridgeMS, effective: effective, confirmed: confirmed
+            )
+            finish(call.id, state: state, output: output, screen: live ? nil : screen, timing: callTiming)
         }
     }
 
-    private func finish(_ id: String, state: VoiceCall.State, output: String, screen: Data? = nil) {
+    private func finish(_ id: String, state: VoiceCall.State, output: String, screen: Data? = nil, timing: VoiceCallTiming? = nil) {
         guard let index = calls.firstIndex(where: { $0.id == id }) else { return }
         calls[index].state = state
         calls[index].output = output
         calls[index].screen = screen
-        calls[index].finished = Date()
-        clock.toolDone = Date()
+        let endMoment = timing?.endMoment ?? time.moment()
+        calls[index].finished = endMoment.date
+        if let timing {
+            recordActionEnd(call: calls[index], state: state, timing: timing)
+        } else {
+            clock.record(.toolDone, at: endMoment)
+        }
         log.add("voice", "tool \(calls[index].name) \(state == .done ? "done" : "failed")")
         if calls[index].silentResult {
             if phase == .thinking, !answerDue { phase = .listening }
@@ -1758,8 +2148,9 @@ final class VoiceModel {
         if !usesLive, sameSession, let screen = call.screen { show(screen, on: link) }
         calls[index].screen = nil
         calls[index].delivered = true
-        lastActivity = time.now()
-        clock.delivered = Date()
+        let deliveredMoment = time.moment()
+        lastActivity = deliveredMoment.date
+        recordResultDelivered(call: call, at: deliveredMoment)
         if usesLive, stopped(call) {
             endIfDone()
             return
@@ -1848,10 +2239,24 @@ final class VoiceModel {
                 say(pcm24k: pcm)
                 let ok = await until(40, { self.clock.spoken != nil && !self.clock.reply.isEmpty && self.activeResponse == nil })
                 report["ok"] = ok
+                if let route = clock.entryRoute { report["entry_route"] = route.rawValue }
+                if let host = clock.voiceHost { report["voice_host"] = host.rawValue }
+                report["action_host"] = clock.actionHost.rawValue
+                report["observation_source"] = clock.observationSource.rawValue
+                report["host_ms"] = ["phone_local": clock.phoneLocalMS, "mac_tools": clock.macToolsMS]
                 report["calls"] = clock.callNames
                 report["reply"] = clock.reply
                 report["tokens"] = clock.tokens
-                report["ms"] = ["heard": clock.ms(\.heard), "call": clock.ms(\.call), "toolDone": clock.ms(\.toolDone), "delivered": clock.ms(\.delivered), "spoken": clock.ms(\.spoken)].compactMapValues { $0 }
+                report["ms"] = [
+                    "said": clock.ms(.said),
+                    "heard": clock.ms(.heard),
+                    "call": clock.ms(.call),
+                    "first_effective_action": clock.ms(.firstEffectiveAction),
+                    "toolDone": clock.ms(.toolDone),
+                    "target_confirmed": clock.ms(.targetConfirmed),
+                    "delivered": clock.ms(.delivered),
+                    "spoken": clock.ms(.spoken),
+                ].compactMapValues { $0 }
             } else {
                 report["ok"] = false
                 report["error"] = { if case .lost(let why) = self.phase { return why } else { return "no session" } }()
