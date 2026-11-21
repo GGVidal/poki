@@ -1284,6 +1284,213 @@ final class VoiceModelTests: XCTestCase {
         XCTAssertTrue(h.voice.isOn, "the result said, the talk waits for the person to go on")
         NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
     }
+
+    func testSpokenRevisionLinksDifferentCallsToOneGoalWithoutDuplicateDraftOrSend() async {
+        struct NotesState {
+            var opened = 0
+            var drafts: [String] = []
+            var sent = 0
+            func screen() -> String {
+                var lines = ["app: 备忘录", #"1 Button "新建备忘录" [340,800,44,44]"#]
+                if let latest = drafts.last {
+                    lines.append(#"2 TextView "\#(latest)" [16,120,360,400]"#)
+                    lines.append(#"3 Button "发送" [330,60,50,34]"#)
+                }
+                return lines.joined(separator: "\n")
+            }
+        }
+        var notes = NotesState()
+        let h = Harness(phoneTool: { name, arguments in
+            let args = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
+            switch name {
+            case "open_app":
+                notes.opened += 1
+                return (notes.screen(), false, nil)
+            case "look":
+                return (notes.screen(), false, nil)
+            case "do":
+                for action in args["actions"] as? [[String: Any]] ?? [] {
+                    if let ref = action["tap"] as? Int {
+                        if ref == 1 { notes.drafts.append("") }
+                        else if ref == 3 { notes.sent += 1 }
+                    }
+                    if let text = action["type"] as? String {
+                        if notes.drafts.isEmpty { notes.drafts.append(text) }
+                        else { notes.drafts[notes.drafts.count - 1] = text }
+                    }
+                }
+                return (notes.screen(), false, nil)
+            default:
+                return ("ok", false, nil)
+            }
+        })
+        await h.liveTalk()
+
+        h.link.play(["type": "session.input_transcript.delta", "delta": "打开备忘录，写周五", "start_ms": 0, "end_ms": 600],
+                    ["type": "session.delegation.created", "delegation": ["id": "d1"]])
+        h.link.call("call-open-1", "open_app", arguments: #"{"app":"备忘录"}"#, delegation: "d1")
+        await h.time.settle()
+        h.link.call("call-draft-1", "do", arguments: #"{"actions":[{"tap":1},{"type":"周五"}]}"#, delegation: "d1")
+        await h.time.settle()
+        XCTAssertEqual(notes.drafts, ["周五"])
+
+        h.link.play(["type": "session.input_transcript.delta", "delta": "改成周六，", "start_ms": 900, "end_ms": 1200],
+                    ["type": "session.input_transcript.delta", "delta": "先别发送", "start_ms": 1200, "end_ms": 1500],
+                    ["type": "session.delegation.created", "delegation": ["id": "d2"]])
+        h.link.call("call-open-2", "open_app", arguments: #"{"app":"备忘录"}"#, delegation: "d2")
+        h.link.call("call-draft-2", "do", arguments: #"{"actions":[{"tap":1},{"type":"周六"}]}"#, delegation: "d2")
+        h.link.call("call-send-2", "do", arguments: #"{"actions":[{"tap":3}]}"#, delegation: "d2")
+        await h.time.settle()
+
+        XCTAssertEqual(notes.opened, 1, "Revising the same goal must not reopen Notes redundantly.")
+        XCTAssertEqual(notes.drafts.count, 1, "Different call IDs for a revision must stay on the same draft.")
+        XCTAssertEqual(notes.sent, 0, "The execution gate must block sending after the user said not to send.")
+
+        h.link.call("call-look-2", "look", arguments: "{}", delegation: "d2")
+        await h.time.settle()
+        h.link.call("call-edit-2", "do", arguments: #"{"actions":[{"tap":2},{"type":"周六"}]}"#, delegation: "d2")
+        await h.time.settle()
+
+        XCTAssertEqual(notes.drafts, ["周六"], "The single existing draft must be updated to Saturday.")
+        XCTAssertEqual(notes.sent, 0)
+        h.voice.stop()
+    }
+
+    func testRevisionAfterUnknownStepOutcomeRecoversWithFreshEvidenceWithoutRepeatingSideEffect() async {
+        var draftCreations = 0
+        var edits: [String] = []
+        var looks = 0
+        let screen = "app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"# + "\n" + #"2 TextView "周五" [16,120,360,400]"#
+        let h = Harness(phoneTool: { name, arguments in
+            let args = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
+            if name == "open_app" {
+                return ("app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"#, false, nil)
+            }
+            if name == "look" {
+                looks += 1
+                return (screen, false, nil)
+            }
+            if name == "do" {
+                let actions = args["actions"] as? [[String: Any]] ?? []
+                if actions.contains(where: { $0["tap"] as? Int == 1 }) {
+                    draftCreations += 1
+                    return ("unknown: the bridge did not answer; the action may have run. Read the screen before trying again.", true, nil)
+                }
+                if let text = actions.compactMap({ $0["type"] as? String }).last {
+                    edits.append(text)
+                    return ("app: 备忘录\n" + #"2 TextView "\#(text)" [16,120,360,400]"#, false, nil)
+                }
+            }
+            return ("ok", false, nil)
+        })
+        await h.talk()
+
+        h.link.play(["type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "打开备忘录，写周五"],
+                    ["type": "response.created", "response": ["id": "r1"]],
+                    ["type": "response.output_item.done", "response_id": "r1",
+                     "item": ["type": "function_call", "call_id": "c-open", "name": "open_app", "arguments": #"{"app":"备忘录"}"#]])
+        await h.time.settle()
+        h.link.play(["type": "response.output_item.done", "response_id": "r1",
+                     "item": ["type": "function_call", "call_id": "c-draft-unknown", "name": "do", "arguments": #"{"actions":[{"tap":1},{"type":"周五"}]}"#]],
+                    ["type": "response.done", "response": ["id": "r1"]])
+        await h.time.settle()
+        XCTAssertEqual(draftCreations, 1)
+
+        h.link.play(["type": "conversation.item.input_audio_transcription.completed", "item_id": "u2", "transcript": "改成周六，先别发送"],
+                    ["type": "response.created", "response": ["id": "r2"]],
+                    ["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-repeat-unknown", "name": "do", "arguments": #"{"actions":[{"tap":1},{"type":"周六"}]}"#]],
+                    ["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-blind-edit", "name": "do", "arguments": #"{"actions":[{"tap":2},{"type":"周六"}]}"#]])
+        await h.time.settle()
+
+        XCTAssertEqual(draftCreations, 1, "An unknown-outcome step must never be repeated on revision.")
+        XCTAssertTrue(edits.isEmpty, "Mutating input must wait for fresh screen evidence after an unknown outcome.")
+
+        h.link.play(["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-look-recover", "name": "look", "arguments": "{}"]])
+        await h.time.settle()
+        XCTAssertEqual(looks, 1)
+
+        h.link.play(["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-edit-after-look", "name": "do", "arguments": #"{"actions":[{"tap":2},{"type":"周六"}]}"#]])
+        await h.time.settle()
+
+        XCTAssertEqual(draftCreations, 1)
+        XCTAssertEqual(edits, ["周六"], "After fresh evidence arrives, the remaining edit must proceed.")
+        h.voice.stop()
+    }
+
+    func testReconnectPreservesPriorResultsAndRecomputesRemainingStepsUnderNewRevision() async {
+        let time = FakeTime()
+        var draftCreations = 0
+        var edits: [String] = []
+        var sends = 0
+        let screen = "app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"# + "\n" + #"2 TextView "周五" [16,120,360,400]"# + "\n" + #"3 Button "发送" [330,60,50,34]"#
+        let h = Harness(time: time, phoneTool: { name, arguments in
+            let args = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
+            switch name {
+            case "open_app":
+                return ("app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"#, false, nil)
+            case "look":
+                return (screen, false, nil)
+            case "do":
+                let actions = args["actions"] as? [[String: Any]] ?? []
+                if actions.contains(where: { $0["tap"] as? Int == 1 }) {
+                    await time.clock.sleep(.seconds(1))
+                    draftCreations += 1
+                    return (screen, false, nil)
+                }
+                if actions.contains(where: { $0["tap"] as? Int == 3 }) {
+                    sends += 1
+                    return ("sent", false, nil)
+                }
+                if let text = actions.compactMap({ $0["type"] as? String }).last {
+                    edits.append(text)
+                    return ("app: 备忘录\n" + #"2 TextView "\#(text)" [16,120,360,400]"#, false, nil)
+                }
+                return (screen, false, nil)
+            default:
+                return ("ok", false, nil)
+            }
+        })
+        await h.talk()
+        h.link.play(["type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "打开备忘录，写周五"],
+                    ["type": "response.created", "response": ["id": "r1"]],
+                    ["type": "response.output_item.done", "response_id": "r1",
+                     "item": ["type": "function_call", "call_id": "c-open", "name": "open_app", "arguments": #"{"app":"备忘录"}"#]])
+        await time.settle()
+        h.link.play(["type": "response.output_item.done", "response_id": "r1",
+                     "item": ["type": "function_call", "call_id": "c-draft", "name": "do", "arguments": #"{"actions":[{"tap":1},{"type":"周五"}]}"#]])
+        await time.settle()
+        h.link.onClosed?("network dropped mid-step")
+        await time.advance(1)
+        XCTAssertEqual(draftCreations, 1)
+
+        await h.talk()
+        h.link.play(["type": "conversation.item.input_audio_transcription.completed", "item_id": "u2", "transcript": "改成周六，先别发送"],
+                    ["type": "response.created", "response": ["id": "r2"]],
+                    ["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-draft-dup", "name": "do", "arguments": #"{"actions":[{"tap":1},{"type":"周六"}]}"#]],
+                    ["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-send-dup", "name": "do", "arguments": #"{"actions":[{"tap":3}]}"#]])
+        await time.advance(1)
+
+        XCTAssertEqual(draftCreations, 1, "Reconnect recovery must preserve the prior draft instead of creating a second one.")
+        XCTAssertEqual(sends, 0, "Reconnect recovery must honor the revised no-send constraint.")
+
+        h.link.play(["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-look", "name": "look", "arguments": "{}"]])
+        await time.settle()
+        h.link.play(["type": "response.output_item.done", "response_id": "r2",
+                     "item": ["type": "function_call", "call_id": "c-edit", "name": "do", "arguments": #"{"actions":[{"tap":2},{"type":"周六"}]}"#]])
+        await time.settle()
+
+        XCTAssertEqual(draftCreations, 1)
+        XCTAssertEqual(edits, ["周六"])
+        XCTAssertEqual(sends, 0)
+        h.voice.stop()
+    }
 }
 
 /// OpenAI's client_secrets endpoint, served without the network: it keeps the session Poki asked for.
