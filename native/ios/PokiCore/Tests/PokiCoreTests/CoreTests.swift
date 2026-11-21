@@ -457,6 +457,16 @@ final class ApprovalTests: XCTestCase {
         }
     }
 
+    func testIndependentVoiceAsksWhenOnlyTransferTextIsReadable() async throws {
+        let (core, _, _) = makeCore()
+        let label = "转账 ¥30"
+        let fallback = try JSONDecoder().decode(VoiceTapEvidence.self, from: Data(
+            #"{"snapshot":"","control":"转账 ¥30","pressed":{"role":"StaticText","label":"转账 ¥30"}}"#.utf8
+        ))
+        let clearance = await core.clearTap(on: label, inApp: "com.example.shop", named: "Shop", waiting: 0, evidence: fallback)
+        XCTAssertEqual(clearance, .unanswered("a payment (\"转账\")"))
+    }
+
     func testOrdinaryContentWithPaymentWordsDoesNotAskForApproval() async {
         let cases: [(app: String, node: Node, action: JSON, endpoint: String, attempts: Int)] = [
             ("WeChat", Node("Other", "聊天记录 转账", [0, 90, 390, 680]), ["swipe": "up"], "POST /wda/pressAndDragWithVelocity", 1),
@@ -617,6 +627,36 @@ final class ApprovalTests: XCTestCase {
                 XCTAssertNil(core.pendingApproval, result.text)
             }
         }
+    }
+
+    func testMessagingTapWithoutReadableTargetAfterTransitionRequiresApproval() async {
+        let wda = FakeWDA()
+        wda.set("GET /wda/activeAppInfo") { _ in (200, ["value": ["bundleId": "com.tencent.xin", "name": "WeChat"]]) }
+        wda.tree([
+            Node("Button", "Open chat", [12, 120, 80, 44]),
+            Node("Button", "More", [12, 220, 260, 44]),
+        ])
+        wda.set("POST /wda/tap") { [wda] _ in
+            wda.tree([
+                Node("NavigationBar", "Riley", [0, 40, 390, 44]),
+                Node("Button", nil, [12, 220, 260, 44]),
+            ])
+            return (200, ["value": .null])
+        }
+        let (core, _, _) = makeCore(wda) {
+            $0.approvalWait = 0
+            $0.ownerApprovalIntent = { _ in nil }
+        }
+        _ = await core.callTool("look", arguments: "{}")
+
+        let batch = await core.callTool("do", arguments: #"{"actions":[{"tap":1},{"tap":2}]}"#)
+        XCTAssertTrue(batch.text.contains("needs the owner's approval"), batch.text)
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, batch.text)
+
+        let retry = await core.callTool("do", arguments: #"{"actions":[{"tap":[142,242]}]}"#)
+        XCTAssertTrue(retry.text.contains("approval_required"), retry.text)
+        XCTAssertEqual(core.pendingApproval?.reason, "sending a message (a tap in WeChat whose target could not be identified)")
+        XCTAssertEqual(wda.bodies("POST /wda/tap").count, 1, retry.text)
     }
 
     func testIndependentVoiceTapChecksTheSelectedRecipientAndApp() async throws {
