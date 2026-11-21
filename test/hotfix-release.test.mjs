@@ -141,7 +141,7 @@ function checkoutInput(step, key) {
   return step.match(new RegExp(`^          ${key}: (.+)$`, 'm'))?.[1].replace(/^(['"])(.*)\1$/, '$2');
 }
 
-test('the hotfix build checks out the resolved commit with full history', t => {
+test('the hotfix build checks out the resolved commit with full history', async t => {
   const { dir, run, outputs } = mock(t, { realGit: true });
   const source = join(dir, 'source');
   const build = join(dir, 'build');
@@ -194,6 +194,23 @@ test('the hotfix build checks out the resolved commit with full history', t => {
   const result = run(commands(count), { cwd: build });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(readFileSync(outputs, 'utf8').trim(), 'build=2');
+
+  await t.test('rejects depth 2 even when the visible count matches', () => {
+    const shallow = join(dir, 'shallow');
+    mkdirSync(shallow);
+    git(shallow, 'init', '-q');
+    git(shallow, 'fetch', '--quiet', '--no-tags', '--depth=2', source, pinned);
+    git(shallow, 'switch', '-q', '--detach', 'FETCH_HEAD');
+    assert.equal(git(shallow, 'rev-parse', 'HEAD'), pinned);
+    assert.equal(git(shallow, 'rev-parse', '--is-shallow-repository'), 'true');
+    assert.equal(git(shallow, 'rev-list', '--count', 'HEAD'), '2');
+
+    writeFileSync(outputs, '');
+    const rejected = run(commands(count), { cwd: shallow });
+    assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+    assert.match(rejected.stdout, /requires full Git history/);
+    assert.equal(readFileSync(outputs, 'utf8'), '');
+  });
 });
 
 test('a hotfix publishes only its versioned pre-alpha and leaves both rolling releases alone', t => {
