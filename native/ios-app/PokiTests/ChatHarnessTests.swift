@@ -1,6 +1,7 @@
 import ActivityKit
 import Foundation
 import Network
+import PiSwiftAI
 import PokiCore
 import SwiftUI
 import UIKit
@@ -2753,6 +2754,128 @@ final class ChatHarnessTests: XCTestCase {
         for request in chatRequests {
             XCTAssertNil(request["prompt_cache_key"], "Third-party custom Responses endpoint must not receive prompt_cache_key")
         }
+    }
+
+    func testCustomEndpointFailoverFromOfficialPrimaryStripsSessionCacheForThirdPartyBackup() async throws {
+        struct RecordedAttempt: Sendable {
+            let url: String
+            let statusCode: Int
+            let hasPromptCacheKey: Bool
+            let routingHeaders: [String]
+        }
+
+        final class StrictFailoverHTTPClient: ProviderHTTPClient, @unchecked Sendable {
+            private let lock = NSLock()
+            private var recorded: [RecordedAttempt] = []
+
+            var attempts: [RecordedAttempt] { lock.withLock { recorded } }
+
+            func send(_ request: URLRequest) async throws -> ProviderHTTPResponse {
+                try await send(request, timeoutPolicy: .request)
+            }
+
+            func send(_ request: URLRequest, timeoutPolicy: ProviderHTTPTimeoutPolicy) async throws -> ProviderHTTPResponse {
+                let urlString = request.url?.absoluteString ?? ""
+                let json = request.httpBody.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
+                let hasCacheKey = json["prompt_cache_key"] != nil
+                let trackedHeaders: Set<String> = ["session_id", "x-client-request-id", "x-session-affinity"]
+                let routingHeaders = (request.allHTTPHeaderFields ?? [:]).keys
+                    .map { $0.lowercased() }
+                    .filter { trackedHeaders.contains($0) }
+                    .sorted()
+
+                let response: ProviderHTTPResponse
+                if request.url?.host?.lowercased() == "api.openai.com" {
+                    response = ProviderHTTPResponse(
+                        statusCode: 503,
+                        headers: ["content-type": "application/json"],
+                        body: Data(#"{"error":{"message":"Upstream temporarily unavailable"}}"#.utf8)
+                    )
+                } else if hasCacheKey || !routingHeaders.isEmpty {
+                    response = ProviderHTTPResponse(
+                        statusCode: 400,
+                        headers: ["content-type": "application/json"],
+                        body: Data(#"{"error":{"code":"unsupported_parameter","message":"Unknown prompt_cache_key or session header"}}"#.utf8)
+                    )
+                } else {
+                    response = ProviderHTTPResponse(
+                        statusCode: 200,
+                        headers: ["content-type": "text/event-stream"],
+                        body: Data(FakeCompletions.responsesText("Backup reply ok.").utf8)
+                    )
+                }
+
+                lock.withLock {
+                    recorded.append(RecordedAttempt(
+                        url: urlString,
+                        statusCode: response.statusCode,
+                        hasPromptCacheKey: hasCacheKey,
+                        routingHeaders: routingHeaders
+                    ))
+                }
+                return response
+            }
+        }
+
+        let primaryAddress = "https://api.openai.com/v1"
+        let backupAddress = "https://strict-backup.example/v1"
+        let provider = CustomProvider(
+            name: "Official Primary With Strict Third-Party Backup",
+            endpoints: [
+                CustomEndpoint(url: primaryAddress, api: .responses, found: .responses),
+                CustomEndpoint(url: backupAddress, api: .responses, found: .responses),
+            ],
+            model: "gpt-4.1-mini",
+            reasoning: false
+        )
+        try ModelKeys.saveCustom(provider, typedKey: "test-key", keepKey: false)
+        defer { CustomProviders.remove(provider.id) }
+
+        let model = try XCTUnwrap(ModelProvider.custom.piModel(CustomProviders.choiceID(provider.id, provider.model)))
+        XCTAssertEqual(model.baseUrl, primaryAddress)
+        XCTAssertEqual(model.api, .openAIResponses)
+        let backups = CustomEndpointClient.backupAddresses(for: model)
+        XCTAssertEqual(backups, [backupAddress])
+
+        let sessionKey = PiLoop.sessionCacheKey(for: .custom, model: model, sessionID: "failover-session-01")
+        XCTAssertEqual(sessionKey, "failover-session-01")
+
+        let transport = StrictFailoverHTTPClient()
+        let endpoint = CustomEndpointClient(inner: transport, primary: model.baseUrl, backups: backups)
+        var options = SimpleStreamOptions()
+        options.apiKey = "test-key"
+        options.httpClient = endpoint
+        options.sessionId = sessionKey
+
+        let stream = try PiSwiftAI.streamSimple(
+            model: model,
+            context: PiSwiftAI.Context(messages: [.user(UserMessage(content: .text("Ping")))]),
+            options: options
+        )
+        let reply = await stream.result()
+
+        let attempts = transport.attempts
+        XCTAssertEqual(attempts.count, 2, "Expected primary attempt followed by backup failover")
+        guard attempts.count == 2 else { return }
+
+        XCTAssertEqual(attempts[0].url, "https://api.openai.com/v1/responses")
+        XCTAssertEqual(attempts[0].statusCode, 503)
+        XCTAssertTrue(attempts[0].hasPromptCacheKey, "Official api.openai.com primary should keep prompt_cache_key")
+        XCTAssertEqual(attempts[0].routingHeaders, ["session_id", "x-client-request-id"])
+
+        XCTAssertEqual(attempts[1].url, "https://strict-backup.example/v1/responses")
+        XCTAssertFalse(attempts[1].hasPromptCacheKey, "Third-party backup must not receive prompt_cache_key")
+        XCTAssertEqual(attempts[1].routingHeaders, [], "Third-party backup must not receive OpenAI session headers")
+        XCTAssertEqual(attempts[1].statusCode, 200, "Strict third-party backup must return HTTP 200 after primary 503")
+
+        XCTAssertEqual(endpoint.seen?.status, 200)
+        XCTAssertEqual(endpoint.seen?.movedFrom, ["https://api.openai.com/v1/responses (HTTP 503)"])
+        XCTAssertNotEqual(reply.stopReason, .error)
+        let replyText = reply.content.compactMap { block -> String? in
+            if case .text(let text) = block { return text.text }
+            return nil
+        }.joined()
+        XCTAssertEqual(replyText, "Backup reply ok.")
     }
 
     func testDirectEngineWidensResultCardSchemaWhenSwitchingAppsMidTask() async throws {
