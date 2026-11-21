@@ -1,0 +1,98 @@
+[
+  {
+    "id": "short",
+    "parts": [
+      "打开照片。"
+    ],
+    "expected": "com.apple.mobileslideshow",
+    "file": "short.flac",
+    "speech": [
+      [
+        320,
+        1378.7916666666667
+      ]
+    ],
+    "durationMs": 3978.7916666666665,
+    "pcmSha256": "a92aa86fcfe1606634f45ad3bebbe9165483feaaef881a2743b8357d8b0b1109"
+  },
+  {
+    "id": "address",
+    "parts": [
+      "点一下页面上的和平路，",
+      "十七号三楼。"
+    ],
+    "gapMs": 1150,
+    "expected": "和平路17号3楼",
+    "decoy": "和平路",
+    "file": "address.flac",
+    "speech": [
+      [
+        320,
+        2476.5833333333335
+      ],
+      [
+        3626.5833333333335,
+        4934.375
+      ]
+    ],
+    "durationMs": 7534.375,
+    "pcmSha256": "3bb106803ca1be7759026a7c414535063b479364d9490c1011385ac74be53be2"
+  },
+  {
+    "id": "correction",
+    "parts": [
+      "点一下页面上的林小河。",
+      "抱歉，改成林小雨。"
+    ],
+    "gapMs": 1150,
+    "expected": "林小雨",
+    "decoy": "林小河",
+    "file": "correction.flac",
+    "speech": [
+      [
+        320,
+        2561.7083333333335
+      ],
+      [
+        3711.7083333333335,
+        5788.791666666667
+      ]
+    ],
+    "durationMs": 8388.791666666666,
+    "pcmSha256": "3ab98eb6ff3fa7a37098fae2a00ba913748111bd22d5e9d3b0bc6ee281642241"
+  },
+  {
+    "id": "noise",
+    "parts": [
+      "打开设置。"
+    ],
+    "noise": true,
+    "expected": "com.apple.Preferences",
+    "file": "noise.flac",
+    "speech": [
+      [
+        320,
+        1210.8333333333335
+      ]
+    ],
+    "durationMs": 3810.8333333333335,
+    "pcmSha256": "ec28377274d675e9309153d06338fa00876dd38d4599687ce0b1b55dd4789f5a"
+  },
+  {
+    "id": "english",
+    "parts": [
+      "Open the Photos app."
+    ],
+    "voice": "Samantha",
+    "expected": "com.apple.mobileslideshow",
+    "file": "english.flac",
+    "speech": [
+      [
+        320,
+        1454.4166666666667
+      ]
+    ],
+    "durationMs": 4054.4166666666665,
+    "pcmSha256": "6b38c38e4910c69cf9f798b07f9fab4e06fdbaf18d8b8a3a857cf268d6582a5c"
+  }
+]

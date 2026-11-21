@@ -1,0 +1,4 @@
+{"sample":"noise","round":1,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"noise","round":1,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":1,"mode":"server_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
+{"sample":"english","round":1,"mode":"semantic_vad","failed":"Bridge could not mint a Realtime session (HTTP 500)"}
