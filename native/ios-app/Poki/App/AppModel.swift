@@ -502,7 +502,8 @@ final class AppModel {
     }
 
     private func unlockForLocalTask(timeout: Double) async -> Bool {
-        guard !PhoneOperationCancellation.stopped, sessionOn, !ownerPaused, ChatModel.delegatedBusy == nil, approvals.isEmpty,
+        // Stop revokes the old task's scope. A new task can unlock before it wakes automation.
+        guard !PhoneOperationCancellation.stopped, sessionOn, ChatModel.delegatedBusy == nil, approvals.isEmpty,
               !passcodeConfirmationPending, !InProcessWDA.automationDeclined else {
             log.add("auto-unlock", "lock detected: the current task cannot unlock the iPhone")
             return false

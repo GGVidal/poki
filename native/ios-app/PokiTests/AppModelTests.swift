@@ -19,6 +19,17 @@ final class FakeAutomation: InProcessAutomation, @unchecked Sendable {
     private let lock = NSLock()
     private var open = false
     var isOpen: Bool { lock.withLock { open } }
+    private var screenLocked = false
+    var isScreenLocked: Bool { lock.withLock { screenLocked } }
+    func lockScreen() { lock.withLock { screenLocked = true } }
+    func submitUnlockPasscode(_ passcode: String, timeout: TimeInterval, allowed: @escaping () -> Bool) -> PKUnlockResult {
+        guard allowed() else { return .unavailable }
+        return lock.withLock {
+            guard open, screenLocked else { return .unavailable }
+            screenLocked = false
+            return .unlocked
+        }
+    }
     private var gate: DispatchSemaphore?
     private var heldOpenStarted = false
     private var answer: [String: Any]?
@@ -1436,6 +1447,35 @@ final class InProcessPasscodeTests: XCTestCase {
         await waitFor("the delayed automation session was closed") { !self.session.isOpen }
         XCTAssertTrue(model.sessionOn, "Stopping the task should leave Poki on")
     }
+
+    #if targetEnvironment(simulator)
+    func testNewLocalTaskUnlocksAfterStopWhileTheOldTaskStaysStopped() async throws {
+        try XCTSkipUnless(!model.autoUnlock.enabled, "Use a simulator without a saved automatic unlock setting")
+        try model.autoUnlock.save("135790")
+        defer { try? model.autoUnlock.disable() }
+        await openSessionForATask()
+        let stoppedTask = try XCTUnwrap(model.host.automationCancellation)
+        model.stopFromOutside(AppModel.liveActivityStop)
+        await waitFor("Stop closed automation") { self.model.lastInProcessClose?.closed == true }
+
+        let transport = SessionScreenTransport(session: session, reportsLockBeforeSession: true)
+        let core = PokiCore(config: CoreConfig(), host: model.host, transport: transport)
+        model.prepareForTask()
+        session.lockScreen()
+        let late = await PhoneOperationCancellation.$automation.withValue(stoppedTask) {
+            await core.callTool("look", arguments: "{}", localTask: "stopped task")
+        }
+        XCTAssertTrue(late.text.contains("Task stopped"), late.text)
+        XCTAssertTrue(session.isScreenLocked)
+        XCTAssertFalse(session.isOpen, "The old task must leave automation closed")
+
+        await finishPreparing()
+        let next = await core.callTool("look", arguments: "{}", localTask: "new task")
+        XCTAssertFalse(next.isError, next.text)
+        XCTAssertFalse(session.isScreenLocked, "A new local task should unlock after Stop")
+        XCTAssertTrue(next.text.contains("General"), next.text)
+    }
+    #endif
 
     func testStopCancelsAReopenAlreadyRequestedDuringClose() async {
         useSystem(26)
