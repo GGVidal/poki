@@ -109,6 +109,7 @@ private struct WatchVoiceRemoteView: View {
             .navigationTitle("Poki")
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
+            model.setActive(phase == .active)
             if phase == .active {
                 model.opened()
                 Task { await model.requestNotifications() }
