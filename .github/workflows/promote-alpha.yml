@@ -13,6 +13,11 @@ on:
         type: string
         required: false
         default: ''
+      prealpha_run:
+        description: "Pre-alpha workflow run ID for a hotfix build (also provide its tag)"
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: promote-alpha
@@ -24,19 +29,27 @@ permissions:
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       sha: ${{ steps.r.outputs.sha }}
       version: ${{ steps.r.outputs.version }}
       build: ${{ steps.r.outputs.build }}
       run: ${{ steps.r.outputs.run }}
+      ipa_sha256: ${{ steps.r.outputs.ipa_sha256 }}
     steps:
       - id: r
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           WANT: ${{ inputs.prealpha }}
+          HOTFIX_RUN: ${{ inputs.prealpha_run }}
         run: |
           set -euo pipefail
+          if [ -n "$HOTFIX_RUN" ] && [ -z "$WANT" ]; then
+            echo "::error::a hotfix run requires its explicit Pre-alpha tag"; exit 1
+          fi
           if [ -z "$WANT" ]; then
             ipa="$(gh release view app-prealpha-latest --json assets --jq '.assets[].name' | grep -E '^Poki-external-.*\.ipa$' | head -1)"
             stem="${ipa#Poki-external-}"; stem="${stem%.ipa}"
@@ -45,14 +58,30 @@ jobs:
           [[ "$WANT" =~ ^app-([0-9]+\.[0-9]+\.[0-9]+)-prealpha\.([0-9]+)$ ]] || { echo "::error::$WANT is not app-X.Y.Z-prealpha.N"; exit 1; }
           version="${BASH_REMATCH[1]}" build="${BASH_REMATCH[2]}"
           sha="$(gh api "repos/$GH_REPO/commits/$WANT" --jq .sha)"
-          # The pre-alpha run that built this commit; its artifact is the file to promote.
-          run="$(gh run list --workflow prealpha.yml --commit "$sha" --status success --json databaseId --jq '.[0].databaseId')"
-          [ -n "$run" ] || { echo "::error::no successful Pre-alpha run built $sha (artifacts are kept 90 days)"; exit 1; }
+          ipa_sha=""
+          if [ -n "$HOTFIX_RUN" ]; then
+            [[ "$HOTFIX_RUN" =~ ^[1-9][0-9]*$ ]] || { echo "::error::prealpha_run must be a run ID"; exit 1; }
+            run="$HOTFIX_RUN"
+            workflow="$(gh api "repos/$GH_REPO/actions/workflows/prealpha.yml" --jq .id)"
+            gh api "repos/$GH_REPO/actions/runs/$run" | jq -e --arg workflow "$workflow" '
+              (.workflow_id | tostring) == $workflow and .head_branch == "main"
+              and .event == "workflow_dispatch" and .conclusion == "success"
+            ' >/dev/null || { echo "::error::expected a successful manual Pre-alpha run from main"; exit 1; }
+            gh run download "$run" --repo "$GH_REPO" --name Poki-hotfix-source --dir provenance
+            ipa_sha="$(jq -er --arg sha "$sha" --arg version "$version" --arg build "$build" '
+              select(.sha == $sha and .version == $version and .build == $build)
+              | .ipa_sha256 | select(test("^[0-9a-f]{64}$"))
+            ' provenance/poki-hotfix-source.json)" || { echo "::error::Pre-alpha run does not match the requested tag"; exit 1; }
+          else
+            # A manual hotfix run's workflow head is main, even though it built a different commit.
+            run="$(gh run list --workflow prealpha.yml --event push --commit "$sha" --status success --json databaseId --jq '.[0].databaseId')"
+            [ -n "$run" ] || { echo "::error::no successful automatic Pre-alpha run built $sha; for a hotfix, specify its run ID"; exit 1; }
+          fi
           if gh api "repos/$GH_REPO/git/ref/tags/app-$version-alpha.$build" >/dev/null 2>&1; then
             echo "::error::app-$version-alpha.$build already exists"; exit 1
           fi
           echo "Promoting $WANT ($sha), Pre-alpha run $run"
-          { echo "sha=$sha"; echo "version=$version"; echo "build=$build"; echo "run=$run"; } >> "$GITHUB_OUTPUT"
+          { echo "sha=$sha"; echo "version=$version"; echo "build=$build"; echo "run=$run"; echo "ipa_sha256=$ipa_sha"; } >> "$GITHUB_OUTPUT"
           echo "## Promote $WANT to Alpha" >> "$GITHUB_STEP_SUMMARY"
 
   # The alpha tests on the pre-alpha's commit: PokiCore and loopback tests, the in-process field,
@@ -96,7 +125,14 @@ jobs:
       - name: The pre-alpha's IPA
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "${{ needs.resolve.outputs.run }}" --name Poki-unsigned --dir app
+          RUN_ID: ${{ needs.resolve.outputs.run }}
+          IPA_SHA: ${{ needs.resolve.outputs.ipa_sha256 }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --name Poki-unsigned --dir app
+          if [ -n "$IPA_SHA" ]; then
+            printf '%s  %s\n' "$IPA_SHA" app/Poki-external-unsigned.ipa | sha256sum -c -
+          fi
       - name: Publish to app-alpha-latest
         env:
           GH_TOKEN: ${{ github.token }}
