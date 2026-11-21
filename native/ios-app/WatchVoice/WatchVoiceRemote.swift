@@ -101,15 +101,6 @@ final class WatchVoiceResultJournal {
     func resultChunk(id: UUID, offset: Int) -> Data {
         updates[id]?.resultChunk(at: offset) ?? Data()
     }
-
-    func replyToResultRequestData(_ data: Data) -> Data? {
-        guard data.count <= WatchVoiceRequest.maxMessageBytes,
-              let request = try? JSONDecoder().decode(WatchVoiceRequest.self, from: data),
-              case .result(let id, let offset) = request else {
-            return nil
-        }
-        return resultChunk(id: id, offset: offset)
-    }
 }
 
 enum WatchVoiceCallState: String, Codable, Equatable, Hashable, Sendable {

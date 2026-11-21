@@ -538,3 +538,152 @@ final class WatchVoiceRemoteHost {
         return reply
     }
 }
+
+@MainActor
+protocol WatchVoiceTransport: AnyObject {
+    var isActivated: Bool { get }
+    var isPaired: Bool { get }
+    var isWatchAppInstalled: Bool { get }
+    var isReachable: Bool { get }
+    var applicationContext: [String: Any] { get }
+    func updateApplicationContext(_ context: [String: Any]) throws
+    func sendMessage(_ message: [String: Any])
+    func sendMessageData(_ data: Data)
+    func transferUserInfo(_ userInfo: [String: Any])
+}
+
+@MainActor
+final class WatchVoiceRemoteChannel {
+    let remoteHost: WatchVoiceRemoteHost
+    let resultJournal: WatchVoiceResultJournal
+    private let transport: WatchVoiceTransport
+    private var latestTaskContext: Data?
+    private var latestRemoteContext: Data?
+    private var lastSyncedSnapshot: WatchVoiceRemoteSnapshot?
+    private var handlingRemoteCommand = false
+
+    var onTaskRequest: ((WatchVoiceRequest) -> Data)?
+    var onBackgroundTaskNeeded: ((Bool) -> Void)?
+    var onLog: ((String) -> Void)?
+
+    init(
+        remoteHost: WatchVoiceRemoteHost,
+        resultJournal: WatchVoiceResultJournal,
+        transport: WatchVoiceTransport
+    ) {
+        self.remoteHost = remoteHost
+        self.resultJournal = resultJournal
+        self.transport = transport
+        remoteHost.onSnapshot = { [weak self] snapshot in self?.publishRemoteSnapshot(snapshot) }
+        remoteHost.onMeter = { [weak self] meter in self?.publishRemoteMeter(meter) }
+        remoteHost.onResult = { [weak self] result in self?.storeRemoteResult(result) }
+    }
+
+    func handleMessageData(_ data: Data) -> Data {
+        guard data.count <= WatchVoiceRequest.maxMessageBytes,
+              let request = try? JSONDecoder().decode(WatchVoiceRequest.self, from: data) else {
+            return Data()
+        }
+        if case .result(let id, let offset) = request {
+            return resultJournal.resultChunk(id: id, offset: offset)
+        }
+        return onTaskRequest?(request) ?? Data()
+    }
+
+    func handleRemoteMessage(_ message: [String: Any], pushSnapshot: Bool = false) -> [String: Any] {
+        guard let data = message[WatchVoiceRemote.commandKey] as? Data,
+              data.count <= WatchVoiceRequest.maxMessageBytes,
+              let command = try? JSONDecoder().decode(WatchVoiceRemoteCommand.self, from: data) else {
+            return [:]
+        }
+        handlingRemoteCommand = true
+        let reply = remoteHost.handle(command)
+        handlingRemoteCommand = false
+        let currentSnapshot = remoteHost.currentSnapshot()
+        onBackgroundTaskNeeded?(currentSnapshot.state.isActiveCall || currentSnapshot.state == .ending)
+        if pushSnapshot {
+            publishRemoteSnapshot(currentSnapshot)
+        } else {
+            syncRemoteContext(currentSnapshot)
+        }
+        onLog?("Watch remote \(command.action) (\(command.requestID)) -> \(reply.outcome.rawValue), state \(currentSnapshot.state.rawValue) [\(currentSnapshot.epoch):\(currentSnapshot.sequence)]")
+        guard let encoded = try? JSONEncoder().encode(reply) else { return [:] }
+        return [WatchVoiceRemote.replyKey: encoded]
+    }
+
+    func publishTaskUpdate(_ update: WatchVoiceUpdate) {
+        guard transport.isActivated, transport.isWatchAppInstalled else { return }
+        let data = encodeUpdate(update)
+        guard !data.isEmpty else { return }
+        if transport.isReachable { transport.sendMessageData(data) }
+        if update.phase.isTerminal {
+            latestTaskContext = data
+            syncApplicationContext()
+        }
+    }
+
+    func storeRemoteResult(_ update: WatchVoiceUpdate) {
+        do {
+            try resultJournal.store(update)
+        } catch {
+            resultJournal.storeInMemoryFallback(update)
+        }
+        let delivery = encodeUpdate(update)
+        if !delivery.isEmpty,
+           transport.isActivated,
+           transport.isPaired,
+           transport.isWatchAppInstalled {
+            transport.transferUserInfo([WatchVoiceRemote.resultKey: delivery])
+        }
+    }
+
+    func publishRemoteSnapshot(_ snapshot: WatchVoiceRemoteSnapshot) {
+        if !snapshot.state.isActiveCall && snapshot.state != .ending {
+            onBackgroundTaskNeeded?(false)
+        }
+        guard !handlingRemoteCommand else { return }
+        if let lastSyncedSnapshot, lastSyncedSnapshot.isNewer(than: snapshot) { return }
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        lastSyncedSnapshot = snapshot
+        latestRemoteContext = data
+        guard transport.isActivated else { return }
+        if transport.isReachable {
+            transport.sendMessage([WatchVoiceRemote.snapshotKey: data])
+        }
+        syncApplicationContext()
+    }
+
+    func syncRemoteContext(_ snapshot: WatchVoiceRemoteSnapshot) {
+        if let lastSyncedSnapshot, lastSyncedSnapshot.isNewer(than: snapshot) { return }
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        lastSyncedSnapshot = snapshot
+        latestRemoteContext = data
+        syncApplicationContext()
+    }
+
+    func publishRemoteMeter(_ meter: WatchVoiceRemoteMeter) {
+        guard transport.isActivated, transport.isReachable,
+              let data = try? JSONEncoder().encode(meter) else { return }
+        transport.sendMessage([WatchVoiceRemote.meterKey: data])
+    }
+
+    func syncApplicationContext() {
+        guard transport.isActivated, transport.isPaired, transport.isWatchAppInstalled else { return }
+        let context = WatchVoiceRemote.mergeApplicationContext(
+            existing: transport.applicationContext,
+            taskContext: latestTaskContext,
+            remoteContext: latestRemoteContext
+        )
+        guard !context.isEmpty else { return }
+        do {
+            try transport.updateApplicationContext(context)
+        } catch {
+            onLog?("Watch application context sync deferred")
+        }
+    }
+
+    func encodeUpdate(_ update: WatchVoiceUpdate?) -> Data {
+        guard let update else { return Data() }
+        return (try? JSONEncoder().encode(update.forDelivery())) ?? Data()
+    }
+}

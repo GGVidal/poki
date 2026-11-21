@@ -38,6 +38,39 @@ private final class RemoteTestConnection: VoiceConnection, @unchecked Sendable {
 }
 
 @MainActor
+private final class FakeWatchVoiceTransport: WatchVoiceTransport {
+    var isActivated = true
+    var isPaired = true
+    var isWatchAppInstalled = true
+    var isReachable = true
+    var applicationContext: [String: Any] = [:]
+    var sentMessages: [[String: Any]] = []
+    var sentMessageData: [Data] = []
+    var transferredUserInfo: [[String: Any]] = []
+
+    func updateApplicationContext(_ context: [String: Any]) throws {
+        applicationContext = context
+    }
+
+    func sendMessage(_ message: [String: Any]) {
+        sentMessages.append(message)
+    }
+
+    func sendMessageData(_ data: Data) {
+        sentMessageData.append(data)
+    }
+
+    func transferUserInfo(_ userInfo: [String: Any]) {
+        transferredUserInfo.append(userInfo)
+    }
+
+    func decodedRemoteSnapshot() throws -> WatchVoiceRemoteSnapshot {
+        let data = try XCTUnwrap(applicationContext[WatchVoiceRemote.contextKey] as? Data)
+        return try JSONDecoder().decode(WatchVoiceRemoteSnapshot.self, from: data)
+    }
+}
+
+@MainActor
 final class WatchVoiceRemoteTests: XCTestCase {
     private var previousBridge: VoiceBridge?
     private var previousRehearsal: Any?
@@ -376,13 +409,17 @@ final class WatchVoiceRemoteTests: XCTestCase {
         XCTAssertEqual(delivered.fullTextBytes, longText.utf8.count)
         XCTAssertNotEqual(delivered.text, longText)
 
-        // Reload a fresh journal from disk and fetch via real WatchVoiceRequest.result(id:offset:) wire payloads.
-        let reloadedJournal = WatchVoiceResultJournal(url: journalURL)
+        // Reload a fresh journal from disk and fetch via the real channel message-data handler.
+        let reloadedChannel = WatchVoiceRemoteChannel(
+            remoteHost: h.host,
+            resultJournal: WatchVoiceResultJournal(url: journalURL),
+            transport: FakeWatchVoiceTransport()
+        )
         var assembled = Data()
         var chunkSizes: [Int] = []
         while assembled.count < longText.utf8.count {
             let requestData = try JSONEncoder().encode(WatchVoiceRequest.result(id: delivered.id, offset: assembled.count))
-            let chunk = try XCTUnwrap(reloadedJournal.replyToResultRequestData(requestData))
+            let chunk = reloadedChannel.handleMessageData(requestData)
             XCTAssertFalse(chunk.isEmpty)
             chunkSizes.append(chunk.count)
             assembled.append(chunk)
@@ -662,13 +699,17 @@ final class WatchVoiceRemoteTests: XCTestCase {
         XCTAssertEqual(mergedAgain, merged)
         XCTAssertTrue(addedAgain.isEmpty)
 
-        // Full text of the earlier (> 16 KB) offline turn remains retrievable across chunks from disk journal.
-        let reloaded = WatchVoiceResultJournal(url: journalURL)
+        // Full text of the earlier (> 16 KB) offline turn remains retrievable across chunks via the real handler.
+        let reloadedChannel = WatchVoiceRemoteChannel(
+            remoteHost: h.host,
+            resultJournal: WatchVoiceResultJournal(url: journalURL),
+            transport: FakeWatchVoiceTransport()
+        )
         var assembled = Data()
         var chunks = 0
         while assembled.count < firstLongText.utf8.count {
             let req = try JSONEncoder().encode(WatchVoiceRequest.result(id: firstID, offset: assembled.count))
-            let chunk = try XCTUnwrap(reloaded.replyToResultRequestData(req))
+            let chunk = reloadedChannel.handleMessageData(req)
             XCTAssertFalse(chunk.isEmpty)
             assembled.append(chunk)
             chunks += 1
@@ -703,5 +744,97 @@ final class WatchVoiceRemoteTests: XCTestCase {
         )
         XCTAssertEqual(merged2[WatchVoiceRequest.contextKey] as? Data, newerTaskData)
         XCTAssertEqual(merged2[WatchVoiceRemote.contextKey] as? Data, remoteData)
+    }
+
+    func testDelayedDuplicateEndBackgroundCopyDoesNotOverwriteIdleApplicationContext() async throws {
+        let h = Harness(bridgeAddress: BridgeStub.liveAddress)
+        let transport = FakeWatchVoiceTransport()
+        let journalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watch-voice-dup-end-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        let channel = WatchVoiceRemoteChannel(
+            remoteHost: h.host,
+            resultJournal: WatchVoiceResultJournal(url: journalURL),
+            transport: transport
+        )
+        var backgroundTaskActive = false
+        channel.onBackgroundTaskNeeded = { backgroundTaskActive = $0 }
+
+        // Start a Live call and move it to .listening.
+        let startPayload = try JSONEncoder().encode(WatchVoiceRemoteCommand(issuedAt: h.time.now, action: .start))
+        let startReplyDict = channel.handleRemoteMessage([WatchVoiceRemote.commandKey: startPayload], pushSnapshot: false)
+        let startReply = try JSONDecoder().decode(
+            WatchVoiceRemoteReply.self,
+            from: XCTUnwrap(startReplyDict[WatchVoiceRemote.replyKey] as? Data)
+        )
+        XCTAssertEqual(startReply.outcome, .accepted)
+        let callID = try XCTUnwrap(startReply.snapshot.callID)
+        await h.time.settle()
+        h.connection.play(["type": "session.started"])
+        await h.time.settle()
+
+        // Watch tracks the active call, then queues End offline and also flushes the same requestID on reconnect.
+        var watchReducer = WatchVoiceRemoteStateReducer()
+        let listeningSnapshot = try transport.decodedRemoteSnapshot()
+        XCTAssertEqual(listeningSnapshot.state, .listening)
+        XCTAssertTrue(watchReducer.apply(snapshot: listeningSnapshot))
+        let endCommand = try XCTUnwrap(watchReducer.queueEnd(now: h.time.now))
+        let endPayload = try JSONEncoder().encode(endCommand)
+
+        // 1. Instant sendMessage copy arrives first -> Live call enters .ending and caches that receipt.
+        let firstReplyDict = channel.handleRemoteMessage([WatchVoiceRemote.commandKey: endPayload], pushSnapshot: false)
+        let firstReply = try JSONDecoder().decode(
+            WatchVoiceRemoteReply.self,
+            from: XCTUnwrap(firstReplyDict[WatchVoiceRemote.replyKey] as? Data)
+        )
+        XCTAssertEqual(firstReply.outcome, .accepted)
+        XCTAssertEqual(firstReply.snapshot.state, .ending)
+        XCTAssertEqual(try transport.decodedRemoteSnapshot().state, .ending)
+
+        // 2. Live session finishes closing -> phone transitions to .idle and updates applicationContext.
+        h.connection.play(["type": "session.closed", "reason": "done"])
+        await h.time.settle()
+        let idleSnapshot = try transport.decodedRemoteSnapshot()
+        XCTAssertEqual(idleSnapshot.state, .idle)
+        XCTAssertGreaterThan(idleSnapshot.sequence, firstReply.snapshot.sequence)
+        XCTAssertFalse(backgroundTaskActive)
+
+        // 3. Delayed background transferUserInfo copy with the SAME requestID arrives after phone is already .idle.
+        let duplicateReplyDict = channel.handleRemoteMessage([WatchVoiceRemote.commandKey: endPayload], pushSnapshot: true)
+        let duplicateReply = try JSONDecoder().decode(
+            WatchVoiceRemoteReply.self,
+            from: XCTUnwrap(duplicateReplyDict[WatchVoiceRemote.replyKey] as? Data)
+        )
+        // Cached receipt is preserved for duplicate requestID.
+        XCTAssertEqual(duplicateReply, firstReply)
+        XCTAssertEqual(duplicateReply.snapshot.state, .ending)
+
+        // Sync channels MUST carry the phone's current .idle snapshot, never the stale cached .ending snapshot.
+        let contextAfterDuplicate = try transport.decodedRemoteSnapshot()
+        XCTAssertEqual(contextAfterDuplicate.state, .idle)
+        XCTAssertEqual(contextAfterDuplicate.sequence, idleSnapshot.sequence)
+        XCTAssertFalse(backgroundTaskActive)
+
+        let pushedData = try XCTUnwrap(transport.sentMessages.last?[WatchVoiceRemote.snapshotKey] as? Data)
+        let pushedSnapshot = try JSONDecoder().decode(WatchVoiceRemoteSnapshot.self, from: pushedData)
+        XCTAssertEqual(pushedSnapshot.state, .idle)
+        XCTAssertEqual(pushedSnapshot.sequence, idleSnapshot.sequence)
+
+        // A Watch that missed the earlier .idle push applies applicationContext and MUST end up in .idle.
+        XCTAssertTrue(watchReducer.apply(snapshot: contextAfterDuplicate))
+        XCTAssertEqual(watchReducer.latestSnapshot?.state, .idle)
+        XCTAssertNil(watchReducer.pendingEnd)
+        XCTAssertFalse(watchReducer.canShowEndButton)
+        XCTAssertEqual(callID, endCommand.targetCallID)
+
+        // A duplicate instant sendMessage arriving after .idle also keeps applicationContext at .idle.
+        let duplicateInstantDict = channel.handleRemoteMessage([WatchVoiceRemote.commandKey: endPayload], pushSnapshot: false)
+        let duplicateInstant = try JSONDecoder().decode(
+            WatchVoiceRemoteReply.self,
+            from: XCTUnwrap(duplicateInstantDict[WatchVoiceRemote.replyKey] as? Data)
+        )
+        XCTAssertEqual(duplicateInstant, firstReply)
+        XCTAssertEqual(try transport.decodedRemoteSnapshot().state, .idle)
+        XCTAssertEqual(try transport.decodedRemoteSnapshot().sequence, idleSnapshot.sequence)
     }
 }
