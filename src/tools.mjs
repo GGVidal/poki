@@ -16,7 +16,7 @@ const instructions = 'When the request already says what to do on the device, us
 const readOnly = new Set(['observe_device','list_devices', 'get_device_info', 'get_foreground_app', 'list_elements', 'list_apps', 'get_clipboard', 'list_crashes', 'get_crash', 'wait_for', 'wait']);
 const guidance = {
   acquire_device: 'Only needed to keep other sessions off a device across several calls. One batch_commands call already runs without interruption, so a single-call task needs no lease. If you take one, keep the returned lease_id, renew before expiry, then release.',
-  wait_for: 'The timeout covers accessibility, any capture and text recognition, and polling. Success includes the matching observation. Set include_image=true when you also need the picture. A similar text candidate in a timeout is diagnostic only.',
+  wait_for: 'The timeout covers accessibility, any capture and text recognition, and polling. Success includes the matching observation and its picture, so a second screenshot is not needed; set include_image=false when the text alone settles it. A similar text candidate in a timeout is diagnostic only.',
   batch_commands: `Batch known operations. A single visible input can be filled without field. Field and button labels come from observed screen text, in its original language; guesses such as a translated Search label or an unobserved New Tab button require an observation first.
 
 Example:

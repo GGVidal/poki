@@ -679,7 +679,9 @@ export class Devices {
             ({ width } = await sharp(frame.original).metadata());
             image = { type: 'image', data: frame.original.toString('base64'), mimeType: 'image/png' };
           } else {
-            width = Math.round(args.max_width ?? frame.width);
+            // Past the device's own pixels the original is sent as it is, never upscaled (#609).
+            const fullWidth = (await sharp(frame.original).metadata()).width ?? frame.width;
+            width = Math.min(fullWidth, Math.round(args.max_width ?? frame.width));
             const source = args.max_width === undefined ? frame.data : frame.original;
             const jpeg = await sharp(source).resize({ width }).jpeg({ quality: 90 }).toBuffer();
             image = { type: 'image', data: jpeg.toString('base64'), mimeType: 'image/jpeg' };

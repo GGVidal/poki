@@ -224,10 +224,23 @@ const describeElement = element => {
   const label = element.label ?? element.text;
   const parts = [label, value !== label ? value : undefined].filter(part => typeof part === 'string' && part);
   if (isTextInput(element) && !value && element.placeholder) parts.push(`(empty, placeholder ${JSON.stringify(element.placeholder)})`);
-  const disabled = !flagOn(element.enabled);
-  if (!parts.length) return disabled ? `${role} (disabled)` : undefined;
-  return `${role}: ${parts.join(' = ')}${disabled ? ' (disabled)' : ''}${element.focused ? ' (focused)' : ''}`;
+  const states = elementStates(element);
+  if (!parts.length) return states.includes('disabled') ? `${role} (${states.join(', ')})` : undefined;
+  return `${role}: ${parts.join(' = ')}${states.length ? ` (${states.join(', ')})` : ''}`;
 };
+
+// The state words an element line ends with, the same words the iPhone app's look and do use
+// (issue #609): disabled, selected, adjustable, and focused for the field being edited.
+export function elementStates(element) {
+  const traits = Array.isArray(element.trait_names) ? element.trait_names : [];
+  const role = element.type ?? element.role ?? '';
+  const states = [];
+  if (!flagOn(element.enabled) || traits.includes('Not Enabled')) states.push('disabled');
+  if (element.selected === true || element.selected === 1 || traits.includes('Selected')) states.push('selected');
+  if (/^(?:AX|XCUIElementType)?(?:Adjustable|Slider)$/i.test(role) || traits.includes('Adjustable')) states.push('adjustable');
+  if (element.focused) states.push('focused');
+  return states;
+}
 
 // The reply's view of one read: what is visible, in which app, and any system prompt on it.
 export function describeScreen(seen, elements = seen.elements, source = 'accessibility') {
@@ -390,10 +403,12 @@ async function waitForText(ctx, args) {
         checkWork();
         const matches = matching(seen?.elements ?? [], args.text, args.exact);
         if (matches.length && !args.gone) {
-          const frame = seen.viewportFrame ?? (args.include_image === true ? await ctx.capture() : undefined);
+          // The picture comes with a match unless the caller says include_image: false (the owner's
+          // rule for #609: the picture stays unless it is definitely not needed).
+          const frame = seen.viewportFrame ?? (args.include_image !== false ? await ctx.capture().catch(error => { if (stopped(error)) throw error; }) : undefined);
           checkWork();
           const bound = ctx.bindStructureRefs(seen, matches, frame);
-          if (bound) return result(bound.elements, 'accessibility', bound.observation, args.include_image === true ? frame : undefined);
+          if (bound) return result(bound.elements, 'accessibility', bound.observation, args.include_image !== false ? frame : undefined);
         } else if (!matches.length) {
           let recognized;
           try { recognized = await ctx.recognize({ source: 'ocr', max_elements: Number.MAX_SAFE_INTEGER }, seen?.viewportFrame); }

@@ -336,3 +336,15 @@ test('the status shows the commit recorded at build time when git is not there',
  const f=await fixture(t,{beforeStart:dir=>writeFile(join(dir,'build/commit'),'abc1234\n')});
  assert.equal(value(await f.call('poki_mcp_status')).commit,'abc1234');
 });
+
+test('wait_for attaches its picture by default, and element lines carry their states (#609)', async t => {
+  const f = await fixture(t);
+  await f.set({ label: 'Continue' });
+  const reply = await f.call('wait_for', { text: 'Continue', timeout_seconds: 5 });
+  assert.ok(!reply.isError, reply.content[0].text);
+  assert.ok(reply.content.some(block => block.type === 'image'));
+  const { elementStates } = await import('../src/interaction.mjs');
+  assert.deepEqual(elementStates({ role: 'Button', enabled: false, selected: true }), ['disabled', 'selected']);
+  assert.deepEqual(elementStates({ role: 'XCUIElementTypeSlider', value: '50%' }), ['adjustable']);
+  assert.deepEqual(elementStates({ role: 'Button', trait_names: ['Button', 'Not Enabled'] }), ['disabled']);
+});

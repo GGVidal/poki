@@ -1333,7 +1333,7 @@
     },
     {
       "name": "wait_for",
-      "description": "Wait for visible text to appear, or disappear when gone=true. Check accessibility first and use image text recognition when the tree has no match. A tree match omits the image unless include_image=true. Disappearance requires a complete readable result. Timeouts report nearby text and stage durations. timeout_seconds defaults to ten. Optional device selects an id or name; otherwise the session selection or sole available device is used.",
+      "description": "Wait for visible text to appear, or disappear when gone=true. Check accessibility first and use image text recognition when the tree has no match. A match includes the image unless include_image=false. Disappearance requires a complete readable result. Timeouts report nearby text and stage durations. timeout_seconds defaults to ten. Optional device selects an id or name; otherwise the session selection or sole available device is used.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1352,7 +1352,7 @@
           },
           "include_image": {
             "type": "boolean",
-            "description": "Attach a matching screenshot. By default only image recognition results attach one."
+            "description": "Attach the matching screenshot (default true). false leaves it out."
           },
           "timeout_seconds": {
             "type": "number",
