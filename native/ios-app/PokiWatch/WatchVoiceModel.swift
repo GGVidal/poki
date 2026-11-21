@@ -33,12 +33,16 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
     @ObservationIgnored private var meterDecayTask: Task<Void, Never>?
     @ObservationIgnored private var transientSyncTask: Task<Void, Never>?
     @ObservationIgnored private var lastStateQueryAt: Date?
+    @ObservationIgnored private var reachabilityWait: Task<Void, Never>?
+    @ObservationIgnored private var sendTimeout: Task<Void, Never>?
+    @ObservationIgnored private var sendToken = 0
     @ObservationIgnored private var pendingContent: NSKeyValueObservation?
     @ObservationIgnored private var backgroundTasks: [WKWatchConnectivityRefreshBackgroundTask] = []
 
     private(set) var microphone = AVAudioApplication.shared.recordPermission
     private(set) var recording = false
     private(set) var sending = false
+    private(set) var deliveryFailure: WatchVoiceDeliveryFailure?
     private(set) var problem: LocalizedStringResource?
 
     private(set) var remoteReachable = false
@@ -48,6 +52,9 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
     var hasPending: Bool { archive.pending != nil }
     var update: WatchVoiceUpdate? { archive.pending?.update }
     var results: [WatchVoiceUpdate] { archive.results }
+    var pendingStatus: WatchVoicePendingStatus {
+        WatchVoicePendingStatus.resolve(hasPending: hasPending, sending: sending, update: update, failure: deliveryFailure)
+    }
 
     var remoteSnapshot: WatchVoiceRemoteSnapshot? { remoteReducer.latestSnapshot }
     var remoteIsMuted: Bool { remoteReducer.latestSnapshot?.isMuted ?? false }
@@ -94,7 +101,7 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         flushPendingEnd()
         refreshRemoteState()
         updateActiveSync()
-        sync()
+        if archive.pending != nil { sync() }
     }
 
     func refreshRemoteState() {
@@ -327,6 +334,7 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
     func startRecording() {
         guard microphone == .granted, !hasPending, !recording else { return }
         problem = nil
+        deliveryFailure = nil
         do {
             let audio = AVAudioSession.sharedInstance()
             try audio.setCategory(.record, mode: .default)
@@ -374,6 +382,17 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         try? FileManager.default.removeItem(at: recordingURL)
     }
 
+    func discardPending() {
+        guard archive.pending?.update == nil else { return }
+        cancelInFlightDelivery()
+        var next = archive
+        next.pending = nil
+        if save(next) {
+            deliveryFailure = nil
+            problem = nil
+        }
+    }
+
     private func releaseMicrophone() {
         recordingLimit?.cancel()
         recordingLimit = nil
@@ -383,35 +402,122 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    private func cancelInFlightDelivery() {
+        sendToken &+= 1
+        reachabilityWait?.cancel()
+        reachabilityWait = nil
+        sendTimeout?.cancel()
+        sendTimeout = nil
+        sending = false
+    }
+
     func sync() {
         guard let pending = archive.pending, !sending else { return }
-        guard session.activationState == .activated, session.isReachable else {
-            problem = "iPhone is unavailable. Open Poki on your iPhone and try again."
+        deliveryFailure = nil
+        problem = nil
+        if session.activationState != .activated {
+            session.activate()
+            waitForConnection(id: pending.id, onTimeout: .sessionInactive)
             return
         }
-        let request = pending.audio.map { WatchVoiceRequest.submit(id: pending.id, audio: $0) } ?? .status(id: pending.id)
-        guard let data = try? JSONEncoder().encode(request) else { return }
+        if !session.isCompanionAppInstalled {
+            failDelivery(.companionNotInstalled)
+            return
+        }
+        if session.iOSDeviceNeedsUnlockAfterRebootForReachability {
+            failDelivery(.needsUnlockAfterReboot)
+            return
+        }
+        if !session.isReachable {
+            waitForConnection(id: pending.id, onTimeout: .phoneUnavailable)
+            return
+        }
+        sendNow(pending)
+    }
+
+    private func waitForConnection(id: UUID, onTimeout failure: WatchVoiceDeliveryFailure) {
+        reachabilityWait?.cancel()
         sending = true
-        problem = nil
+        sendToken &+= 1
+        let token = sendToken
+        reachabilityWait = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self, self.sendToken == token, self.archive.pending?.id == id else { return }
+            self.reachabilityWait = nil
+            self.sending = false
+            if self.session.activationState == .activated, self.session.isReachable {
+                self.sync()
+            } else if self.session.iOSDeviceNeedsUnlockAfterRebootForReachability {
+                self.failDelivery(.needsUnlockAfterReboot)
+            } else {
+                self.failDelivery(failure)
+            }
+        }
+    }
+
+    private func sendNow(_ pending: Pending) {
+        reachabilityWait?.cancel()
+        reachabilityWait = nil
+        let request = pending.audio.map { WatchVoiceRequest.submit(id: pending.id, audio: $0) } ?? .status(id: pending.id)
+        guard let data = try? JSONEncoder().encode(request) else {
+            failDelivery(.deliveryFailed)
+            return
+        }
+        sendToken &+= 1
+        let token = sendToken
+        sending = true
+        sendTimeout?.cancel()
+        sendTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, let self, self.sendToken == token, self.archive.pending?.id == pending.id else { return }
+            self.sendTimeout = nil
+            self.sending = false
+            self.failDelivery(.timedOut)
+        }
         session.sendMessageData(data) { [weak self] reply in
             Task { @MainActor in
                 guard let self, self.archive.pending?.id == pending.id else { return }
-                self.sending = false
+                let matchesCurrent = self.sendToken == token
+                if matchesCurrent {
+                    self.sendTimeout?.cancel()
+                    self.sendTimeout = nil
+                    self.sending = false
+                }
                 if let update = try? JSONDecoder().decode(WatchVoiceUpdate.self, from: reply), update.id == pending.id {
                     self.receive(update)
+                } else if !matchesCurrent {
+                    return
                 } else if pending.update != nil {
                     self.receive(WatchVoiceUpdate(id: pending.id, phase: .blocked, text: String(localized:
                         "Poki couldn’t find the accepted task on iPhone. Check what happened there before recording it again.")))
                 } else {
-                    self.problem = "iPhone didn’t confirm receipt. Open Poki on your iPhone and try again."
+                    self.failDelivery(.phoneUnavailable)
                 }
             }
-        } errorHandler: { [weak self] _ in
+        } errorHandler: { [weak self] error in
             Task { @MainActor in
-                guard let self, self.archive.pending?.id == pending.id else { return }
+                guard let self, self.sendToken == token, self.archive.pending?.id == pending.id else { return }
+                self.sendTimeout?.cancel()
+                self.sendTimeout = nil
                 self.sending = false
-                self.problem = "iPhone hasn’t replied. Open Poki on your iPhone and try again."
+                let nsError = error as NSError
+                let failure = nsError.domain == WCErrorDomain
+                    ? WatchVoiceDeliveryFailure.from(wcErrorCode: nsError.code)
+                    : .deliveryFailed
+                self.failDelivery(failure)
             }
+        }
+    }
+
+    private func failDelivery(_ failure: WatchVoiceDeliveryFailure) {
+        deliveryFailure = failure
+        if archive.pending?.update != nil {
+            problem = failure.detail
+        } else {
+            problem = nil
+        }
+        if WKApplication.shared().applicationState == .active {
+            WKInterfaceDevice.current().play(.failure)
         }
     }
 
@@ -454,7 +560,7 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
 
     private func receive(_ update: WatchVoiceUpdate) {
         guard var pending = archive.pending, update.id == pending.id,
-              pending.update.map({ $0.phase.rawValue < update.phase.rawValue }) ?? true else { return }
+              pending.update.map({ $0.phase.canAdvance(to: update.phase) }) ?? true else { return }
         var next = archive
         if update.phase.isTerminal {
             next.pending = nil
@@ -465,10 +571,13 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
             next.pending = pending
         }
         guard save(next) else { return }
+        cancelInFlightDelivery()
+        deliveryFailure = nil
         problem = nil
         if update.phase.isTerminal {
-            sending = false
             notify(update)
+        } else if update.phase == .waitingForUnlock, WKApplication.shared().applicationState == .active {
+            WKInterfaceDevice.current().play(.notification)
         }
     }
 
@@ -518,11 +627,17 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         Task { @MainActor in
             if activationState == .activated {
+                if self.reachabilityWait != nil {
+                    self.reachabilityWait?.cancel()
+                    self.reachabilityWait = nil
+                    self.sending = false
+                }
                 opened()
                 finishBackgroundTasks()
             } else {
                 remoteReachable = false
-                problem = "Poki couldn’t connect to the paired iPhone."
+                self.cancelInFlightDelivery()
+                self.failDelivery(.sessionInactive)
                 for task in backgroundTasks { task.setTaskCompletedWithSnapshot(false) }
                 backgroundTasks.removeAll()
             }
@@ -538,7 +653,13 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
                 refreshRemoteState()
             }
             updateActiveSync()
-            sync()
+            guard session.isReachable else { return }
+            if self.reachabilityWait != nil {
+                self.reachabilityWait?.cancel()
+                self.reachabilityWait = nil
+                self.sending = false
+            }
+            if self.archive.pending != nil { self.sync() }
         }
     }
 
@@ -572,6 +693,38 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         Task { @MainActor in
             receiveContext(applicationContext)
             finishBackgroundTasks()
+        }
+    }
+}
+
+extension WatchVoiceDeliveryFailure {
+    var title: LocalizedStringResource {
+        switch self {
+        case .needsUnlockAfterReboot: "Unlock iPhone first"
+        case .phoneUnavailable: "Poki isn’t responding on iPhone"
+        case .timedOut: "iPhone didn’t reply in time"
+        case .companionNotInstalled: "Install Poki on iPhone"
+        case .sessionInactive: "Couldn’t connect to iPhone"
+        case .deliveryFailed: "Couldn’t send to iPhone"
+        }
+    }
+
+    var detail: LocalizedStringResource {
+        switch self {
+        case .needsUnlockAfterReboot: "Your iPhone restarted. Unlock your iPhone, then try again."
+        case .phoneUnavailable: "Open Poki on your iPhone if it was closed, then try again."
+        case .timedOut: "iPhone took too long to reply. Open Poki on your iPhone and try again."
+        case .companionNotInstalled: "Install Poki on your paired iPhone and try again."
+        case .sessionInactive: "Move closer to your paired iPhone and try again."
+        case .deliveryFailed: "Check your iPhone connection or open Poki, then try again."
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .needsUnlockAfterReboot: "lock.fill"
+        case .phoneUnavailable, .timedOut, .companionNotInstalled, .sessionInactive, .deliveryFailed:
+            "exclamationmark.triangle"
         }
     }
 }

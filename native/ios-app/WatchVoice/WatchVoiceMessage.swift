@@ -61,6 +61,16 @@ enum WatchVoiceDeliveryFailure: Equatable {
     case companionNotInstalled
     case sessionInactive
     case deliveryFailed
+
+    static func from(wcErrorCode code: Int) -> Self {
+        switch code {
+        case 7004, 7016: .sessionInactive
+        case 7007, 7011, 7014: .phoneUnavailable
+        case 7012, 7017: .timedOut
+        case 7018: .companionNotInstalled
+        default: .deliveryFailed
+        }
+    }
 }
 
 enum WatchVoicePendingStatus: Equatable {
@@ -76,7 +86,9 @@ enum WatchVoicePendingStatus: Equatable {
         failure: WatchVoiceDeliveryFailure?
     ) -> Self {
         if let update { return .tracking(update) }
-        if hasPending { return .sending }
+        if sending { return .sending }
+        if let failure { return .deliveryFailed(failure) }
+        if hasPending { return .deliveryFailed(.deliveryFailed) }
         return .idle
     }
 }

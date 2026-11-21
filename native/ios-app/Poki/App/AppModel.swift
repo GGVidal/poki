@@ -385,7 +385,9 @@ final class AppModel {
                            connection: VoiceModel.connection)
         self.launcher = launcher
         self.pairer = pairer
-        // inFront starts true before the first scene callback, including a background launch.
+        let launchedInFront = UIApplication.shared.applicationState != .background
+        self.inFront = launchedInFront
+        InProcessWDA.gate.withLock { $0.inFront = launchedInFront }
         self.activity.canStart = { [weak self] in self?.inFront == true && UIApplication.shared.applicationState == .active }
         host.update(key: identity.signingKey, hashes: identity.accessHashes)
         host.onConsent { [weak self] client, callback, connector in
@@ -842,6 +844,35 @@ final class AppModel {
             await diskImage.ensureChecked()
             if wantsOn, !sessionOn, pairingPath != nil, diskImage.hasFiles { startSession(reconnectLocal: false) }
         }
+    }
+
+    /// Starts or warms Poki when a Watch task wakes the app in the background without activating a foreground scene.
+    func ensureSessionOnForBackgroundTask(timeout: Duration = .seconds(15)) async -> Bool {
+        guard automationPath == .inProcess, !ownerPaused else { return false }
+        if sessionOn {
+            if !background.isOn { background.start() }
+            if runnerPaused { prepareForTask() }
+            return true
+        }
+        guard wantsOn else { return false }
+        await tunnel.refresh()
+        await diskImage.ensureChecked()
+        guard Self.onSimulator || (pairingPath != nil && diskImage.hasFiles) else { return false }
+        if !sessionOn, !sessionStarting {
+            startSession(reconnectLocal: setup.loopback == .builtIn)
+        }
+        if let startTask = sessionStartTask {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await startTask.value }
+                group.addTask { try? await Task.sleep(for: timeout) }
+                await group.next()
+                group.cancelAll()
+            }
+        }
+        guard sessionOn else { return false }
+        if !background.isOn { background.start() }
+        if runnerPaused { prepareForTask() }
+        return true
     }
 
     // MARK: Hand-off with the installer on the Mac (PokiHandoff)

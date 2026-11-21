@@ -269,6 +269,39 @@ final class WatchVoiceBackgroundTests: XCTestCase {
             failure: .phoneUnavailable
         )
         XCTAssertEqual(status, .deliveryFailed(.phoneUnavailable), "Failed delivery must leave Sending state and show an explicit error")
+
+        let noExplicitFailure = WatchVoicePendingStatus.resolve(
+            hasPending: true,
+            sending: false,
+            update: nil,
+            failure: nil
+        )
+        XCTAssertEqual(noExplicitFailure, .deliveryFailed(.deliveryFailed), "Idle pending request without a phone receipt must not claim it is sending")
+    }
+
+    func testWCErrorCodeMapsForceQuitAndTimeoutToExplicitFailures() {
+        XCTAssertEqual(WatchVoiceDeliveryFailure.from(wcErrorCode: 7007), .phoneUnavailable)
+        XCTAssertEqual(WatchVoiceDeliveryFailure.from(wcErrorCode: 7011), .phoneUnavailable)
+        XCTAssertEqual(WatchVoiceDeliveryFailure.from(wcErrorCode: 7014), .phoneUnavailable)
+        XCTAssertEqual(WatchVoiceDeliveryFailure.from(wcErrorCode: 7012), .timedOut)
+        XCTAssertEqual(WatchVoiceDeliveryFailure.from(wcErrorCode: 7017), .timedOut)
+        XCTAssertEqual(WatchVoiceDeliveryFailure.from(wcErrorCode: 7018), .companionNotInstalled)
+        XCTAssertEqual(WatchVoiceDeliveryFailure.from(wcErrorCode: 7004), .sessionInactive)
+    }
+
+    func testPhaseProgressionPreservesRawValuesAndDropsStaleUpdates() {
+        XCTAssertEqual(WatchVoiceUpdate.Phase.received.rawValue, 0)
+        XCTAssertEqual(WatchVoiceUpdate.Phase.running.rawValue, 1)
+        XCTAssertEqual(WatchVoiceUpdate.Phase.finished.rawValue, 2)
+        XCTAssertEqual(WatchVoiceUpdate.Phase.blocked.rawValue, 3)
+        XCTAssertEqual(WatchVoiceUpdate.Phase.waitingForUnlock.rawValue, 4)
+
+        XCTAssertTrue(WatchVoiceUpdate.Phase.received.canAdvance(to: .waitingForUnlock))
+        XCTAssertTrue(WatchVoiceUpdate.Phase.waitingForUnlock.canAdvance(to: .running))
+        XCTAssertTrue(WatchVoiceUpdate.Phase.running.canAdvance(to: .finished))
+        XCTAssertFalse(WatchVoiceUpdate.Phase.waitingForUnlock.canAdvance(to: .received))
+        XCTAssertFalse(WatchVoiceUpdate.Phase.running.canAdvance(to: .waitingForUnlock))
+        XCTAssertFalse(WatchVoiceUpdate.Phase.finished.canAdvance(to: .blocked))
     }
 }
 #endif
