@@ -39,7 +39,15 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
     private let app: AppModel
     private let chat: ChatModel
     private let session = WCSession.default
-    private let resultJournal = WatchVoiceResultJournal(url: URL.applicationSupportDirectory.appending(path: "WatchVoice.json"))
+    private let resultJournal: WatchVoiceResultJournal
+    private let isProtectedDataAvailable: @MainActor () -> Bool
+    private let isScreenLocked: @MainActor () -> Bool
+    private let transcribeRecording: @MainActor (Data) async throws -> String
+    private let executeTask: (@MainActor (_ transcript: String, _ id: UUID) async -> (text: String, success: Bool?))?
+    private let postUnlockNotice: @MainActor (UUID) -> Void
+    private let clearUnlockNotice: @MainActor (UUID) -> Void
+    private let onPublish: (@MainActor (WatchVoiceUpdate) -> Void)?
+    private let usesLiveSession: Bool
     private var activeID: UUID?
     private var work: Task<Void, Never>?
     private var remoteBackgroundTask: UIBackgroundTaskIdentifier = .invalid
@@ -58,14 +66,48 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         return channel
     }()
 
-    init(app: AppModel, chat: ChatModel) {
+    init(
+        app: AppModel,
+        chat: ChatModel,
+        journal: URL = URL.applicationSupportDirectory.appending(path: "WatchVoice.json"),
+        isProtectedDataAvailable: @escaping @MainActor () -> Bool = { UIApplication.shared.isProtectedDataAvailable },
+        isScreenLocked: @escaping @MainActor () -> Bool = { PKInProcess.shared().screenLocked() },
+        transcribeRecording: @escaping @MainActor (Data) async throws -> String = { try await Dictation.transcribe(recording: $0) },
+        executeTask: (@MainActor (_ transcript: String, _ id: UUID) async -> (text: String, success: Bool?))? = nil,
+        postUnlockNotice: @escaping @MainActor (UUID) -> Void = { _ in },
+        clearUnlockNotice: @escaping @MainActor (UUID) -> Void = { _ in },
+        onPublish: (@MainActor (WatchVoiceUpdate) -> Void)? = nil,
+        activateSession: Bool = true
+    ) {
         self.app = app
         self.chat = chat
+        self.resultJournal = WatchVoiceResultJournal(url: journal)
+        self.isProtectedDataAvailable = isProtectedDataAvailable
+        self.isScreenLocked = isScreenLocked
+        self.transcribeRecording = transcribeRecording
+        self.executeTask = executeTask
+        self.postUnlockNotice = postUnlockNotice
+        self.clearUnlockNotice = clearUnlockNotice
+        self.onPublish = onPublish
+        self.usesLiveSession = activateSession
         super.init()
         channel.remoteHost.startObserving()
-        session.delegate = self
-        session.activate()
+        if activateSession {
+            session.delegate = self
+            session.activate()
+        }
     }
+
+    func handleRequest(_ request: WatchVoiceRequest) -> WatchVoiceUpdate? {
+        let data = reply(to: request)
+        return try? JSONDecoder().decode(WatchVoiceUpdate.self, from: data)
+    }
+
+    func waitForCurrentWork() async {
+        await work?.value
+    }
+
+    func handleUnlockSignal() {}
 
     private func store(_ update: WatchVoiceUpdate) throws {
         try resultJournal.store(update)
@@ -125,14 +167,19 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         }
         do {
             try checkReady()
-            let transcript = try await Dictation.transcribe(recording: audio)
+            let transcript = try await transcribeRecording(audio)
             try Task.checkCancellation()
             try checkReady()
             let running = WatchVoiceUpdate(id: id, phase: .running, text: nil)
             try store(running)
-            channel.publishTaskUpdate(running)
-            let task = ChatModel(app: app, kind: .handoff, requester: "Apple Watch", sessionID: id.uuidString)
-            let result = await task.runDelegated(transcript)
+            publish(running)
+            let result: (text: String, success: Bool?)
+            if let executeTask {
+                result = await executeTask(transcript, id)
+            } else {
+                let task = ChatModel(app: app, kind: .handoff, requester: "Apple Watch", sessionID: id.uuidString)
+                result = await task.runDelegated(transcript)
+            }
             let update = WatchVoiceUpdate(id: id, phase: result.success == true ? .finished : .blocked,
                                           text: result.text)
             complete(update)
@@ -148,7 +195,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
     }
 
     private func checkReady() throws {
-        guard UIApplication.shared.isProtectedDataAvailable else {
+        guard isProtectedDataAvailable() else {
             throw WatchVoiceStartError(message: "Unlock your iPhone and open Poki, then try again.")
         }
         if let message = app.signer.installMessage { throw WatchVoiceStartError(text: message) }
@@ -178,8 +225,14 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
             resultJournal.storeInMemoryFallback(terminal)
         }
         AppLog.shared.add("watch", "Watch task \(update.id) ended as \(terminal.phase)")
-        channel.publishTaskUpdate(terminal)
+        publish(terminal)
         return terminal
+    }
+
+    private func publish(_ update: WatchVoiceUpdate) {
+        onPublish?(update)
+        guard usesLiveSession else { return }
+        channel.publishTaskUpdate(update)
     }
 
     private func beginRemoteBackgroundTask() {
