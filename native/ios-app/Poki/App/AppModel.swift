@@ -860,17 +860,21 @@ final class AppModel {
             startSession(reconnectLocal: setup.loopback == .builtIn)
         }
         if let startTask = sessionStartTask {
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { await startTask.value }
-                group.addTask { try? await Task.sleep(for: timeout) }
-                await group.next()
-                group.cancelAll()
-            }
+            await Self.waitForSessionStart(startTask, timeout: timeout)
         }
         guard sessionOn else { return false }
         if !background.isOn { background.start() }
         if runnerPaused { prepareForTask() }
         return true
+    }
+
+    static func waitForSessionStart(_ startTask: Task<Void, Never>, timeout: Duration) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await startTask.value }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            await group.next()
+            group.cancelAll()
+        }
     }
 
     // MARK: Hand-off with the installer on the Mac (PokiHandoff)
