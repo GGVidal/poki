@@ -1219,6 +1219,7 @@ final class VoiceModel {
                 if liveCallerSpeech.alreadyHandled {
                     liveCallerSpeech.clearPendingSpeech()
                     liveDelegations[id] = .duplicate
+                    log.add("voice", "delegation \(id) ignored (duplicate)")
                     return
                 }
                 let parts = Self.liveSpeechParts(liveCallerSpeech.text)
@@ -1227,16 +1228,20 @@ final class VoiceModel {
                 liveCallerSpeech.markHandled()
                 if !parts.isEmpty, parts.allSatisfy(Self.liveBackchannels.contains) {
                     liveDelegations[id] = .acknowledgment
+                    log.add("voice", "delegation \(id) ignored (acknowledgment)")
                     return
                 }
                 let request = parts.filter { !Self.liveBackchannels.contains($0) }
                 let newRequest = !request.isEmpty && !Self.liveRequestsStop(request)
                 if liveHasCancellation && !newRequest {
                     liveDelegations[id] = .cancelled
+                    log.add("voice", "delegation \(id) ignored (cancelled)")
                 } else if let audio {
                     liveDelegations[id] = .awaitingFirstTool(audio: audio, fallback: fallback)
+                    log.add("voice", "delegation \(id) created")
                 } else {
                     liveDelegations[id] = .active
+                    log.add("voice", "delegation \(id) created")
                 }
             }
             link.send(["type": "session.thinking.append", "event_id": UUID().uuidString, "delegation_id": NSNull(), "content": ""])
@@ -1443,6 +1448,30 @@ final class VoiceModel {
         liveAwaitingPlayback = false
     }
 
+    private enum ScreenAttachmentOutcome {
+        case none
+        case liveDescribed(chars: Int)
+        case liveFailed(String)
+        case liveUnavailable(String)
+        case liveSkipped(String)
+        case realtimeImageFailed(String)
+
+        var logTag: String? {
+            switch self {
+            case .none: nil
+            case .liveDescribed(let chars): "desc=ok(\(chars)c)"
+            case .liveFailed(let reason): "desc=failed(\(reason))"
+            case .liveUnavailable(let reason): "desc=unavailable(\(reason))"
+            case .liveSkipped(let reason): "desc=skipped(\(reason))"
+            case .realtimeImageFailed(let reason): "image=failed(\(reason))"
+            }
+        }
+    }
+
+    private static func screenFailureNote(_ prefix: String, reason: String) -> String {
+        "\n\(prefix): \(reason). Use the screen elements above if available, and tell the user honestly if visual details are missing."
+    }
+
     private func completeLiveControl(_ call: VoiceCall, state: VoiceCall.State, output: String) {
         var result = call
         result.state = state
@@ -1453,6 +1482,7 @@ final class VoiceModel {
         ]]) == true
         if let index = calls.firstIndex(where: { $0.id == call.id }) { calls[index] = result }
         else { calls.append(result) }
+        log.add("voice", "tool \(call.name) \(state == .done ? "done" : "failed") | control: \(Self.sanitizeLogText(output, limit: 120))")
         if phase == .thinking, !answerDue { phase = .listening }
         endIfDone()
     }
@@ -1526,6 +1556,10 @@ final class VoiceModel {
                 output = answer.text.count > 6000 ? String(answer.text.prefix(6000)) + "…" : answer.text
                 screen = answer.screen
                 if answer.failed { state = .failed }
+                if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    state = .failed
+                    output = "error: \(call.name) returned empty output"
+                }
             } else if local {
                 output = Self.localTool(call.name)
             } else if let bridge {
@@ -1565,34 +1599,109 @@ final class VoiceModel {
                 output = "error: no voice bridge"
                 state = .failed
             }
+            var screenOutcome = ScreenAttachmentOutcome.none
+            let screenBytes = screen?.count
+            var deliveredScreen: Data? = live ? nil : screen
             if live, let screen {
                 if let describeScreen {
-                    if call.session == session, ready, !stopped(call), let image = VoiceScreen.dataURL(screen),
-                       let description = try? await describeScreen(image) {
-                        output += "\nCurrent screen description: " + description
+                    if call.session != session || !ready || stopped(call) {
+                        screenOutcome = .liveSkipped(stopped(call) ? "cancelled" : "session closed")
+                    } else if let image = VoiceScreen.dataURL(screen) {
+                        do {
+                            let description = try await describeScreen(image).trimmingCharacters(in: .whitespacesAndNewlines)
+                            if description.isEmpty {
+                                let reason = "screen description returned empty text"
+                                output += Self.screenFailureNote("Current screen description failed", reason: reason)
+                                screenOutcome = .liveFailed(reason)
+                            } else {
+                                output += "\nCurrent screen description: " + description
+                                screenOutcome = .liveDescribed(chars: description.count)
+                            }
+                        } catch {
+                            let reason = Self.sanitizeLogText(error.localizedDescription, limit: 180)
+                            output += Self.screenFailureNote("Current screen description failed", reason: reason)
+                            screenOutcome = .liveFailed(reason)
+                        }
+                    } else {
+                        let reason = "screenshot (\(screen.count) bytes) exceeded the upload size limit"
+                        output += Self.screenFailureNote("Current screen description failed", reason: reason)
+                        screenOutcome = .liveFailed(reason)
                     }
                 } else {
                     output += "\nScreenshot descriptions require an HTTPS voice bridge. Use the screen elements."
+                    screenOutcome = .liveUnavailable("HTTPS voice bridge required")
                 }
+            } else if !live, let screen, VoiceScreen.dataURL(screen) == nil {
+                let reason = "screenshot (\(screen.count) bytes) exceeded the data channel size limit"
+                output += Self.screenFailureNote("Screenshot unavailable", reason: reason)
+                deliveredScreen = nil
+                screenOutcome = .realtimeImageFailed(reason)
             }
-            finish(call.id, state: state, output: output, screen: live ? nil : screen)
+            finish(call.id, state: state, output: output, screen: deliveredScreen, screenBytes: screenBytes, screenOutcome: screenOutcome)
         }
     }
 
-    private func finish(_ id: String, state: VoiceCall.State, output: String, screen: Data? = nil) {
+    private func finish(_ id: String, state: VoiceCall.State, output: String, screen: Data? = nil,
+                        screenBytes: Int? = nil, screenOutcome: ScreenAttachmentOutcome = .none) {
         guard let index = calls.firstIndex(where: { $0.id == id }) else { return }
         calls[index].state = state
         calls[index].output = output
         calls[index].screen = screen
         calls[index].finished = Date()
         clock.toolDone = Date()
-        log.add("voice", "tool \(calls[index].name) \(state == .done ? "done" : "failed")")
+        let summary = Self.summarizeToolOutput(tool: calls[index].name, output: output, state: state,
+                                               screenBytes: screenBytes, screenOutcome: screenOutcome)
+        log.add("voice", "tool \(calls[index].name) \(state == .done ? "done" : "failed") | \(summary)")
         if calls[index].silentResult {
             if phase == .thinking, !answerDue { phase = .listening }
             endIfDone()
             return
         }
         deliver(index)
+    }
+
+    private static func sanitizeLogText(_ text: String, limit: Int) -> String {
+        let scrubbed = text.replacingOccurrences(of: #"sk-[\w*-]+"#, with: "the API key", options: .regularExpression)
+        let compact = scrubbed.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard compact.count > limit else { return compact }
+        return String(compact.prefix(limit)) + "…"
+    }
+
+    private static func summarizeToolOutput(tool: String, output: String, state: VoiceCall.State,
+                                            screenBytes: Int?, screenOutcome: ScreenAttachmentOutcome) -> String {
+        let lines = output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        let elementCount = lines.filter { line in
+            guard let space = line.firstIndex(of: " "), space != line.startIndex else { return false }
+            return line[..<space].allSatisfy(\.isASCII) && line[..<space].allSatisfy(\.isNumber)
+        }.count
+        var metrics = ["chars=\(output.count)", "elements=\(elementCount)", "screen=\(screenBytes.map { "\($0)B" } ?? "none")"]
+        if let tag = screenOutcome.logTag { metrics.append(tag) }
+
+        var headers: [String] = []
+        for line in lines {
+            if line.hasPrefix("app: ") {
+                let appHeader = line.components(separatedBy: "   read:").first ?? line
+                headers.append(sanitizeLogText(appHeader, limit: 100))
+            } else if line.hasPrefix("poki: ") {
+                let firstSentence = line.firstIndex(of: ".").map { String(line[...$0]) } ?? line
+                headers.append(sanitizeLogText(firstSentence, limit: 100))
+            } else if line.hasPrefix("screen: ") {
+                headers.append(sanitizeLogText(line, limit: 80))
+            } else if line.hasPrefix("screenshot: none") {
+                headers.append(sanitizeLogText(line, limit: 100))
+            } else if line.hasPrefix("error: ") || line.hasPrefix("not_sent: ") || line.hasPrefix("unknown: ") {
+                headers.append(sanitizeLogText(line, limit: 160))
+            }
+        }
+        if headers.isEmpty {
+            if state == .failed, let first = lines.first(where: { !$0.isEmpty }) {
+                headers.append(sanitizeLogText(first, limit: 160))
+            } else if tool == "get_ios_version", let first = lines.first(where: { !$0.isEmpty }) {
+                headers.append(sanitizeLogText(first, limit: 120))
+            }
+        }
+        let metricText = metrics.joined(separator: " ")
+        return headers.isEmpty ? metricText : "\(metricText) | \(headers.joined(separator: "; "))"
     }
 
     /// Hands a finished call to the model: as its function_call_output in the session that asked, or as a
