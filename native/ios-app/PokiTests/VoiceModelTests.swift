@@ -437,7 +437,7 @@ final class VoiceModelTests: XCTestCase {
         await confirmed.liveTalk()
         confirmed.voice.stop()
         confirmed.voice.stop()
-        XCTAssertFalse(confirmed.voice.isOn)
+        XCTAssertTrue(confirmed.voice.isOn, "The call is still open until the server confirms closure")
         XCTAssertEqual(confirmed.link.sent.compactMap { $0["type"] as? String }.filter { $0 == "session.close" }, ["session.close"])
         XCTAssertFalse(confirmed.link.closed)
         XCTAssertEqual(confirmed.microphone, [true])
@@ -447,20 +447,24 @@ final class VoiceModelTests: XCTestCase {
         XCTAssertTrue(confirmed.link.closed)
         XCTAssertEqual(confirmed.microphone, [true, false])
         XCTAssertEqual(confirmed.voice.phase, .off)
+        XCTAssertFalse(confirmed.voice.isOn)
 
         let unconfirmed = Harness()
         await unconfirmed.liveTalk()
         await unconfirmed.time.advance(8)
-        XCTAssertFalse(unconfirmed.voice.isOn, "The idle timer must also request a graceful close.")
+        XCTAssertTrue(unconfirmed.voice.isOn, "The idle timer requests closure without reporting a finished call.")
         XCTAssertFalse(unconfirmed.link.closed)
         XCTAssertEqual(unconfirmed.microphone, [true])
         await unconfirmed.time.advance(10)
         XCTAssertTrue(unconfirmed.link.closed, "The microphone must be released if the server never confirms.")
         XCTAssertEqual(unconfirmed.microphone, [true, false])
+        XCTAssertFalse(unconfirmed.voice.isOn)
     }
 
     func testRealtimeOnlyRequestsOneResponsePerCommittedUserItem() async {
         let h = Harness()
+        let firstItem = UUID().uuidString
+        let secondItem = UUID().uuidString
         await h.connect()
         h.link.play(["type": "session.created", "session": ["audio": ["input": ["turn_detection": ["create_response": false]]]]])
         func commit(_ item: String) {
@@ -470,14 +474,14 @@ final class VoiceModelTests: XCTestCase {
         }
         func responseCount() -> Int { h.link.sent.filter { $0["type"] as? String == "response.create" }.count }
 
-        commit("item-1")
+        commit(firstItem)
         XCTAssertEqual(responseCount(), 1)
         h.link.play(["type": "response.created", "response": ["id": "r1"]],
                     ["type": "response.done", "response": ["id": "r1"]])
-        h.link.play(["type": "input_audio_buffer.committed", "item_id": "item-1"])
+        h.link.play(["type": "input_audio_buffer.committed", "item_id": firstItem])
         XCTAssertEqual(responseCount(), 1)
 
-        commit("item-2")
+        commit(secondItem)
         XCTAssertEqual(responseCount(), 2)
         h.voice.stop()
     }
@@ -612,7 +616,14 @@ final class VoiceModelTests: XCTestCase {
     }
 
     func testCommittedSpeechDoesNotRepeatAnExecutedActionAfterReopeningVoice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceModelTests.committedSpeech.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: SessionStore.archivedEarlierKey)
         for live in [true, false] {
+            let folder = root.appendingPathComponent(live ? "live" : "realtime")
             let time = FakeTime()
             var applied: [String] = []
             let tool: @MainActor (String, String) async -> PhoneAnswer = { _, arguments in
@@ -620,7 +631,7 @@ final class VoiceModelTests: XCTestCase {
                 applied.append(arguments)
                 return ("Draft saved.", false, nil)
             }
-            let original = Harness(time: time, phoneTool: tool)
+            let original = Harness(time: time, sessionStore: SessionStore(folder: folder, defaults: defaults), phoneTool: tool)
             let itemID = UUID().uuidString
             let arguments = #"{"actions":[{"type":"Draft text"}]}"#
             func open(_ h: Harness) async {
@@ -654,7 +665,7 @@ final class VoiceModelTests: XCTestCase {
             XCTAssertEqual(applied, [arguments])
             close(original)
 
-            let reopened = Harness(time: time, phoneTool: tool)
+            let reopened = Harness(time: time, sessionStore: SessionStore(folder: folder, defaults: defaults), phoneTool: tool)
             await open(reopened)
             commit(itemID, request: "replayed-with-a-different-tool-id", on: reopened)
             await time.advance(1)
@@ -829,7 +840,7 @@ final class VoiceModelTests: XCTestCase {
         private(set) var microphone: [Bool] = []
         var link: FakeConnection { links.last! }
 
-        @MainActor init(time: FakeTime? = nil, phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("", false, nil) }) {
+        @MainActor init(time: FakeTime? = nil, sessionStore: SessionStore? = nil, phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("", false, nil) }) {
             let time = time ?? FakeTime()
             self.time = time
             var made: (() -> FakeConnection)!
@@ -837,12 +848,12 @@ final class VoiceModelTests: XCTestCase {
             voice = VoiceModel(clearTap: { _, _, _ in .clear }, phoneTool: { name, arguments, cancellation in
                 await PhoneOperationCancellation.$current.withValue(cancellation) { await phoneTool(name, arguments) }
             }, holdMicrophone: { held($0) },
-                               connection: { onEvent, onClosed in let link = made(); link.onEvent = onEvent; link.onClosed = onClosed; return link }, time: time.clock)
+                               connection: { onEvent, onClosed in let link = made(); link.onEvent = onEvent; link.onClosed = onClosed; return link }, time: time.clock, sessionStore: sessionStore)
             made = { [unowned self] in let link = FakeConnection(); self.links.append(link); return link }
             held = { [unowned self] in self.microphone.append($0) }
             _ = voice.setBridge(BridgeStub.address)
             // As in the app: an ended conversation goes into the chat, and its lines leave the voice model.
-            voice.onConversationEnded = { _, _ in }
+            voice.onConversationEnded = { _, _ in true }
         }
 
         /// Connected, before the server's session.created.
@@ -1471,7 +1482,10 @@ extension VoiceModelTests {
             AppLocalization.shared.preference = words.language
             let h = Harness(phoneTool: { _, _ in ("done", false, nil) })
             var said: [VoiceLine] = []
-            h.voice.onConversationEnded = { lines, _ in said = lines }
+            h.voice.onConversationEnded = { lines, _ in
+                said = lines
+                return true
+            }
             await h.connect()
             XCTAssertEqual(h.voice.talkState?.word, words.connecting, words.language)
 

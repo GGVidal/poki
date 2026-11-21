@@ -231,7 +231,11 @@ final class ChatModel {
         app.addApprovalModeObserver { [weak self] in self?.approvalsChanged() }
         app.addStopAskingObserver { [weak self] in self?.approvalsStopped() }
         // A live voice conversation is part of this chat: what was said and done stays in its history.
-        if requester == nil { app.voice.onConversationEnded = { [weak self] lines, started in self?.appendVoice(lines, started: started) } }
+        if requester == nil {
+            app.voice.onConversationEnded = { [weak self] lines, started in
+                self?.appendVoice(lines, started: started) ?? false
+            }
+        }
         if let scene = UserDefaults.standard.string(forKey: "pokiChat") { loadSample(scene); return }
         // The last in-app conversation comes back at launch, as in Messages.
         if store.isInitialReady {
@@ -305,8 +309,10 @@ final class ChatModel {
     }
 
     /// A live voice conversation that just ended, into this chat's history (and its saved session).
-    func appendVoice(_ lines: [VoiceLine], started: Date) {
+    func appendVoice(_ lines: [VoiceLine], started: Date) -> Bool {
         entries.append(contentsOf: SessionStore.entries(voice: lines, started: started))
+        guard !isSample, !leavingRemoved else { return false }
+        return store.flush(sessionID: sessionID)
     }
 
     func newConversation() {
@@ -357,7 +363,8 @@ final class ChatModel {
 
     /// The conversation as the Sessions list keeps it. Greeting-only conversations are not saved.
     private func persist() {
-        guard !isSample, !leavingRemoved, hasUserMessages else { return }
+        guard !isSample, !leavingRemoved,
+              hasUserMessages || entries.contains(where: { $0.spoken == true }) else { return }
         store.save(chat: self)
     }
 

@@ -52,39 +52,47 @@ struct SavedSession: Codable, Identifiable, Equatable {
         }
         guard kind == .poki else { return }
 
-        // The old voice recorder copied the talk start into both dates on its time row.
-        // It wrote delivered messages, replies, steps and a terminal problem without a task card.
+        // A backup can round two independent dates to the same second. Require a
+        // voice-only step or closing note before treating any part of a legacy block as speech.
         var start: Int?
-        var lastRequest: Int?
         for index in entries.indices {
             let entry = entries[index]
             if case .time(let date) = entry.kind {
-                if let start { mark(start..<index) }
                 start = entry.spoken == nil && entry.at == date ? index : nil
-                lastRequest = nil
                 continue
             }
-            guard let voiceStart = start else { continue }
-            let end: Int
+            guard let voiceStart = start, entry.spoken == nil else {
+                start = nil
+                continue
+            }
             switch entry.kind {
-            case .you(_, true) where entry.spoken == nil && entry.attachments == nil
-                && entry.textDocuments == nil && entry.continuedTask == nil && entry.countedScrollRequestID == nil:
-                lastRequest = index
+            case .you(_, true) where entry.attachments == nil && entry.textDocuments == nil
+                && entry.continuedTask == nil && entry.countedScrollRequestID == nil:
                 continue
-            case .poki where entry.continuationChoices == nil, .step:
+            case .poki where entry.continuationChoices == nil:
                 continue
-            case .note(.problem):
-                end = index + 1
-            case .you:
-                end = index
+            case .step(_, true):
+                mark(voiceStart..<(index + 1))
+                start = index + 1
+            case .note(.problem(let text)) where Self.voiceClosingNotes.contains(text):
+                mark(voiceStart..<(index + 1))
+                start = nil
             default:
-                end = lastRequest ?? index
+                start = nil
             }
-            mark(voiceStart..<end)
-            start = nil
         }
-        if let start { mark(start..<entries.endIndex) }
     }
+
+    private static let voiceClosingNotes: Set<String> = {
+        let keys = [
+            "Connection lost. Nothing is sent again. Talk again to hear how running steps ended.",
+            "The server did not answer. The talk ended.",
+        ]
+        let translations = Bundle.main.localizations.compactMap { language in
+            Bundle.main.path(forResource: language, ofType: "lproj").flatMap(Bundle.init(path:))
+        }.flatMap { bundle in keys.map { bundle.localizedString(forKey: $0, value: nil, table: nil) } }
+        return Set(keys + translations)
+    }()
 
     mutating func markInterruptedTask() {
         guard live else { return }
@@ -881,6 +889,36 @@ final class SessionStore {
     /// The ordered tool calls of a session, for "save a routine from this session".
     func record(_ id: String) -> [CallRecord] { session(id)?.calls ?? [] }
 
+    private enum VoiceOperation: String, Codable { case started, executed }
+    private var voiceOperationsFile: URL { folder.appendingPathComponent("voice-operations") }
+    @ObservationIgnored private lazy var voiceOperations: [String: VoiceOperation]? = {
+        let url = voiceOperationsFile
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        return try? JSONDecoder().decode([String: VoiceOperation].self, from: Data(contentsOf: url))
+    }()
+
+    func beginVoiceOperation(_ item: String) -> Bool {
+        guard let voiceOperations, voiceOperations[item] == nil else { return false }
+        return writeVoiceOperation(item, state: .started)
+    }
+
+    func completeVoiceOperation(_ item: String) -> Bool {
+        if voiceOperations?[item] == .executed { return true }
+        return writeVoiceOperation(item, state: .executed)
+    }
+
+    private func writeVoiceOperation(_ item: String, state: VoiceOperation) -> Bool {
+        guard var next = voiceOperations else { return false }
+        next[item] = state
+        do {
+            try JSONEncoder().encode(next).write(to: voiceOperationsFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            voiceOperations = next
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: Files
 
     private func put(_ session: SavedSession) {
@@ -913,10 +951,11 @@ final class SessionStore {
     }
 
     /// Writes the changed sessions now, or only the requested conversation.
-    func flush(sessionID: String? = nil) {
+    @discardableResult
+    func flush(sessionID: String? = nil) -> Bool {
         let ids: Set<String>
         if let sessionID {
-            guard pendingWrites.remove(sessionID) != nil else { return }
+            guard pendingWrites.remove(sessionID) != nil else { return true }
             ids = [sessionID]
         } else {
             writeTask?.cancel()
@@ -925,13 +964,18 @@ final class SessionStore {
             pendingWrites = []
         }
         let snapshots = ids.compactMap { id in session(id).map { (file(id), $0) } }
-        writeQueue.sync {
+        return writeQueue.sync {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .deferredToDate
+            var saved = true
             for (url, session) in snapshots {
-                guard let data = try? encoder.encode(session) else { continue }
-                try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                do {
+                    try encoder.encode(session).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                } catch {
+                    saved = false
+                }
             }
+            return saved
         }
     }
 
