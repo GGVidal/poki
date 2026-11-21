@@ -259,6 +259,8 @@ struct VoiceLine: Identifiable, Equatable {
     let role: Role
     var text: String
     var at = Date()
+    /// A step's line (`.tool`): the call_id of the call it shows, so the next talk can be told how it ended.
+    var call: String? = nil
 }
 
 enum VoicePhase: Equatable {
@@ -468,6 +470,13 @@ final class VoiceModel {
     /// in leaves both as they were.
     private var lastEnd: Date?
     private var lastLines: [VoiceLine] = []
+    /// Where the person's words go in `lines`, by the conversation item that holds their speech. The
+    /// server transcribes speech on its own time, after Poki may have started on it or even answered it,
+    /// and the words belong before the steps and the answer they led to: the chat, the Live Activity's
+    /// result and the next talk read the lines in order, and words after their answer read as a request
+    /// nobody answered.
+    private var spokenAt: [(id: String, index: Int)] = []
+    private var transcribedItems: Set<String> = []
     private var inBackground = UIApplication.shared.applicationState == .background
 
     /// How long the conversation waits after an answer for the person to go on before it ends.
@@ -833,14 +842,16 @@ final class VoiceModel {
         stallWatch?.cancel()
         stallWatch = nil
         if ready || liveCloseTimeout != nil, let from = transcript?.from {
-            let said = lines[min(from, lines.count)...].filter { $0.role == .you || $0.role == .poki }
-            if !said.isEmpty {
+            let talk = lines[min(from, lines.count)...]
+            if talk.contains(where: { $0.role != .note }) {
                 lastEnd = time.now()
-                lastLines = said
+                lastLines = talk.filter { $0.role != .note }
             }
         }
         liveCloseTimeout?.cancel()
         liveCloseTimeout = nil
+        spokenAt.removeAll()
+        transcribedItems.removeAll()
         if let link {
             link.close()
             // Whether the shared audio session let go of the microphone after WebRTC closed.
@@ -962,37 +973,48 @@ final class VoiceModel {
     /// A conversation opened soon after the last one hears what was said last, so it goes on from there.
     private func carryOver(_ link: VoiceConnection) {
         guard let lastEnd, time.now().timeIntervalSince(lastEnd) < Self.carryOver else { return }
-        let turns = lastLines.suffix(Self.carriedLines)
-        if usesLive {
-            link.send(note(liveCarryOver(turns)))
-            return
-        }
-        let said = turns.map { "\($0.role == .you ? "User" : "Poki"): \($0.text)" }.joined(separator: "\n")
-        link.send(note("This continues a conversation from a few minutes ago. What was said, oldest first. Use it only as context for what the user says next; do not answer or repeat it.\n" + said))
+        link.send(note(Self.carried(lastLines, calls: calls, byteLimit: usesLive ? Self.liveNoteByteLimit : .max)))
     }
 
-    private func liveCarryOver(_ turns: ArraySlice<VoiceLine>) -> String {
-        let header = "Recent conversation for context only. Do not repeat prior actions or answers."
-        var available = Self.liveNoteByteLimit - header.utf8.count
-        // Preserve the latest request even when Poki's reply is long.
-        var priority = [turns.lastIndex { $0.role == .you }, turns.indices.last].compactMap { $0 }
-        if priority.count == 2 && priority[0] == priority[1] { priority.removeLast() }
+    static func carried(_ lines: [VoiceLine], calls: [VoiceCall], byteLimit: Int = .max) -> String {
+        let header = "Recent conversation for context only. Do not answer, repeat or redo any of it."
+        let said = lines.indices.filter { lines[$0].role == .you || lines[$0].role == .poki }
+        let from = said.count > carriedLines ? said[said.count - carriedLines] : lines.startIndex
+        let turns = lines[from...]
         func label(for index: Int) -> String { turns[index].role == .you ? "\nUser: " : "\nPoki: " }
-        let replyBytes = priority.dropFirst().first.map { label(for: $0).utf8.count + turns[$0].text.utf8.count } ?? 0
-        let replyReserve = min(available / 2, replyBytes)
+        var available = byteLimit - header.utf8.count
         var kept: [Int: String] = [:]
-        for (position, index) in priority.enumerated() {
-            let prefix = label(for: index)
-            let limit = available - prefix.utf8.count - (position == 0 ? replyReserve : 0)
-            let line = prefix + Self.liveExcerpt(turns[index].text, bytes: limit)
+        func keep(_ line: String, at index: Int) {
+            guard line.utf8.count <= available else { return }
             kept[index] = line
             available -= line.utf8.count
         }
-        for index in turns.indices.reversed() where kept[index] == nil {
-            let line = label(for: index) + turns[index].text
-            guard line.utf8.count <= available else { continue }
-            kept[index] = line
-            available -= line.utf8.count
+        let steps = turns.indices.reversed().compactMap { index -> (Int, String)? in
+            guard let id = turns[index].call, let call = calls.first(where: { $0.id == id }) else { return nil }
+            let status: String
+            switch call.state {
+            case .running: status = "still running"
+            case .done: status = "done"
+            case .failed: status = "failed"
+            }
+            return (index, "\nPoki ran \(call.name): \(status)")
+        }
+        if let (index, line) = steps.first { keep(line, at: index) }
+        if let request = turns.lastIndex(where: { $0.role == .you }) {
+            let reply = turns[(request + 1)...].firstIndex { $0.role == .poki }
+            let replyBytes = reply.map { label(for: $0).utf8.count + turns[$0].text.utf8.count } ?? 0
+            let replyReserve = min(available / 2, replyBytes)
+            let priority = [request] + (reply.map { [$0] } ?? [])
+            for (position, index) in priority.enumerated() {
+                let prefix = label(for: index)
+                let limit = available - prefix.utf8.count - (position == 0 ? replyReserve : 0)
+                guard limit >= 5 else { continue }
+                keep(prefix + liveExcerpt(turns[index].text, bytes: limit), at: index)
+            }
+        }
+        for (index, line) in steps where kept[index] == nil { keep(line, at: index) }
+        for index in turns.indices.reversed() where kept[index] == nil && (turns[index].role == .you || turns[index].role == .poki) {
+            keep(label(for: index) + turns[index].text, at: index)
         }
         return header + turns.indices.compactMap { kept[$0] }.joined()
     }
@@ -1261,9 +1283,17 @@ final class VoiceModel {
             pendingRealtimeTurns += 1
             flush()
         case "conversation.item.added":
-            if (event["item"] as? [String: Any])?["role"] as? String == "user" { clock.heard = clock.heard ?? Date() }
+            guard let item = event["item"] as? [String: Any], item["role"] as? String == "user" else { return }
+            clock.heard = clock.heard ?? Date()
+            if let id = item["id"] as? String, Self.holdsSpeech(item),
+               !transcribedItems.contains(id), !spokenAt.contains(where: { $0.id == id }) {
+                spokenAt.append((id, lines.count))
+            }
         case "conversation.item.input_audio_transcription.completed":
-            if let text = event["transcript"] as? String, !text.isEmpty { lines.append(VoiceLine(role: .you, text: text.trimmingCharacters(in: .whitespacesAndNewlines))) }
+            guard let text = (event["transcript"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
+            let itemID = event["item_id"] as? String
+            if let itemID, !transcribedItems.insert(itemID).inserted { return }
+            hear(text, itemID: itemID)
         case "response.created":
             guard !usesLive || !liveSpeechStopped else { return }
             let id = (event["response"] as? [String: Any])?["id"] as? String
@@ -1418,6 +1448,22 @@ final class VoiceModel {
         link.setRemoteVolume(muted ? 0 : 1)
     }
 
+    private func hear(_ text: String, itemID: String?) {
+        let line = VoiceLine(role: .you, text: text)
+        guard let itemID, let position = spokenAt.firstIndex(where: { $0.id == itemID }) else {
+            lines.append(line)
+            return
+        }
+        let anchor = spokenAt.remove(at: position).index
+        lines.insert(line, at: anchor)
+        for index in position..<spokenAt.count { spokenAt[index].index += 1 }
+    }
+
+    /// The person's speech, as the server adds it to the conversation (not Poki's screenshot or a note).
+    private static func holdsSpeech(_ item: [String: Any]) -> Bool {
+        (item["content"] as? [[String: Any]])?.contains { $0["type"] as? String == "input_audio" } ?? false
+    }
+
     /// Runs a call once. The same call_id again (a repeated event) is ignored.
     private func run(_ call: VoiceCall) {
         guard !calls.contains(where: { $0.id == call.id }) else { return }
@@ -1440,7 +1486,7 @@ final class VoiceModel {
         clock.call = clock.call ?? Date()
         clock.callNames.append(call.name)
         phase = .thinking
-        lines.append(VoiceLine(role: .tool, text: Self.describe(call)))
+        lines.append(VoiceLine(role: .tool, text: Self.describe(call), call: call.id))
         log.add("voice", "tool \(call.name) \(call.arguments)")
         let local = localTools.contains(call.name)
         let bridge = bridge
