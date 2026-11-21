@@ -27,6 +27,7 @@ struct TalkHereIntent: AudioRecordingIntent, LiveActivityIntent, ForegroundConti
         guard let app = AskPoki.app, let chat = AskPoki.chat else {
             return try await openPoki(LocalizedStringResource("Poki wasn’t ready. Try again in a moment.", table: "Entry"))
         }
+        if app.voice.finishOpeningDictation() { return .result() }
         if app.voice.isOn {
             AppLog.shared.add("voice", "Poki Anytime ended the talk")
             app.stopFromOutside("Poki Anytime ended the talk")

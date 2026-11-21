@@ -20,8 +20,6 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     private static let sampleRate = 48_000.0
     // Enough speech for both bridge attempts, including token, offer and ICE timeouts.
     private static let maxOpeningFrames = Int(sampleRate) * 210
-    private static let pauseFrames = Int(sampleRate * 1.25)
-    private static let noSpeechFrames = Int(sampleRate * 5)
     private static let maxReplayBurst = Int(sampleRate / 10)
     private static let channelFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true
@@ -35,7 +33,7 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     private let sendLock = NSLock()
     private let session: Int
     private enum State {
-        case buffering, sending, listeningForQuiet(AsyncStream<Void>.Continuation), readyForDictation, stopped
+        case buffering, sending, waitingForOwner(AsyncStream<Void>.Continuation), readyForDictation, stopped
     }
     private var delegate: RTCAudioDeviceDelegate?
     private var recording = false
@@ -43,12 +41,16 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     private var recordingInitialized = false
     private var playoutInitialized = false
     private var state = State.buffering
-    private var sentAudio = false
+    private var deliveredToMedia = false
+    private var openingFramesAwaitingMedia = 0
+    private var remoteUsedInput = false
     private var overflow = false
     private var queued = [Int16]()
     private var readIndex = 0
-    private var quietFrames = 0
-    private var heardSpeech = false
+    // The sending queue can advance before anything reaches the server. Keep an exact
+    // recording so a transport failure can hand it to local dictation without gaps.
+    private var recovery: [Int16] = []
+    private var recoveryOverflow = false
 
     let deviceInputSampleRate = OpeningVoiceAudio.sampleRate
     let deviceOutputSampleRate = OpeningVoiceAudio.sampleRate
@@ -65,6 +67,9 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
     var isPlaying: Bool { lock.withLock { playing } }
     var bufferedDuration: Duration {
         lock.withLock { .seconds(Double(queued.count - readIndex) / Self.sampleRate) }
+    }
+    var submittedOpeningToMedia: Bool {
+        lock.withLock { deliveredToMedia && openingFramesAwaitingMedia == 0 }
     }
 
     init(session: Int) {
@@ -107,35 +112,58 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
         lock.withLock {
             guard session == self.session, !overflow else { return false }
             switch state {
-            case .buffering, .sending:
+            case .buffering:
+                recovery = queued
+                openingFramesAwaitingMedia = queued.count
                 state = .sending
                 return true
-            case .listeningForQuiet, .readyForDictation, .stopped:
+            case .sending:
+                return true
+            case .waitingForOwner, .readyForDictation, .stopped:
                 return false
             }
         }
     }
 
-    func finishUtterance(session: Int) -> AsyncStream<Void>? {
+    /// A model commit or a tool call can rule out repeating the request. Neither an RTP
+    /// handoff nor a partial transcript confirms the whole recording.
+    func markRemoteInputUsed(session: Int, phoneAction: Bool = false) {
         lock.withLock {
-            guard session == self.session, !sentAudio else { return nil }
-            switch state {
-            case .buffering, .sending:
+            guard session == self.session, case .sending = state, deliveredToMedia,
+                  phoneAction || openingFramesAwaitingMedia == 0 else { return }
+            remoteUsedInput = true
+        }
+    }
+
+    func waitForOwnerToFinish(session: Int) -> AsyncStream<Void>? {
+        sendLock.withLock {
+            lock.withLock {
+                guard session == self.session, !remoteUsedInput else { return nil }
+                switch state {
+                case .buffering: break
+                case .sending:
+                    queued = recovery
+                    recovery.removeAll()
+                    readIndex = 0
+                    overflow = overflow || recoveryOverflow
+                case .waitingForOwner, .readyForDictation, .stopped:
+                    return nil
+                }
                 let (finished, continuation) = AsyncStream<Void>.makeStream()
-                state = .listeningForQuiet(continuation)
-                finishIfQuiet()
+                state = .waitingForOwner(continuation)
                 return finished
-            case .listeningForQuiet, .readyForDictation, .stopped:
-                return nil
             }
         }
     }
 
-    func timeOutUtterance(session: Int) {
+    @discardableResult
+    func finishForDictation(session: Int, discard: Bool = false) -> Bool {
         lock.withLock {
-            guard session == self.session, case .listeningForQuiet = state else { return }
-            overflow = true
-            finishIfQuiet()
+            guard session == self.session, case .waitingForOwner(let completion) = state else { return false }
+            if discard { overflow = true }
+            state = .readyForDictation
+            completion.finish()
+            return true
         }
     }
 
@@ -153,8 +181,9 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
                 state = .stopped
                 delegate = nil
                 queued.removeAll()
+                recovery.removeAll()
                 readIndex = 0
-                if case .listeningForQuiet(let completion) = previous { completion.finish() }
+                if case .waitingForOwner(let completion) = previous { completion.finish() }
                 return (true, samples)
             }
         }
@@ -195,21 +224,20 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
         sendLock.withLock {
             let (delegate, audio): (RTCAudioDeviceDelegate?, [Int16]?) = lock.withLock {
                 switch state {
-                case .buffering, .listeningForQuiet:
-                    observeUtterance(sourceFrames)
+                case .buffering, .waitingForOwner:
                     buffer(sourceFrames)
-                    finishIfQuiet()
                     return (nil, nil)
                 case .sending:
+                    rememberForRecovery(sourceFrames)
                     guard recording, let delegate else {
-                        observeUtterance(sourceFrames)
                         buffer(sourceFrames)
                         return (nil, nil)
                     }
                     guard !overflow else { return (nil, nil) }
-                    sentAudio = true
-                    guard readIndex < queued.count else { return (delegate, nil) }
-                    return (delegate, drain(with: sourceFrames))
+                    let packet = readIndex < queued.count ? drain(with: sourceFrames) : nil
+                    openingFramesAwaitingMedia = max(0, openingFramesAwaitingMedia - (packet?.count ?? count))
+                    deliveredToMedia = true
+                    return (delegate, packet)
                 case .readyForDictation, .stopped:
                     return (nil, nil)
                 }
@@ -223,15 +251,13 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
         }
     }
 
-    /// Used only to decide when the local fallback should stop recording.
-    private func observeUtterance(_ frames: UnsafeBufferPointer<Int16>) {
-        let quiet = frames.reduce(Int64(0)) { $0 + Int64($1) * Int64($1) } < Int64(frames.count) * 10_000
-        if quiet {
-            quietFrames = min(Self.noSpeechFrames, quietFrames + frames.count)
-        } else {
-            quietFrames = 0
-            heardSpeech = true
+    private func rememberForRecovery(_ frames: UnsafeBufferPointer<Int16>) {
+        guard !remoteUsedInput, !recoveryOverflow else { return }
+        guard frames.count <= Self.maxOpeningFrames - recovery.count else {
+            recoveryOverflow = true
+            return
         }
+        recovery.append(contentsOf: frames)
     }
 
     private func buffer(_ frames: UnsafeBufferPointer<Int16>) {
@@ -241,13 +267,6 @@ final class OpeningVoiceAudio: NSObject, RTCAudioDevice, @unchecked Sendable {
             return
         }
         queued.append(contentsOf: frames)
-    }
-
-    private func finishIfQuiet() {
-        guard case .listeningForQuiet(let completion) = state,
-              overflow || quietFrames >= (heardSpeech ? Self.pauseFrames : Self.noSpeechFrames) else { return }
-        state = .readyForDictation
-        completion.finish()
     }
 
     private func drain(with frames: UnsafeBufferPointer<Int16>) -> [Int16] {

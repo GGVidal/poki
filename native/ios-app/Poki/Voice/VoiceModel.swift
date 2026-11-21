@@ -316,6 +316,8 @@ final class VoiceModel {
     private var connectionOpen = false
     private var openingCapture: OpeningVoiceCapture?
     private var openingSpeechAuthorized = false
+    private var openingLiveInputObserved = false
+    private(set) var waitsForOpeningDictation = false
     private var openingDictation: Task<Void, Never>?
     private var usesLive = false
     private var liveCloseTimeout: Task<Void, Never>?
@@ -765,7 +767,7 @@ final class VoiceModel {
             connectionOpen = true
             trace("connection open")
             if !sendOpeningAudioIfReady() {
-                await openingDictation?.value
+                if !waitsForOpeningDictation { await openingDictation?.value }
                 return
             }
             lastActivity = time.now()
@@ -776,7 +778,8 @@ final class VoiceModel {
             // Ended while connecting: stop() already put everything back.
             guard number == session, liveCloseTimeout == nil else { return }
             if startOpeningDictation() {
-                await openingDictation?.value
+                // Return control to Shortcuts so the owner can run Poki Anytime again.
+                if !waitsForOpeningDictation { await openingDictation?.value }
                 return
             }
             transcript = nil
@@ -805,26 +808,33 @@ final class VoiceModel {
     @discardableResult
     private func startOpeningDictation() -> Bool {
         let number = session
-        guard let capture = openingCapture, let finished = capture.audio.finishUtterance(session: number) else { return false }
+        guard let capture = openingCapture, let finished = capture.audio.waitForOwnerToFinish(session: number) else { return false }
         let authorized = openingSpeechAuthorized
-        trace("voice connection failed before opening audio was sent")
+        trace("voice connection failed before confirmed use of opening audio")
         closeConnection("switching to on-device dictation")
         transcript = nil
         endVoiceConnection()
         phase = .listening
+        waitsForOpeningDictation = authorized
         openingDictation = Task { [weak self] in
             guard let self else { return }
-            defer { if session == number { openingDictation = nil } }
+            defer {
+                if session == number {
+                    openingDictation = nil
+                    waitsForOpeningDictation = false
+                }
+            }
             if authorized {
                 let deadline = Task { [time, weak audio = capture.audio] in
                     await time.sleep(.seconds(45))
                     guard !Task.isCancelled else { return }
-                    audio?.timeOutUtterance(session: number)
+                    audio?.finishForDictation(session: number, discard: true)
                 }
                 for await _ in finished {}
                 deadline.cancel()
             }
             guard session == number, !Task.isCancelled else { return }
+            waitsForOpeningDictation = false
             let audio = releaseOpeningCapture(session: number, forDictation: authorized)
             phase = .thinking
             let text: String?
@@ -841,6 +851,15 @@ final class VoiceModel {
                 if session == number { phase = .lost(why) }
             }
         }
+        return true
+    }
+
+    /// Poki Anytime runs again after the owner finishes speaking. The separate End control
+    /// continues to cancel the recording without submitting a task.
+    func finishOpeningDictation() -> Bool {
+        guard waitsForOpeningDictation,
+              openingCapture?.audio.finishForDictation(session: session) == true else { return false }
+        waitsForOpeningDictation = false
         return true
     }
 
@@ -942,6 +961,7 @@ final class VoiceModel {
         releaseOpeningCapture(session: session)
         openingDictation?.cancel()
         openingDictation = nil
+        waitsForOpeningDictation = false
         endVoiceConnection()
         holdingMicrophone = false
     }
@@ -951,6 +971,7 @@ final class VoiceModel {
         livePlayback?.cancel()
         livePlayback = nil
         loggedLiveInputDuringPlayback = false
+        openingLiveInputObserved = false
         liveCaptions.removeAll()
         liveSpeechStopped = false
         liveDelegations.removeAll()
@@ -1254,7 +1275,7 @@ final class VoiceModel {
             finishLiveClose(reason, confirmed: confirmed)
             return
         }
-        if !confirmed && (!ready || !connectionOpen), startOpeningDictation() { return }
+        if !confirmed, startOpeningDictation() { return }
         if usesLive && ready { logLiveClose(reason, confirmed: confirmed) }
         endSession()
         session += 1
@@ -1302,6 +1323,9 @@ final class VoiceModel {
             keepOpen()
             appendLiveCaption(text, role: role, start: start ?? 0, end: end ?? 0)
             if role == .you {
+                if let start, let end, end > start, openingCapture?.audio.submittedOpeningToMedia == true {
+                    openingLiveInputObserved = true
+                }
                 if phase == .speaking, !loggedLiveInputDuringPlayback {
                     loggedLiveInputDuringPlayback = true
                     let timing = if let start, let end { " (model audio \(start)–\(end) ms)" } else { "" }
@@ -1325,8 +1349,9 @@ final class VoiceModel {
                     if !answerDue, phase != .thinking { clock = TurnClock(said: time.now()) }
                     else if clock.call == nil { clock.said = time.now() }
                 }
-            } else if clock.delivered != nil {
-                clock.reply += text
+            } else {
+                if openingLiveInputObserved { openingCapture?.audio.markRemoteInputUsed(session: number) }
+                if clock.delivered != nil { clock.reply += text }
             }
             endIfDone()
         case "session.delegation.created":
@@ -1413,7 +1438,10 @@ final class VoiceModel {
         case "conversation.item.added":
             if (event["item"] as? [String: Any])?["role"] as? String == "user" { clock.heard = clock.heard ?? Date() }
         case "conversation.item.input_audio_transcription.completed":
-            if let text = event["transcript"] as? String, !text.isEmpty { lines.append(VoiceLine(role: .you, text: text.trimmingCharacters(in: .whitespacesAndNewlines))) }
+            if let text = event["transcript"] as? String, !text.isEmpty {
+                openingCapture?.audio.markRemoteInputUsed(session: number)
+                lines.append(VoiceLine(role: .you, text: text.trimmingCharacters(in: .whitespacesAndNewlines)))
+            }
         case "response.created":
             guard !usesLive || !liveSpeechStopped else { return }
             let id = (event["response"] as? [String: Any])?["id"] as? String
@@ -1599,6 +1627,7 @@ final class VoiceModel {
         }
         var call = call
         call.silentResult = usesLive && liveSpeechStopped
+        openingCapture?.audio.markRemoteInputUsed(session: session, phoneAction: true)
         calls.append(call)
         clock.call = clock.call ?? Date()
         clock.callNames.append(call.name)

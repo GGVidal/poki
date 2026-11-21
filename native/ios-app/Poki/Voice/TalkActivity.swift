@@ -40,6 +40,7 @@ final class TalkActivity {
     /// The talk's state as the Live Activity says it: nil while no talk is on.
     static func state(of voice: VoiceModel) -> PokiState.Voice? {
         guard voice.isOn else { return nil }
+        if voice.waitsForOpeningDictation { return .finishingOpening }
         switch voice.phase {
         case .off, .lost: return nil
         case .connecting, .listening, .hearing: return .listening

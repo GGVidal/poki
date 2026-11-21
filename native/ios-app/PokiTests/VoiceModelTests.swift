@@ -238,6 +238,76 @@ private actor VoiceRunnerTransport: HTTPTransport {
 
 @MainActor
 final class VoiceModelTests: XCTestCase {
+    func testQuietEndingIsNotSubmittedBeforeTheOwnerFinishesDictation() async {
+        let audio = OpeningAudioProbe()
+        let h = Harness(openingAudio: audio)
+        await h.voice.start(captureOpening: true)
+        audio.feed(4_800, sample: 1_000)
+        h.link.onClosed?("connection failed")
+        for _ in 0..<4 { audio.feed(24_000, sample: 25) }
+        await h.time.settle()
+        XCTAssertTrue(audio.transcriptions.isEmpty, "quiet speech must not submit the recording before the owner finishes")
+        XCTAssertEqual(TalkActivity.state(of: h.voice), .finishingOpening)
+        XCTAssertTrue(h.voice.finishOpeningDictation())
+        audio.feed(480, sample: 999)
+        await h.time.settle()
+        let utterance = [Int16](repeating: 1_000, count: 4_800) + [Int16](repeating: 25, count: 96_000)
+        XCTAssertEqual(audio.transcriptions.count, 1)
+        XCTAssertTrue(audio.transcriptions.first?.elementsEqual(utterance) == true)
+        h.voice.stop()
+    }
+
+    func testReadyConnectionThatDropsBeforeReceiptKeepsItsOriginalOpening() async {
+        for additionalFrames in [0, 480, 4_800] {
+            let audio = OpeningAudioProbe()
+            audio.transcription = "Open Notes"
+            let h = Harness(openingAudio: audio)
+            _ = h.voice.setBridge(BridgeStub.liveAddress)
+            await h.voice.start(captureOpening: true)
+            audio.feed(4_800, sample: 1_000)
+            h.link.play(["type": "session.started"])
+            if additionalFrames > 0 {
+                audio.feed(additionalFrames, sample: 375)
+                // A partial transcript does not acknowledge the rest of the recorded audio.
+                h.link.play(["type": "session.input_transcript.delta", "delta": "Open", "start_ms": 0, "end_ms": 25])
+                if additionalFrames == 480 {
+                    h.link.play(["type": "session.output_transcript.delta", "delta": "I can"])
+                }
+            }
+            XCTAssertEqual(audio.sent.isEmpty, additionalFrames == 0)
+            h.link.onClosed?("transport failed")
+            await h.time.settle()
+            XCTAssertTrue(h.voice.isOn, "readiness or a local media callback cannot abandon the opening")
+            XCTAssertTrue(audio.transcriptions.isEmpty, "uncertain delivery must wait for an explicit text fallback")
+            audio.feed(4_800, sample: -25)
+            XCTAssertTrue(h.voice.finishOpeningDictation())
+            await h.time.settle()
+            var expected = [Int16](repeating: 1_000, count: 4_800)
+            expected += [Int16](repeating: 375, count: additionalFrames)
+            expected += [Int16](repeating: -25, count: 4_800)
+            XCTAssertEqual(audio.transcriptions.count, 1)
+            XCTAssertTrue(audio.transcriptions.first?.elementsEqual(expected) == true)
+            XCTAssertEqual(audio.textTasks, ["Open Notes"])
+            h.voice.stop()
+        }
+
+        let used = OpeningAudioProbe()
+        let answered = Harness(openingAudio: used)
+        _ = answered.voice.setBridge(BridgeStub.liveAddress)
+        await answered.voice.start(captureOpening: true)
+        used.feed(4_800, sample: 1_000)
+        answered.link.play(["type": "session.started"])
+        used.feed(4_800)
+        answered.link.play(
+            ["type": "session.input_transcript.delta", "delta": "Hello", "start_ms": 0, "end_ms": 100],
+            ["type": "session.output_transcript.delta", "delta": "Hello there."]
+        )
+        answered.link.onClosed?("transport failed")
+        XCTAssertFalse(answered.voice.finishOpeningDictation())
+        XCTAssertFalse(answered.voice.isOn)
+        XCTAssertTrue(used.transcriptions.isEmpty)
+    }
+
     func testQuietOpeningReachesTheMediaTrackWithItsOriginalSamples() async {
         let audio = OpeningAudioProbe()
         let h = Harness(openingAudio: audio)
@@ -286,6 +356,8 @@ final class VoiceModelTests: XCTestCase {
             audio.feed(4_800, sample: 2_000)
             h.link.onClosed?("connection failed")
             audio.feed(96_000)
+            if entry.prompts == 1, entry.answer == .authorized { XCTAssertTrue(h.voice.finishOpeningDictation()) }
+            if entry.fails { XCTAssertTrue(h.voice.finishOpeningDictation()) }
             await h.time.settle()
             if entry.prompts == 1, entry.answer == .authorized {
                 XCTAssertEqual(audio.textTasks, ["Open Notes"])
@@ -311,6 +383,7 @@ final class VoiceModelTests: XCTestCase {
 
         audio.feed(67_200, sample: 2_000)
         for _ in 0..<2 { audio.feed(48_000) }
+        XCTAssertTrue(h.voice.finishOpeningDictation())
         await h.time.settle()
         let spoken = Array(repeating: Int16(1_000), count: 4_800) + Array(repeating: Int16(2_000), count: 67_200)
         XCTAssertEqual(audio.transcriptions.map { $0.filter { $0 != 0 } == spoken }, [true])
