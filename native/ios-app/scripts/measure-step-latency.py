@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Measure Poki iOS chat step latency and per-turn request breakdown on an iOS Simulator.
+"""Measure Poki iOS chat step latency and per-turn request breakdown on an ephemeral iOS Simulator.
 
-Drives unmodified Release simulator builds through Poki's built-in `-pokiInProcess chat`
-probe against a local OpenAI-compatible scripted model server, capturing:
+Creates, boots, and deletes its own isolated iOS Simulator so existing simulators' conversations,
+memories, and backups are never touched. Drives unmodified Release simulator builds through Poki's
+built-in `-pokiInProcess chat` probe against a local OpenAI-compatible scripted model server,
+capturing:
 - Per-turn HTTP wire bytes and OpenAI o200k_base token counts (via tiktoken when installed).
 - Per-source breakdown: base system prompt, reply examples, counted-scroll rules,
   memory-attribution rules, embedded tool instructions, app IDs, saved memories, saved skills,
@@ -14,6 +16,7 @@ probe against a local OpenAI-compatible scripted model server, capturing:
 - SQLite + JSONL output and optional CI/bisect gate thresholds.
 """
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import plistlib
@@ -41,6 +44,9 @@ TASKS = {
     "false_scroll": "打开设置帮我发一条消息测试",
 }
 
+OWNED_SIMULATORS: set[str] = set()
+BUILTIN_PROFILES = ("empty", "light", "heavy")
+
 
 def resolve_developer_dir() -> str:
     env_dir = os.environ.get("DEVELOPER_DIR")
@@ -61,6 +67,10 @@ def count_tokens(text: str) -> int:
 def make_memory_file(profile: str, memory_file: Path | None = None) -> dict:
     if memory_file is not None:
         return json.loads(memory_file.read_text())
+    if profile not in BUILTIN_PROFILES:
+        raise ValueError(
+            f"unknown memory profile {profile!r}; expected one of {', '.join(BUILTIN_PROFILES)} or pass --memory-file"
+        )
     now = "2026-11-20T10:00:00Z"
     if profile == "empty":
         return {"schema": "poki.agent-memory/2", "skills": [], "notes": [], "runs": []}
@@ -585,6 +595,45 @@ def sim(*args, env=None, timeout=30, check=True):
     return res.stdout
 
 
+def resolve_simulator_spec(device_type: str | None = None, runtime: str | None = None) -> tuple[str, str]:
+    if device_type is None:
+        dev_list = json.loads(sim("list", "-j", "devicetypes")).get("devicetypes", [])
+        iphones = [d["identifier"] for d in dev_list if "iPhone" in d.get("name", "") and d.get("identifier")]
+        if not iphones:
+            raise RuntimeError("no iPhone simulator device type available")
+        preferred = [d for d in iphones if "iPhone-17" in d]
+        device_type = preferred[0] if preferred else iphones[-1]
+    if runtime is None:
+        rt_list = json.loads(sim("list", "-j", "runtimes")).get("runtimes", [])
+        ios_runtimes = [
+            r for r in rt_list
+            if r.get("isAvailable") and str(r.get("identifier", "")).startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+        ]
+        if not ios_runtimes:
+            raise RuntimeError("no available iOS simulator runtime found")
+        ios_runtimes.sort(key=lambda r: tuple(int(p) for p in re.findall(r"\d+", str(r.get("version", ""))) or [0]))
+        runtime = ios_runtimes[-1]["identifier"]
+    return device_type, runtime
+
+
+@contextmanager
+def ephemeral_simulator(device_type: str | None = None, runtime: str | None = None):
+    resolved_device, resolved_runtime = resolve_simulator_spec(device_type, runtime)
+    name = f"Poki-Step-Latency-{os.getpid()}-{int(time.time())}"
+    udid = sim("create", name, resolved_device, resolved_runtime, timeout=60).strip()
+    if not udid:
+        raise RuntimeError("simctl create returned empty UDID")
+    OWNED_SIMULATORS.add(udid)
+    try:
+        sim("boot", udid, timeout=60)
+        sim("bootstatus", udid, "-b", timeout=180)
+        yield udid
+    finally:
+        OWNED_SIMULATORS.discard(udid)
+        sim("shutdown", udid, check=False, timeout=30)
+        sim("delete", udid, check=False, timeout=60)
+
+
 def init_db(db_path: Path):
     conn = sqlite3.connect(db_path)
     conn.execute("""
@@ -657,6 +706,11 @@ def init_db(db_path: Path):
 
 
 def run_one(server, udid: str, app_path: Path, label: str, commit_sha: str, task_name: str, profile: str, round_idx: int, out_dir: Path, developer_dir: str, memory_file: Path | None = None, save_payload: bool = False):
+    if udid not in OWNED_SIMULATORS:
+        raise ValueError(
+            f"refusing to run against simulator {udid!r} not created by ephemeral_simulator"
+        )
+    memory_payload = make_memory_file(profile, memory_file)
     info = plistlib.loads((app_path / "Info.plist").read_bytes())
     bid = info["CFBundleIdentifier"]
     run_id = f"r{round_idx:02d}_{label}_{task_name}_{profile}_{int(time.time() * 1000) % 100000}"
@@ -671,7 +725,7 @@ def run_one(server, udid: str, app_path: Path, label: str, commit_sha: str, task
 
     mem_dir = data_dir / "Library/Application Support/Poki"
     mem_dir.mkdir(parents=True, exist_ok=True)
-    (mem_dir / "agent-memory.json").write_text(json.dumps(make_memory_file(profile, memory_file), ensure_ascii=False))
+    (mem_dir / "agent-memory.json").write_text(json.dumps(memory_payload, ensure_ascii=False))
     backup_dir = data_dir / "Documents/AgentBackup"
     if backup_dir.exists():
         shutil.rmtree(backup_dir, ignore_errors=True)
@@ -845,9 +899,12 @@ def save_row(conn: sqlite3.Connection, row: dict):
     conn.commit()
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--udid", required=True, help="Booted iOS Simulator UDID")
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Measure Poki iOS step latency and prompt breakdown on a fresh ephemeral simulator."
+    )
+    p.add_argument("--device-type", default=None, help="Optional simctl device type identifier for the ephemeral simulator")
+    p.add_argument("--runtime", default=None, help="Optional simctl runtime identifier for the ephemeral simulator")
     p.add_argument("--target", action="append", required=True, help="label=commit=/path/to/Poki.app")
     p.add_argument("--tasks", default="settings,web,photos", help="Comma-separated tasks")
     p.add_argument("--profiles", default="light,heavy", help="Comma-separated memory profiles (empty, light, heavy)")
@@ -858,7 +915,11 @@ def main():
     p.add_argument("--max-tokens", type=int, default=None, help="Optional median token gate for bisect/CI")
     p.add_argument("--max-step-ms", type=float, default=None, help="Optional gate for bisect/CI")
     p.add_argument("--forbid-false-scroll", action="store_true", help="Fail if false_scroll rejects finish_task")
-    args = p.parse_args()
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     developer_dir = resolve_developer_dir()
     out_dir = Path(args.out)
@@ -869,6 +930,8 @@ def main():
         targets.append((label, sha, Path(path)))
     task_list = [t.strip() for t in args.tasks.split(",") if t.strip()]
     profile_list = [pr.strip() for pr in args.profiles.split(",") if pr.strip()]
+    for profile in profile_list:
+        make_memory_file(profile, args.memory_file)
 
     conn = init_db(out_dir / "results.sqlite")
     server = ThreadingHTTPServer(("127.0.0.1", 0), ScriptedHandler)
@@ -877,30 +940,31 @@ def main():
 
     all_rows = []
     try:
-        for profile in profile_list:
-            for r in range(args.rounds):
-                order = targets[r % len(targets):] + targets[:r % len(targets)]
-                for task_name in task_list:
-                    for label, sha, app_path in order:
-                        row = run_one(
-                            server, args.udid, app_path, label, sha, task_name, profile, r, out_dir,
-                            developer_dir=developer_dir, memory_file=args.memory_file, save_payload=(r == 0),
-                        )
-                        save_row(conn, row)
-                        all_rows.append(row)
-                        with (out_dir / "runs.jsonl").open("a") as jf:
-                            jf.write(json.dumps({k: v for k, v in row.items() if k != "turns"}, ensure_ascii=False) + "\n")
-                        iv = f"{row['step_interval_median_ms']:.0f}ms" if row["step_interval_median_ms"] is not None else "n/a"
-                        wb = f"{row['wire_bytes_median']:.0f}B" if row["wire_bytes_median"] is not None else "n/a"
-                        tk = f"{row['tokens_median']:.0f}tok" if row["tokens_median"] is not None else "n/a"
-                        print(
-                            f"[{profile} r{r}] {label:12s} {task_name:12s} ok={row['ok']} "
-                            f"step_p50={iv:7s} wire_p50={wb:9s} tok_p50={tk:9s} "
-                            f"sys={row['system_bytes']}B tools={row['tools_bytes']}B "
-                            f"mem={row['memories_bytes']}B skill={row['skills_bytes']}B "
-                            f"appMem={row['app_memory_brief_max_bytes']}B rej={row['finish_task_rejected']} {row['error']}",
-                            flush=True,
-                        )
+        with ephemeral_simulator(device_type=args.device_type, runtime=args.runtime) as udid:
+            for profile in profile_list:
+                for r in range(args.rounds):
+                    order = targets[r % len(targets):] + targets[:r % len(targets)]
+                    for task_name in task_list:
+                        for label, sha, app_path in order:
+                            row = run_one(
+                                server, udid, app_path, label, sha, task_name, profile, r, out_dir,
+                                developer_dir=developer_dir, memory_file=args.memory_file, save_payload=(r == 0),
+                            )
+                            save_row(conn, row)
+                            all_rows.append(row)
+                            with (out_dir / "runs.jsonl").open("a") as jf:
+                                jf.write(json.dumps({k: v for k, v in row.items() if k != "turns"}, ensure_ascii=False) + "\n")
+                            iv = f"{row['step_interval_median_ms']:.0f}ms" if row["step_interval_median_ms"] is not None else "n/a"
+                            wb = f"{row['wire_bytes_median']:.0f}B" if row["wire_bytes_median"] is not None else "n/a"
+                            tk = f"{row['tokens_median']:.0f}tok" if row["tokens_median"] is not None else "n/a"
+                            print(
+                                f"[{profile} r{r}] {label:12s} {task_name:12s} ok={row['ok']} "
+                                f"step_p50={iv:7s} wire_p50={wb:9s} tok_p50={tk:9s} "
+                                f"sys={row['system_bytes']}B tools={row['tools_bytes']}B "
+                                f"mem={row['memories_bytes']}B skill={row['skills_bytes']}B "
+                                f"appMem={row['app_memory_brief_max_bytes']}B rej={row['finish_task_rejected']} {row['error']}",
+                                flush=True,
+                            )
     finally:
         server.shutdown()
         conn.close()
