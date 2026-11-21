@@ -1020,10 +1020,11 @@ final class Computer: @unchecked Sendable {
         ActionFailure(message: "do: no app named \"\(name)\" is known on this phone; nothing was sent. Give its bundle id, or go home ({button: \"home\"}), swipe down to search, type its name and tap it", delivery: .notSent)
     }
 
-    private func installedLaunchBundle(_ given: String) throws -> String {
-        guard let bundle = config.resolveInstalledApp(given) else {
-            throw unknownApp(given.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
+    private func resolveLaunchBundle(_ given: String) throws -> String {
+        let name = given.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The local install lookup can miss an app the OS will activate by ID.
+        if PokiCore.looksLikeBundleID(name) { return name }
+        guard let bundle = config.resolveInstalledApp(name) else { throw unknownApp(name) }
         return bundle
     }
 
@@ -1031,13 +1032,13 @@ final class Computer: @unchecked Sendable {
         guard case .object(var fields) = action else { return action }
         if let spec = fields["launch"] {
             if let given = spec.string {
-                fields["launch"] = .string(try installedLaunchBundle(given))
+                fields["launch"] = .string(try resolveLaunchBundle(given))
             } else if case .object(var launch) = spec, launch["bundle"]?.string == nil {
                 if let name = launch["name"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) {
                     guard let bundle = config.resolveApp(name) else { throw unknownApp(name) }
                     launch["bundle"] = .string(bundle)
                 } else if let given = launch["app"]?.string {
-                    launch["bundle"] = .string(try installedLaunchBundle(given))
+                    launch["bundle"] = .string(try resolveLaunchBundle(given))
                 } else {
                     return action
                 }
