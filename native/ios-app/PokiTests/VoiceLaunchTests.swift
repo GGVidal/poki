@@ -3,6 +3,38 @@ import XCTest
 
 @MainActor
 final class VoiceLaunchTests: XCTestCase {
+    func testRedeliveredIntentCannotReopenAnEndedTalk() async throws {
+        #if targetEnvironment(simulator)
+        let voice = try XCTUnwrap(AskPoki.app?.voice)
+        let defaults = UserDefaults.standard
+        let rehearsal = defaults.object(forKey: "pokiTalkRehearsal")
+        let hold = defaults.object(forKey: "pokiTalkHold")
+        defaults.set("1", forKey: "pokiTalkRehearsal")
+        defaults.set("listening", forKey: "pokiTalkHold")
+        defer {
+            voice.stop()
+            defaults.set(rehearsal, forKey: "pokiTalkRehearsal")
+            defaults.set(hold, forKey: "pokiTalkHold")
+        }
+        let start = AppLog.shared.lines.count
+        let intent = TalkToPokiIntent()
+        let listening = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in voice.phase == .listening }, object: nil)
+        _ = try await intent.perform()
+        await fulfillment(of: [listening], timeout: 8)
+
+        voice.stop()
+        _ = try await intent.perform()
+        XCTAssertEqual(AppLog.shared.lines.dropFirst(start).filter { $0.contains("stage=receipt") }.count, 1,
+                       "Redelivering the same intent must not issue another voice request after End")
+        XCTAssertFalse(voice.isOn)
+
+        let restarted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in voice.phase == .listening }, object: nil)
+        _ = try await TalkToPokiIntent().perform()
+        await fulfillment(of: [restarted], timeout: 8)
+        XCTAssertEqual(AppLog.shared.lines.dropFirst(start).filter { $0.contains("result=started") }.count, 2)
+        #endif
+    }
+
     func testTalkToPokiRecordsTheStartedRequest() async throws {
         #if targetEnvironment(simulator)
         let voice = try XCTUnwrap(AskPoki.app?.voice)

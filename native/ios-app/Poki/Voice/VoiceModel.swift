@@ -1207,6 +1207,7 @@ final class VoiceModel {
                     endIfDone()
                     return
                 }
+                if text.contains(where: { !$0.isWhitespace }) { recordFirstLaunchUtterance(session: number) }
                 appendLiveSpeech(text, audio: audio, itemID: itemID)
                 let utterance = Self.liveSpeechParts(liveCallerSpeech.text).filter { !Self.liveBackchannels.contains($0) }
                 if !liveCallerSpeech.alreadyHandled, Self.liveRequestsStop(utterance) {
@@ -1294,9 +1295,7 @@ final class VoiceModel {
             clock = TurnClock(said: Date())
         case "input_audio_buffer.committed":
             if usesLive {
-                let id = (event["item_id"] as? String) ?? (event["event_id"] as? String)
-                liveCallerSpeech.recordInput(id: id)
-                if let id, !id.isEmpty { recordFirstLaunchUtterance(session: number) }
+                liveCallerSpeech.recordInput(id: (event["item_id"] as? String) ?? (event["event_id"] as? String))
                 return
             }
             guard manualRealtimeTurns, let item = event["item_id"] as? String, !item.isEmpty,

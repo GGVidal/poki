@@ -29,8 +29,8 @@ final class PokiEntry {
     @ObservationIgnored private var accepted = Set<UUID>()
     @ObservationIgnored private(set) var epoch = 0
 
-    func ask(_ destination: Destination, from source: Source) {
-        ask(Request(id: UUID(), destination: destination, issuedAt: .now, source: source, epoch: epoch))
+    func ask(_ destination: Destination, from source: Source, id: UUID = UUID()) {
+        ask(Request(id: id, destination: destination, issuedAt: .now, source: source, epoch: epoch))
     }
 
     func ask(_ request: Request) {
@@ -57,6 +57,8 @@ struct TalkToPokiIntent: AppIntent {
     @available(iOS 26.0, *)
     static var supportedModes: IntentModes { .foreground(.immediate) }
 
+    private let requestID = UUID()
+
     // WidgetKit serializes intent parameters between its extension and the app.
     @Parameter(title: "Control")
     var fromControl: Bool?
@@ -70,7 +72,7 @@ struct TalkToPokiIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        PokiEntry.shared.ask(.talk, from: fromControl == true ? .control : .appShortcut)
+        PokiEntry.shared.ask(.talk, from: fromControl == true ? .control : .appShortcut, id: requestID)
         return .result()
     }
 }
