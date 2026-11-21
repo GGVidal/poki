@@ -48,7 +48,7 @@ export default function Debug() {
       <Card>
         <div className="row">
           <Capsule kind="ghost" onClick={bundle}>{t("Save support bundle…")}</Capsule>
-          <Capsule kind="ghost" disabled={!udid} onClick={async () => { setError(null); setMsg(null); try { await api.mountDdi(udid); setMsg("Developer disk image mounted."); } catch (e) { setError(failureText(e)); } }}>{t("Mount developer disk image")}</Capsule>
+          <Capsule kind="ghost" disabled={!udid} onClick={async () => { setError(null); setMsg(null); try { await api.mountDdi(udid); setMsg(t("The developer disk image is mounted and copied into Poki.")); } catch (e) { setError(failureText(e)); } }}>{t("Mount developer disk image")}</Capsule>
           <Capsule kind="ghost" disabled={!udid} onClick={async () => { setError(null); try { await api.pair(udid); setMsg("Paired."); } catch (e) { setError(failureText(e)); } }}>{t("Pair")}</Capsule>
           <Capsule kind="ghost" disabled={!udid} onClick={async () => { setError(null); try { await api.devmode(udid); setMsg("Developer Mode is on."); } catch (e) { setError(failureText(e)); } }}>{t("Developer Mode")}: {t("Turn on")}</Capsule>
         </div>

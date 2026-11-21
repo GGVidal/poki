@@ -10,6 +10,15 @@ use std::path::{Path, PathBuf};
 
 const MIRROR_BASE: &str = "https://raw.githubusercontent.com/doronz88/DeveloperDiskImage/main/PersonalizedImages";
 
+/// The same repository through jsDelivr's CDN, for networks where GitHub's raw host does not answer
+/// (common in mainland China). Every file is still checked against the SHA-384 digests in the
+/// manifest, so a mirror can only fail, never hand over a different image.
+const CDN_BASES: [&str; 3] = [
+    "https://cdn.jsdelivr.net/gh/doronz88/DeveloperDiskImage@main/PersonalizedImages",
+    "https://gcore.jsdelivr.net/gh/doronz88/DeveloperDiskImage@main/PersonalizedImages",
+    "https://testingcf.jsdelivr.net/gh/doronz88/DeveloperDiskImage@main/PersonalizedImages",
+];
+
 /// Which image a phone takes. iOS 26.4 and later install a Cryptex1 cryptex; earlier iOS mounts the
 /// personalized image through the image mounter. Poki on the phone picks by the same rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +36,17 @@ impl Kind {
         if (major, minor) >= (26, 4) { Kind::Cryptex } else { Kind::Personalized }
     }
 
+    fn folder(self) -> &'static str {
+        if self == Kind::Cryptex { "Xcode_iOS_DDI_Cryptex" } else { "Xcode_iOS_DDI_Personalized" }
+    }
+
     pub fn mirror(self) -> String {
-        format!("{MIRROR_BASE}/{}", if self == Kind::Cryptex { "Xcode_iOS_DDI_Cryptex" } else { "Xcode_iOS_DDI_Personalized" })
+        format!("{MIRROR_BASE}/{}", self.folder())
+    }
+
+    /// Every place the image is downloaded from, in the order they are tried.
+    pub fn mirrors(self) -> Vec<String> {
+        std::iter::once(MIRROR_BASE).chain(CDN_BASES).map(|b| format!("{b}/{}", self.folder())).collect()
     }
 
     pub fn files(self) -> &'static [&'static str] {
@@ -106,33 +124,62 @@ pub fn verify(dir: &Path, kind: Kind) -> Result<String> {
 }
 
 /// Makes sure the image is on this computer, downloading it when it is not. Returns its build.
+/// A folder named by `POKI_DDI_DIR` (holding the same files) is used first when it verifies.
 pub async fn ensure(reporter: &Reporter, kind: Kind) -> Result<(PathBuf, String)> {
     let dir = dir(kind)?;
-    let (files, mirror) = (kind.files(), kind.mirror());
     if let Ok(build) = verify(&dir, kind) {
         return Ok((dir, build));
     }
+    if let Some(local) = std::env::var_os("POKI_DDI_DIR").map(PathBuf::from) {
+        match verify(&local, kind) {
+            Ok(build) => return Ok((local, build)),
+            Err(e) => tracing::warn!(error = %e, dir = %local.display(), "POKI_DDI_DIR does not hold this image"),
+        }
+    }
     reporter.step("ddi", "Downloading the developer disk image");
     let partial = dir.with_extension("partial");
-    let _ = std::fs::remove_dir_all(&partial);
-    std::fs::create_dir_all(&partial)?;
-    let client = reqwest::Client::builder().user_agent(concat!("PokiSetup/", env!("CARGO_PKG_VERSION"))).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("PokiSetup/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(180))
+        .build()?;
+    let mut failures = Vec::new();
+    for mirror in kind.mirrors() {
+        let host = mirror.split('/').nth(2).unwrap_or("").to_string();
+        match download_from(&client, &mirror, kind, &partial, reporter).await {
+            Ok(build) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::rename(&partial, &dir)?;
+                reporter.done("ddi", Some(format!("Image build {build}, from {host}.")));
+                return Ok((dir, build));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&partial);
+                tracing::warn!(error = %e, %host, "developer disk image download failed; trying the next mirror");
+                failures.push(format!("{host}: {e}"));
+            }
+        }
+    }
+    Err(Error::msg(format!(
+        "The developer disk image could not be downloaded from GitHub or its mirrors ({}). Check the network or the system proxy, then try again.",
+        failures.join("; ")
+    )))
+}
+
+/// Downloads every file of the image from one mirror into `partial` and verifies it.
+async fn download_from(client: &reqwest::Client, mirror: &str, kind: Kind, partial: &Path, reporter: &Reporter) -> Result<String> {
+    let files = kind.files();
+    let _ = std::fs::remove_dir_all(partial);
+    std::fs::create_dir_all(partial)?;
     for (i, name) in files.iter().enumerate() {
         reporter.part("ddi", i as f64 / files.len() as f64, Some(format!("Downloading {name}")));
         let res = client.get(format!("{mirror}/{name}")).send().await?;
         if !res.status().is_success() {
-            let _ = std::fs::remove_dir_all(&partial);
             return Err(Error::msg(format!("downloading {name} failed with HTTP {}", res.status())));
         }
         std::fs::write(partial.join(name), res.bytes().await?)?;
     }
-    let build = verify(&partial, kind).inspect_err(|_| {
-        let _ = std::fs::remove_dir_all(&partial);
-    })?;
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::rename(&partial, &dir)?;
-    reporter.done("ddi", Some(format!("Image build {build}.")));
-    Ok((dir, build))
+    verify(partial, kind)
 }
 
 /// Present only while a developer disk image is mounted, whichever way it went on (the same markers
@@ -275,6 +322,25 @@ async fn mount_cryptex(phone: &Phone, dir: PathBuf, reporter: &Reporter) -> Resu
     Ok(())
 }
 
+/// The Mount button: mounts the image when it is not mounted, and copies it into Poki on the phone
+/// either way, because Poki needs its own copy to mount it again after every restart. Without the
+/// copy Poki keeps asking for the image even while it is mounted, and on a network that cannot reach
+/// GitHub it cannot download it itself.
+pub async fn mount_and_give_poki(phone: &Phone, reporter: &Reporter) -> Result<()> {
+    mount(phone, reporter).await?;
+    let bundle_id = match crate::keeper::get(&phone.udid).ok().flatten() {
+        Some(rec) => Some(rec.bundle_id),
+        None => super::install::find_apps(phone, crate::POKI_BUNDLE_ID).await.ok().and_then(|apps| apps.into_iter().next().map(|a| a.bundle_id)),
+    };
+    match bundle_id {
+        Some(id) => seed_container(phone, &id, reporter).await,
+        None => {
+            reporter.note("seed", "Poki is not installed on this device, so the image was only mounted.");
+            Ok(())
+        }
+    }
+}
+
 /// Copies the image into Poki's container so the phone does not download it.
 pub async fn seed_container(phone: &Phone, bundle_id: &str, reporter: &Reporter) -> Result<()> {
     let kind = kind_of(phone).await;
@@ -295,4 +361,19 @@ pub async fn seed_container(phone: &Phone, bundle_id: &str, reporter: &Reporter)
     }
     reporter.done("seed", None);
     Ok(())
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+
+    #[test]
+    fn github_first_then_the_cdn_for_each_kind() {
+        let m = Kind::Personalized.mirrors();
+        assert_eq!(m[0], Kind::Personalized.mirror());
+        assert!(m.len() > 1);
+        assert!(m.iter().all(|u| u.ends_with("/Xcode_iOS_DDI_Personalized")));
+        assert!(m[1..].iter().all(|u| u.contains("jsdelivr.net/gh/doronz88/DeveloperDiskImage@main/")));
+        assert!(Kind::Cryptex.mirrors().iter().all(|u| u.ends_with("/Xcode_iOS_DDI_Cryptex")));
+    }
 }

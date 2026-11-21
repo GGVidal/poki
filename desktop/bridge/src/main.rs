@@ -600,7 +600,7 @@ async fn dispatch(state: &Shared, out: &Out, cmd: &str, a: &Value) -> R {
         "mount_ddi" => {
             let udid: String = arg(a, "udid")?;
             let phone = setup::pick_phone(Some(&udid)).await?;
-            device::ddi::mount(&phone, &out.reporter("ddi")).await?;
+            device::ddi::mount_and_give_poki(&phone, &out.reporter("ddi")).await?;
             ok(true)
         }
         "support_bundle" => {
