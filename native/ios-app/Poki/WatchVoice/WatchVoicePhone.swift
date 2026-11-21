@@ -8,9 +8,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
     private let app: AppModel
     private let chat: ChatModel
     private let session = WCSession.default
-    private let journal = URL.applicationSupportDirectory.appending(path: "WatchVoice.json")
-    private var updates: [UUID: WatchVoiceUpdate] = [:]
-    private var journalAvailable = true
+    private let resultJournal = WatchVoiceResultJournal(url: URL.applicationSupportDirectory.appending(path: "WatchVoice.json"))
     private var activeID: UUID?
     private var work: Task<Void, Never>?
     private var latestTaskContext: Data?
@@ -29,27 +27,13 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         self.app = app
         self.chat = chat
         super.init()
-        do {
-            let saved = try Data(contentsOf: journal)
-            updates = try JSONDecoder().decode([UUID: WatchVoiceUpdate].self, from: saved)
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            // The first accepted request creates the journal.
-        } catch {
-            // An unreadable journal cannot safely distinguish a new request from a retry.
-            journalAvailable = false
-        }
         remoteHost.startObserving()
         session.delegate = self
         session.activate()
     }
 
     private func store(_ update: WatchVoiceUpdate) throws {
-        guard journalAvailable else { throw CocoaError(.fileReadCorruptFile) }
-        var next = updates
-        next[update.id] = update
-        try FileManager.default.createDirectory(at: journal.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(next).write(to: journal, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        updates = next
+        try resultJournal.store(update)
     }
 
     private func reply(to request: WatchVoiceRequest) -> Data {
@@ -59,7 +43,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         case .submit(let id, let audio):
             return encodeUpdate(accept(id, audio: audio))
         case .result(let id, let offset):
-            return updates[id]?.resultChunk(at: offset) ?? Data()
+            return resultJournal.resultChunk(id: id, offset: offset)
         }
     }
 
@@ -84,7 +68,9 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
     }
 
     private func status(for id: UUID) -> WatchVoiceUpdate? {
-        guard let update = updates[id], !update.phase.isTerminal, activeID != id else { return updates[id] }
+        guard let update = resultJournal.update(for: id), !update.phase.isTerminal, activeID != id else {
+            return resultJournal.update(for: id)
+        }
         return complete(blocked(id, "Poki was interrupted on iPhone. Check what happened there before sending the task again."))
     }
 
@@ -154,7 +140,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
             terminal = update
         } catch {
             terminal = blocked(update.id, "Poki couldn’t save the result on iPhone. Check the task there before trying again.")
-            updates[update.id] = terminal
+            resultJournal.storeInMemoryFallback(terminal)
         }
         AppLog.shared.add("watch", "Watch task \(update.id) ended as \(terminal.phase)")
         publish(terminal)
@@ -176,7 +162,14 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         do {
             try store(update)
         } catch {
-            updates[update.id] = update
+            resultJournal.storeInMemoryFallback(update)
+        }
+        let delivery = encodeUpdate(update)
+        if !delivery.isEmpty,
+           session.activationState == .activated,
+           session.isPaired,
+           session.isWatchAppInstalled {
+            session.transferUserInfo([WatchVoiceRemote.resultKey: delivery])
         }
     }
 
@@ -224,9 +217,11 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
 
     private func syncApplicationContext() {
         guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled else { return }
-        var context: [String: Any] = [:]
-        if let latestTaskContext { context[WatchVoiceRequest.contextKey] = latestTaskContext }
-        if let latestRemoteContext { context[WatchVoiceRemote.contextKey] = latestRemoteContext }
+        let context = WatchVoiceRemote.mergeApplicationContext(
+            existing: session.applicationContext,
+            taskContext: latestTaskContext,
+            remoteContext: latestRemoteContext
+        )
         guard !context.isEmpty else { return }
         do {
             try session.updateApplicationContext(context)
@@ -240,7 +235,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         return (try? JSONEncoder().encode(update.forDelivery())) ?? Data()
     }
 
-    private func handleRemoteMessage(_ message: [String: Any]) -> [String: Any] {
+    private func handleRemoteMessage(_ message: [String: Any], pushSnapshot: Bool = false) -> [String: Any] {
         guard let data = message[WatchVoiceRemote.commandKey] as? Data,
               data.count <= WatchVoiceRequest.maxMessageBytes,
               let command = try? JSONDecoder().decode(WatchVoiceRemoteCommand.self, from: data) else {
@@ -254,7 +249,11 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         } else {
             endRemoteBackgroundTask()
         }
-        syncRemoteContext(reply.snapshot)
+        if pushSnapshot {
+            publishRemoteSnapshot(reply.snapshot)
+        } else {
+            syncRemoteContext(reply.snapshot)
+        }
         AppLog.shared.add("watch", "Watch remote \(command.action) (\(command.requestID)) -> \(reply.outcome.rawValue), state \(reply.snapshot.state.rawValue) [\(reply.snapshot.epoch):\(reply.snapshot.sequence)]")
         guard let encoded = try? JSONEncoder().encode(reply) else { return [:] }
         return [WatchVoiceRemote.replyKey: encoded]
@@ -271,6 +270,12 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
         Task { @MainActor in replyHandler(self.handleRemoteMessage(message)) }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+        Task { @MainActor in
+            _ = self.handleRemoteMessage(userInfo, pushSnapshot: true)
+        }
     }
 
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {

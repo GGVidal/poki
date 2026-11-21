@@ -27,6 +27,7 @@ final class WatchVoiceRemoteHost {
         let detail: String?
         let currentStep: String?
         let latestResult: WatchVoiceUpdate?
+        let recentResults: [WatchVoiceUpdate]
     }
 
     private static let epochDefaultsKey = "poki.watchVoice.remote.epoch"
@@ -41,7 +42,7 @@ final class WatchVoiceRemoteHost {
     private var lastSnapshot: WatchVoiceRemoteSnapshot?
     private var pendingRequiresForeground = false
     private var pendingDetail: String?
-    private var latestFullResult: WatchVoiceUpdate?
+    private var recentFullResults: [WatchVoiceUpdate] = []
     private var deliveredSpokenResultID: UUID?
     private var deliveredFailureCallID: String?
     private var lastActiveCallID: String?
@@ -156,6 +157,11 @@ final class WatchVoiceRemoteHost {
                 snapshot: snapshot,
                 detail: snapshot.detail
             ))
+        }
+        // A targeted End stays valid across reconnect delays so a disconnected/muted call is never
+        // left un-endable on iPhone, while `handleEnd` still rejects any mismatched newer call ID.
+        if case .end = command.action, command.targetCallID != nil {
+            return handleEnd(command)
         }
         let now = environment.now()
         guard window.acceptsCommand(issuedAt: command.issuedAt, now: now) else {
@@ -401,8 +407,7 @@ final class WatchVoiceRemoteHost {
            (!voice.midTurn || !voice.isOn || voice.isEnding) {
             deliveredSpokenResultID = spoken.id
             let full = WatchVoiceUpdate(id: spoken.id, phase: .finished, text: spoken.text)
-            latestFullResult = full
-            onResult?(full)
+            recordCompletedResult(full)
             return
         }
         if !voice.isOn,
@@ -412,9 +417,17 @@ final class WatchVoiceRemoteHost {
            failedCall != deliveredFailureCallID {
             deliveredFailureCallID = failedCall
             let failed = WatchVoiceUpdate(id: UUID(), phase: .blocked, text: why)
-            latestFullResult = failed
-            onResult?(failed)
+            recordCompletedResult(failed)
         }
+    }
+
+    private func recordCompletedResult(_ result: WatchVoiceUpdate) {
+        recentFullResults.removeAll { $0.id == result.id }
+        recentFullResults.insert(result, at: 0)
+        if recentFullResults.count > WatchVoiceRemote.maxRecentResults {
+            recentFullResults.removeLast(recentFullResults.count - WatchVoiceRemote.maxRecentResults)
+        }
+        onResult?(result)
     }
 
     @discardableResult
@@ -429,7 +442,10 @@ final class WatchVoiceRemoteHost {
             nil
         }
         let stepText: String? = state.isActiveCall ? Self.oneLine(environment.currentStep()) : nil
-        let deliveryResult = latestFullResult?.forDelivery()
+        let deliveredRecent = recentFullResults.enumerated().map { index, item in
+            index == 0 ? item.forDelivery() : item.forCompactDelivery()
+        }
+        let deliveryResult = deliveredRecent.first
         let signature = SnapshotSignature(
             state: state,
             callID: voice.callID,
@@ -439,7 +455,8 @@ final class WatchVoiceRemoteHost {
             requiresForeground: pendingRequiresForeground,
             detail: detail,
             currentStep: stepText,
-            latestResult: deliveryResult
+            latestResult: deliveryResult,
+            recentResults: deliveredRecent
         )
         if signature == lastSignature, let lastSnapshot {
             return lastSnapshot
@@ -457,7 +474,8 @@ final class WatchVoiceRemoteHost {
             updatedAt: environment.now(),
             detail: signature.detail,
             currentStep: signature.currentStep,
-            latestResult: signature.latestResult
+            latestResult: signature.latestResult,
+            recentResults: signature.recentResults
         )
         lastSignature = signature
         lastSnapshot = snapshot

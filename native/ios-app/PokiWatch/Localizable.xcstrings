@@ -111,6 +111,28 @@
         }
       }
     },
+    "Ending when iPhone reconnects…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ending when iPhone reconnects…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待 iPhone 重连后结束…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待 iPhone 重連後結束…"
+          }
+        }
+      }
+    },
     "Listening" : {
       "localizations" : {
         "en" : {

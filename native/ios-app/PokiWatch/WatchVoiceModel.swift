@@ -9,16 +9,17 @@ import WatchKit
 final class WatchVoiceModel: NSObject, WCSessionDelegate {
     static let shared = WatchVoiceModel()
 
-    private struct Pending: Codable {
+    private struct Pending: Codable, Equatable {
         let id: UUID
         var audio: Data?
         var update: WatchVoiceUpdate?
     }
 
-    private struct Archive: Codable {
+    private struct Archive: Codable, Equatable {
         var pending: Pending?
         var results: [WatchVoiceUpdate] = []
         var remoteSnapshot: WatchVoiceRemoteSnapshot? = nil
+        var pendingEnd: WatchVoicePendingEnd? = nil
     }
 
     private let session = WCSession.default
@@ -50,6 +51,8 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
 
     var remoteSnapshot: WatchVoiceRemoteSnapshot? { remoteReducer.latestSnapshot }
     var remoteIsMuted: Bool { remoteReducer.latestSnapshot?.isMuted ?? false }
+    var canEndRemoteCall: Bool { remoteReducer.canShowEndButton }
+    var hasPendingRemoteEnd: Bool { remoteReducer.pendingEnd != nil }
     var remoteRequiresForeground: Bool { remoteReachable && remoteReducer.pendingContinueOnPhone }
     var remoteDetail: String? { remoteReducer.lastProblem }
     var remoteCurrentStep: String? {
@@ -72,7 +75,10 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         if let saved = try? Data(contentsOf: archiveURL),
            let decoded = try? JSONDecoder().decode(Archive.self, from: saved) {
             archive = decoded
-            remoteReducer = WatchVoiceRemoteStateReducer(latestSnapshot: decoded.remoteSnapshot)
+            remoteReducer = WatchVoiceRemoteStateReducer(
+                latestSnapshot: decoded.remoteSnapshot,
+                pendingEnd: decoded.pendingEnd
+            )
         }
         session.delegate = self
         pendingContent = session.observe(\.hasContentPending) { [weak self] _, _ in
@@ -85,6 +91,7 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         microphone = AVAudioApplication.shared.recordPermission
         updateReachability()
         receiveContext(session.receivedApplicationContext)
+        flushPendingEnd()
         refreshRemoteState()
         updateActiveSync()
         sync()
@@ -120,6 +127,17 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
 
     func remoteEndAction() {
         guard !remoteCommandInFlight else { return }
+        if let command = remoteReducer.queueEnd(now: Date()) {
+            persistRemoteState(ingesting: [])
+            if remoteReachable {
+                sendRemoteCommand(command, cueOnAccept: .end)
+            } else {
+                enqueuePendingEndTransfer(command)
+                remoteTransportError = nil
+                cuePlayer.play(.end)
+            }
+            return
+        }
         guard remoteReachable else {
             remoteTransportError = "iPhone is unavailable. Open Poki on your iPhone and try again."
             cuePlayer.playFailureHaptic()
@@ -129,9 +147,31 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         sendRemoteCommand(command, cueOnAccept: .end)
     }
 
+    private func enqueuePendingEndTransfer(_ command: WatchVoiceRemoteCommand) {
+        guard session.activationState == .activated,
+              let data = try? JSONEncoder().encode(command) else { return }
+        session.transferUserInfo([WatchVoiceRemote.commandKey: data])
+    }
+
+    private func flushPendingEnd() {
+        guard remoteReachable, !remoteCommandInFlight,
+              let pending = remoteReducer.pendingEnd else { return }
+        sendRemoteCommand(pending.makeCommand(), cueOnAccept: nil)
+    }
+
     private func sendRemoteCommand(_ command: WatchVoiceRemoteCommand, cueOnAccept: WatchVoiceCue?) {
         guard session.activationState == .activated, session.isReachable else {
             remoteReachable = false
+            if command.action == .end, command.targetCallID != nil {
+                if remoteReducer.pendingEnd == nil {
+                    _ = remoteReducer.queueEnd(requestID: command.requestID, now: command.issuedAt)
+                    persistRemoteState(ingesting: [])
+                }
+                enqueuePendingEndTransfer(command)
+                remoteTransportError = nil
+                if let cue = cueOnAccept { cuePlayer.play(cue) }
+                return
+            }
             if command.action != .state {
                 remoteTransportError = "iPhone is unavailable. Open Poki on your iPhone and try again."
                 cuePlayer.playFailureHaptic()
@@ -152,20 +192,37 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
                       let reply = try? JSONDecoder().decode(WatchVoiceRemoteReply.self, from: replyData),
                       reply.requestID == command.requestID else {
                     if isUserCommand {
-                        self.remoteTransportError = "iPhone didn’t confirm the command."
-                        self.cuePlayer.playFailureHaptic()
+                        if command.action == .end, command.targetCallID != nil {
+                            self.enqueuePendingEndTransfer(command)
+                            self.remoteTransportError = nil
+                        } else {
+                            self.remoteTransportError = "iPhone didn’t confirm the command."
+                            self.cuePlayer.playFailureHaptic()
+                        }
                     }
                     return
                 }
-                self.remoteTransportError = nil
-                self.applyRemoteReply(reply, cueOnAccept: cueOnAccept, isUserCommand: isUserCommand)
+                self.applyRemoteReply(
+                    reply,
+                    targetCallID: command.targetCallID,
+                    cueOnAccept: cueOnAccept,
+                    isUserCommand: isUserCommand
+                )
             }
         } errorHandler: { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 if isUserCommand { self.remoteCommandInFlight = false }
                 self.updateReachability()
-                if isUserCommand {
+                if command.action == .end, command.targetCallID != nil {
+                    if self.remoteReducer.pendingEnd == nil {
+                        _ = self.remoteReducer.queueEnd(requestID: command.requestID, now: command.issuedAt)
+                        self.persistRemoteState(ingesting: [])
+                    }
+                    self.enqueuePendingEndTransfer(command)
+                    self.remoteTransportError = nil
+                    if let cue = cueOnAccept { self.cuePlayer.play(cue) }
+                } else if isUserCommand {
                     self.remoteTransportError = "iPhone hasn’t replied. Open Poki on your iPhone and try again."
                     self.cuePlayer.playFailureHaptic()
                 }
@@ -173,11 +230,21 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         }
     }
 
-    private func applyRemoteReply(_ reply: WatchVoiceRemoteReply, cueOnAccept: WatchVoiceCue?, isUserCommand: Bool) {
-        if remoteReducer.apply(reply: reply) {
-            persistRemoteState(ingesting: reply.snapshot.latestResult)
+    private func applyRemoteReply(
+        _ reply: WatchVoiceRemoteReply,
+        targetCallID: String?,
+        cueOnAccept: WatchVoiceCue?,
+        isUserCommand: Bool
+    ) {
+        guard remoteReducer.apply(reply: reply, targetCallID: targetCallID) else {
+            return
         }
+        remoteTransportError = nil
+        persistRemoteState(ingesting: reply.snapshot.deliveredResults)
         updateActiveSync()
+        if remoteReducer.pendingEnd != nil {
+            flushPendingEnd()
+        }
         guard isUserCommand else { return }
         if reply.outcome.isSuccess {
             if let cue = cueOnAccept {
@@ -190,8 +257,11 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
 
     private func applyRemoteSnapshot(_ snapshot: WatchVoiceRemoteSnapshot) {
         guard remoteReducer.apply(snapshot: snapshot) else { return }
-        persistRemoteState(ingesting: snapshot.latestResult)
+        persistRemoteState(ingesting: snapshot.deliveredResults)
         updateActiveSync()
+        if remoteReducer.pendingEnd != nil {
+            flushPendingEnd()
+        }
     }
 
     private func updateActiveSync() {
@@ -199,8 +269,8 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         transientSyncTask = nil
         let state = remoteState
         let needsInitialSync = remoteSnapshot == nil
-        guard remoteReachable, needsInitialSync || state.isActiveCall || state == .ending else { return }
-        let intervalMs = (state == .connecting || state == .ending) ? 1500 : 5000
+        guard remoteReachable, needsInitialSync || state.isActiveCall || state == .ending || hasPendingRemoteEnd else { return }
+        let intervalMs = (state == .connecting || state == .ending || hasPendingRemoteEnd) ? 1500 : 5000
         transientSyncTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(intervalMs))
@@ -208,22 +278,22 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
                 guard WKApplication.shared().applicationState == .active else { return }
                 let current = self.remoteState
                 guard self.remoteReachable,
-                      self.remoteSnapshot == nil || current.isActiveCall || current == .ending else { return }
+                      self.remoteSnapshot == nil || current.isActiveCall || current == .ending || self.hasPendingRemoteEnd else { return }
+                self.flushPendingEnd()
                 self.refreshRemoteState()
             }
         }
     }
 
-    private func persistRemoteState(ingesting result: WatchVoiceUpdate?) {
+    private func persistRemoteState(ingesting incoming: [WatchVoiceUpdate]) {
         var next = archive
         next.remoteSnapshot = remoteReducer.latestSnapshot
-        var newlyIngested: WatchVoiceUpdate?
-        if let result, result.phase.isTerminal, !next.results.contains(where: { $0.id == result.id }) {
-            next.results.insert(result, at: 0)
-            newlyIngested = result
-        }
-        guard save(next), let newlyIngested else { return }
-        notify(newlyIngested)
+        next.pendingEnd = remoteReducer.pendingEnd
+        let (merged, added) = WatchVoiceRemote.mergeResults(incoming, into: next.results)
+        next.results = merged
+        guard next != archive else { return }
+        guard save(next), !added.isEmpty else { return }
+        notify(added)
     }
 
     private func applyRemoteMeter(_ meter: WatchVoiceRemoteMeter) {
@@ -402,17 +472,24 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         }
     }
 
-    private func notify(_ update: WatchVoiceUpdate) {
+    private func notify(_ updates: [WatchVoiceUpdate]) {
+        guard let newest = updates.first else { return }
         if WKApplication.shared().applicationState == .active {
-            WKInterfaceDevice.current().play(update.phase == .finished ? .success : .failure)
+            WKInterfaceDevice.current().play(newest.phase == .finished ? .success : .failure)
         } else {
-            let content = UNMutableNotificationContent()
-            content.title = String(localized: update.phase == .finished ? "Poki task finished" : "Poki task needs attention")
-            content.body = String(localized: "Open Poki to see the result.")
-            content.sound = .default
-            let request = UNNotificationRequest(identifier: update.id.uuidString, content: content, trigger: nil)
-            UNUserNotificationCenter.current().add(request)
+            for update in updates {
+                let content = UNMutableNotificationContent()
+                content.title = String(localized: update.phase == .finished ? "Poki task finished" : "Poki task needs attention")
+                content.body = String(localized: "Open Poki to see the result.")
+                content.sound = .default
+                let request = UNNotificationRequest(identifier: update.id.uuidString, content: content, trigger: nil)
+                UNUserNotificationCenter.current().add(request)
+            }
         }
+    }
+
+    private func notify(_ update: WatchVoiceUpdate) {
+        notify([update])
     }
 
     private func receiveContext(_ context: [String: Any]) {
@@ -457,6 +534,7 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
             updateReachability()
             if remoteReachable {
                 remoteTransportError = nil
+                flushPendingEnd()
                 refreshRemoteState()
             }
             updateActiveSync()
@@ -477,6 +555,16 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         if let meterData = message[WatchVoiceRemote.meterKey] as? Data,
            let meter = try? JSONDecoder().decode(WatchVoiceRemoteMeter.self, from: meterData) {
             Task { @MainActor in applyRemoteMeter(meter) }
+        }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+        if let resultData = userInfo[WatchVoiceRemote.resultKey] as? Data,
+           let update = try? JSONDecoder().decode(WatchVoiceUpdate.self, from: resultData) {
+            Task { @MainActor in
+                self.persistRemoteState(ingesting: [update])
+                self.finishBackgroundTasks()
+            }
         }
     }
 

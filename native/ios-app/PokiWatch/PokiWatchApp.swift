@@ -51,7 +51,7 @@ private struct WatchVoiceRemoteView: View {
                             .accessibilityIdentifier("watchRemote.continueOnPhone")
                     }
                     primaryButton
-                    if model.remoteState.isActiveCall || model.remoteState == .ending {
+                    if model.canEndRemoteCall {
                         Button(role: .destructive) {
                             model.remoteEndAction()
                         } label: {
@@ -147,6 +147,9 @@ private struct WatchVoiceRemoteView: View {
     }
 
     private var detailLine: String? {
+        if model.hasPendingRemoteEnd {
+            return String(localized: "Ending when iPhone reconnects…")
+        }
         if let transportError = model.remoteTransportError {
             return String(localized: transportError)
         }
