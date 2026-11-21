@@ -2699,6 +2699,86 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertTrue(scrollTools.contains(Harness.countedScrollReplyTool))
     }
 
+    func testSendMessageWithPastOrBackWordingDoesNotTriggerCountedScroll() async throws {
+        let ordinaryRequests = [
+            "帮我给张三发一条微信，说『我之前订好了』",
+            "帮我给张三发一条微信说我之前订好了",
+            "Send one message to Mom saying I'll be back soon.",
+            "Send one message back to Mom.",
+            "帮我退一条牛仔裤",
+            "帮我发一条消息，退到桌面",
+        ]
+        for request in ordinaryRequests {
+            let server = try FakeCompletions(replies: [
+                FakeCompletions.tool("report_plan", ["steps": ["Finish task"], "currentStep": 1]),
+                FakeCompletions.tool("finish_task", [
+                    "success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"],
+                ]),
+                FakeCompletions.text("Done."),
+            ])
+            let chat = chat(on: server, transport: MessageListTransport())
+            let result = await chat.runDelegated(request)
+            XCTAssertEqual(result.success, true, "\(request): \(result.text)")
+
+            let first = try XCTUnwrap(server.requests.first)
+            let system = FakeCompletions.system(first)
+            XCTAssertFalse(system.contains("count_messages"), "\(request): counted scroll instructions leaked")
+            let tools = first["tools"] as? [[String: Any]] ?? []
+            let toolNames = Set(tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+            XCTAssertFalse(toolNames.contains("count_messages"), "\(request): count_messages leaked")
+            XCTAssertFalse(toolNames.contains(Harness.countedScrollReplyTool), "\(request): wait_for_counted_scroll_reply leaked")
+        }
+    }
+
+    func testCountedAndScreenScrollPhrasingRetainsVerificationAndInstructions() async throws {
+        for request in [
+            "退到聊天记录的第 20 条消息",
+            "Move up 20 messages in this chat.",
+        ] {
+            let server = try FakeCompletions(replies: [
+                FakeCompletions.tool("report_plan", ["steps": ["Scroll back"], "currentStep": 1]),
+                FakeCompletions.tool("look", ["full": true]),
+                FakeCompletions.tool("finish_task", [
+                    "success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"],
+                ]),
+                FakeCompletions.text("Done."),
+            ])
+            let chat = chat(on: server, transport: MessageListTransport())
+            let result = await chat.runDelegated(request)
+            XCTAssertEqual(result.success, false, "\(request): expected counted scroll rejection, got \(result.text)")
+            XCTAssertTrue(result.text.contains("0 of 20 older messages"), "\(request): \(result.text)")
+
+            let first = try XCTUnwrap(server.requests.first)
+            XCTAssertTrue(FakeCompletions.system(first).contains("count_messages"), "\(request): missing counted scroll instructions")
+            let toolNames = Set((first["tools"] as? [[String: Any]] ?? []).compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+            XCTAssertTrue(toolNames.contains("count_messages"), "\(request): missing count_messages tool")
+            XCTAssertTrue(toolNames.contains(Harness.countedScrollReplyTool), "\(request): missing reply tool")
+        }
+
+        for request in [
+            "往上翻两页消息",
+            "Scroll up 2 pages in Messages.",
+        ] {
+            let server = try FakeCompletions(replies: [
+                FakeCompletions.tool("report_plan", ["steps": ["Scroll two pages"], "currentStep": 1]),
+                FakeCompletions.tool("finish_task", [
+                    "success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"],
+                ]),
+                FakeCompletions.text("Done."),
+            ])
+            let chat = chat(on: server, transport: MessageListTransport())
+            let result = await chat.runDelegated(request)
+            XCTAssertEqual(result.success, true, "\(request): \(result.text)")
+
+            let first = try XCTUnwrap(server.requests.first)
+            let system = FakeCompletions.system(first)
+            XCTAssertTrue(system.contains("scroll the requested number of screens and verify those moves with the screen tools"),
+                          "\(request): missing pages/screens verification instruction")
+            let toolNames = Set((first["tools"] as? [[String: Any]] ?? []).compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+            XCTAssertFalse(toolNames.contains("count_messages"), "\(request): screen scroll must not expose count_messages")
+        }
+    }
+
     func testAppMemoryBriefDoesNotDuplicateNotesAlreadyInTaskBrief() async throws {
         let fixture = SkillStore(url: nil)
         let note = try XCTUnwrap(fixture.remember("Check the Wi-Fi row first in Settings.", by: "Poki", app: "com.apple.Preferences"))

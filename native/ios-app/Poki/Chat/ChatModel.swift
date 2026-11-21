@@ -611,8 +611,10 @@ final class ChatModel {
         let namedApps = chooseWorkspace && kind == .poki && app.canPlanSplitView
             ? AppIconStore.bundleIDs(namedIn: text) : []
         if !inSplitView, namedApps.count < 2, Self.direct, provider == .anthropic || provider == .openai {
+            let includeScreenScroll = countedScroll == nil && MessageScrollTarget.parse(taskRequest)?.isScreens == true
             let context = Harness.taskInstructions(for: taskRequest,
                                                    includeCountedScroll: countedScroll != nil,
+                                                   includeScreenScroll: includeScreenScroll,
                                                    includeMemoryAttribution: !SkillStore.shared.notes.isEmpty)
             let instructions = [context.text, restoredContext, continuation].compactMap { $0 }.joined(separator: "\n\n")
             // Another model starts a new conversation on the model's side; the chat on screen stays.
@@ -723,11 +725,14 @@ final class ChatModel {
                 AppLog.shared.add("chat", "workspace planning confirmed the requested Split View apps")
             }
             let loop = modelLoop(provider: prepared.provider, model: piModel, inSplitView: splitSession != nil)
+            let taskPrompt = prepared.continuation == nil ? prepared.message : taskRequest
             let includeCountedScroll = prepared.countedScroll != nil
+            let includeScreenScroll = !includeCountedScroll && MessageScrollTarget.parse(taskPrompt)?.isScreens == true
             let includeMemoryAttribution = !SkillStore.shared.notes.isEmpty
-            let context = Harness.taskInstructions(for: prepared.continuation == nil ? prepared.message : taskRequest,
+            let context = Harness.taskInstructions(for: taskPrompt,
                                                    inSplitView: splitSession != nil,
                                                    includeCountedScroll: includeCountedScroll,
+                                                   includeScreenScroll: includeScreenScroll,
                                                    includeMemoryAttribution: includeMemoryAttribution)
             offeredMemories = context.notes
             let instructions = [context.text, restoredContext, prepared.continuation].compactMap { $0 }.joined(separator: "\n\n")

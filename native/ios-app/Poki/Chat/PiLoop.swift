@@ -281,10 +281,6 @@ final class PiLoop {
         agent.messages = messages
     }
 
-    nonisolated static func availableTools(_ tools: [AgentTool], allowed: Bool) -> [AgentTool] {
-        tools.filter { $0.name != "screen_history" || allowed }
-    }
-
     private nonisolated static func availableTools(_ variants: [ToolVariant], allowed: Bool,
                                                    includeCountedScroll: Bool,
                                                    includeMemoryAttribution: Bool) -> [AgentTool] {

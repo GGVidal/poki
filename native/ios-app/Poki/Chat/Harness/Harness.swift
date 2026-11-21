@@ -29,6 +29,8 @@ enum Harness {
     Check the target field and content before typing, and verify the result in the same pane. Wait for the owner's decision on approvals, leave password manager apps unopened, stop on checkout or payment pages unless purchase was explicitly requested, and use handoff for passwords, verification, or owner-only prompts. Call finish_task after verifying the final result, setting success=false when unverified.
     """
 
+    private static let screenScrollInstructions = "For a request measured in pages or screens, scroll the requested number of screens and verify those moves with the screen tools."
+
     private static let countedScrollInstructions = """
     For a request measured in pages or screens, scroll the requested number of screens and verify those moves with the screen tools. Use count_messages only for requests measured in individual messages.
     For a request to scroll back an exact number of messages, open the conversation and take a full read before scrolling. Call count_messages with the requested target and one current ref per distinct message bubble, oldest to newest. Use the screenshot to exclude headers, dates, controls, and duplicate labels or OCR lines in the same bubble. Include every distinguishable message in view, including any overlapping messages. Do not skip a message you cannot identify.
@@ -39,10 +41,12 @@ enum Harness {
     /// The instructions for a task: the above, then the saved notes and the skills that fit it.
     @MainActor static func taskInstructions(for task: String, inSplitView: Bool = false,
                                             includeCountedScroll: Bool = false,
+                                            includeScreenScroll: Bool = false,
                                             includeMemoryAttribution: Bool? = nil) -> (text: String, notes: [MemoryNote]) {
         if inSplitView {
             var parts = [splitViewInstructions]
             if includeCountedScroll { parts.append(countedScrollInstructions) }
+            else if includeScreenScroll { parts.append(screenScrollInstructions) }
             if HistoryCapture.agentQueryAllowed { parts.append(PokiCore.screenHistoryInstructions) }
             if ApprovalClassifier.mode == .reply { parts.append(replyApprovals) }
             return (parts.joined(separator: "\n\n"), [])
@@ -51,6 +55,7 @@ enum Harness {
         let brief = SkillStore.shared.taskBrief(for: task, apps: namedBundleIDs)
         var parts = [instructions]
         if includeCountedScroll { parts.append(countedScrollInstructions) }
+        else if includeScreenScroll { parts.append(screenScrollInstructions) }
         parts.append("To continue or resume, match one unfinished task from this conversation or an explicitly selected saved task; if none or several match, ask which task before calling action tools. Treat long-term notes and saved skills strictly as preferences and reusable steps, never pending tasks.")
         // Matching skills sit in the brief below, so the first call can invoke the skill directly.
         // Poki is in front when a task starts, and finish_task brings Poki back when the task ends,
