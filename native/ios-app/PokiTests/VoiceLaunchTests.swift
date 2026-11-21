@@ -35,6 +35,87 @@ final class VoiceLaunchTests: XCTestCase {
         #endif
     }
 
+    func testDelayedIntentAfterEndingTalkIsInvalidated() async throws {
+        #if targetEnvironment(simulator)
+        let voice = try XCTUnwrap(AskPoki.app?.voice)
+        let defaults = UserDefaults.standard
+        let rehearsal = defaults.object(forKey: "pokiTalkRehearsal")
+        let hold = defaults.object(forKey: "pokiTalkHold")
+        defaults.set("1", forKey: "pokiTalkRehearsal")
+        defaults.set("listening", forKey: "pokiTalkHold")
+        defer {
+            voice.stop()
+            defaults.set(rehearsal, forKey: "pokiTalkRehearsal")
+            defaults.set(hold, forKey: "pokiTalkHold")
+        }
+        let start = AppLog.shared.lines.count
+        let listening = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in voice.phase == .listening }, object: nil)
+        _ = try await TalkToPokiIntent().perform()
+        await fulfillment(of: [listening], timeout: 8)
+
+        let delayedShortcut = TalkToPokiIntent()
+        let delayedControl = TalkToPokiIntent(fromControl: true)
+        voice.stop()
+        XCTAssertFalse(voice.isOn)
+
+        let invalidated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            AppLog.shared.lines.dropFirst(start).filter { $0.contains("result=invalidated reason=voiceEpochChanged") }.count == 2
+        }, object: nil)
+        _ = try await delayedShortcut.perform()
+        _ = try await delayedControl.perform()
+        await fulfillment(of: [invalidated], timeout: 3)
+
+        let rejected = AppLog.shared.lines.dropFirst(start).filter { $0.contains("result=invalidated reason=voiceEpochChanged") }
+        XCTAssertTrue(rejected.contains { $0.contains("source=appShortcut") })
+        XCTAssertTrue(rejected.contains { $0.contains("source=control") })
+        let rejectedIDs = Set(rejected.compactMap { field("request", in: $0) })
+        XCTAssertEqual(rejectedIDs.count, 2)
+        for request in rejectedIDs {
+            XCTAssertEqual(stages(for: request).compactMap { field("stage", in: $0) }, ["receipt"])
+        }
+        XCTAssertEqual(AppLog.shared.lines.dropFirst(start).filter { $0.contains("result=started") }.count, 1)
+        XCTAssertFalse(voice.isOn)
+
+        let restarted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in voice.phase == .listening }, object: nil)
+        _ = try await TalkToPokiIntent().perform()
+        await fulfillment(of: [restarted], timeout: 8)
+        XCTAssertEqual(AppLog.shared.lines.dropFirst(start).filter { $0.contains("result=started") }.count, 2)
+        #endif
+    }
+
+    func testDelayedIntentPastWindowOnlyShowsChat() async throws {
+        #if targetEnvironment(simulator)
+        let voice = try XCTUnwrap(AskPoki.app?.voice)
+        let defaults = UserDefaults.standard
+        let rehearsal = defaults.object(forKey: "pokiTalkRehearsal")
+        let hold = defaults.object(forKey: "pokiTalkHold")
+        defaults.set("1", forKey: "pokiTalkRehearsal")
+        defaults.set("listening", forKey: "pokiTalkHold")
+        defer {
+            voice.stop()
+            defaults.set(rehearsal, forKey: "pokiTalkRehearsal")
+            defaults.set(hold, forKey: "pokiTalkHold")
+        }
+        voice.stop()
+        XCTAssertFalse(voice.isOn)
+        let start = AppLog.shared.lines.count
+        let staleIntent = TalkToPokiIntent()
+        try await Task.sleep(for: .seconds(16))
+
+        let expired = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            AppLog.shared.lines.dropFirst(start).contains { $0.contains("result=shown reason=expired") }
+        }, object: nil)
+        _ = try await staleIntent.perform()
+        await fulfillment(of: [expired], timeout: 3)
+
+        let outcome = try XCTUnwrap(AppLog.shared.lines.dropFirst(start).first { $0.contains("result=shown reason=expired") })
+        let request = try XCTUnwrap(field("request", in: outcome))
+        XCTAssertEqual(stages(for: request).compactMap { field("stage", in: $0) }, ["receipt", "pageShown"])
+        XCTAssertEqual(AppLog.shared.lines.dropFirst(start).filter { $0.contains("result=started") }.count, 0)
+        XCTAssertFalse(voice.isOn)
+        #endif
+    }
+
     func testTalkToPokiRecordsTheStartedRequest() async throws {
         #if targetEnvironment(simulator)
         let voice = try XCTUnwrap(AskPoki.app?.voice)
