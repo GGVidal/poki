@@ -292,6 +292,7 @@ struct VoiceClock {
 final class VoiceModel {
     private(set) var bridge = VoiceBridge.saved
     private(set) var phase = VoicePhase.off
+    private(set) var needsChatGPTSignIn = false
     private(set) var lines: [VoiceLine] = [] { didSet { saveTranscript() } }
     /// The live conversation's row in the session list, and the lines that belong to it.
     private var transcript: (id: String, started: Date, from: Int)?
@@ -502,17 +503,19 @@ final class VoiceModel {
     /// Opens the connection for one session: events, then why it closed.
     private let connection: @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection
     private let time: VoiceClock
+    private let codex: any SubscriptionVoice
 
     init(clearTap: @escaping @MainActor (String, String?, String?) async -> TapClearance,
          phoneTool: @escaping @MainActor (String, String, PhoneOperationCancellation?) async -> PhoneAnswer,
          holdMicrophone: @escaping @MainActor (Bool) -> Void = { _ in },
          connection: @escaping @MainActor (@escaping @MainActor ([String: Any]) -> Void, @escaping @MainActor (String) -> Void) -> VoiceConnection = { VoiceLink(onEvent: $0, onClosed: $1) },
-         time: VoiceClock = VoiceClock()) {
+         time: VoiceClock = VoiceClock(), codex: (any SubscriptionVoice)? = nil) {
         self.clearTap = clearTap
         self.phoneTool = phoneTool
         self.holdMicrophone = holdMicrophone
         self.connection = connection
         self.time = time
+        self.codex = codex ?? CodexVoice.shared
         // Poki in the background goes on with the talk (the owner, 2026-11-13): you speak to it from the
         // app you went to, and the Live Activity says what it is doing and carries End. It ends there as
         // it does in front, when nobody speaks for `followUp` after an answer. Only the wait for a server
@@ -521,10 +524,10 @@ final class VoiceModel {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.inBackground = true
-                guard self.isOn, self.answerDue else { return }
+                guard self.isOn, self.answerDue || self.usesCodexLive && self.link != nil && !self.ready else { return }
                 // What is still due is waited for, but not for ever: the wait for the server now has 30 s.
                 self.lastActivity = self.time.now()
-                if self.ready { self.watchForStall(session: self.session) }
+                if self.ready || self.usesCodexLive { self.watchForStall(session: self.session) }
             }
         }
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
@@ -583,6 +586,7 @@ final class VoiceModel {
 
     /// Puts away why the last talk ended, once it has been read.
     func dismissProblem() {
+        needsChatGPTSignIn = false
         if case .lost = phase { phase = .off }
     }
 
@@ -674,6 +678,7 @@ final class VoiceModel {
             return
         }
         phase = .connecting
+        needsChatGPTSignIn = false
         session += 1
         let number = session
         let bridge = self.bridge
@@ -681,7 +686,7 @@ final class VoiceModel {
             if rehearsing { return Self.rehearsalToken }
             if subscription {
                 usesCodexLive = true
-                try await CodexVoice.shared.prepare(onEvent: { [weak self] method, params in
+                try await codex.prepare(onEvent: { [weak self] method, params in
                     self?.handleCodex(method, params: params, session: number)
                 }, onTool: { [weak self] name, arguments in
                     guard let self, number == session, VoiceDirect.localTools.contains(name) else {
@@ -706,7 +711,7 @@ final class VoiceModel {
             localTools = Set(token.local_tools)
             if subscription {
                 try await link.connectLive(microphone: microphone, direct: direct) { sdp in
-                    try await CodexVoice.shared.start(offer: sdp)
+                    try await codex.start(offer: sdp)
                 }
             } else if usesLive {
                 if let key { liveScreenDescription = { try await VoiceDirect.describeLiveScreen($0, apiKey: key) } }
@@ -734,6 +739,10 @@ final class VoiceModel {
             self.link = link
             transcript = ("voice-\(UUID().uuidString.prefix(8).lowercased())", Date(), lines.count)
             if microphone { holdingMicrophone = true }
+            if subscription {
+                lastActivity = time.now()
+                watchForStall(session: number)
+            }
             do {
                 try await connect(link, token, direct: false)
             } catch VoiceError.noPath(let ice) {
@@ -742,7 +751,7 @@ final class VoiceModel {
                 guard number == session else { return }
                 log.add("voice", "no network path opened (ICE \(ice)); trying again off VPN interfaces")
                 link.close()
-                if subscription { CodexVoice.shared.stop() }
+                if subscription { codex.stop() }
                 token = try await configuration()
                 guard number == session else { return }
                 link = makeLink()
@@ -752,7 +761,11 @@ final class VoiceModel {
             guard number == session else { link.close(); return }
             guard liveCloseTimeout == nil else { return }
             lastActivity = time.now()
-            if subscription { ready = true; phase = .listening }
+            if subscription {
+                ready = true
+                phase = .listening
+                endIfDone()
+            }
             watchForStall(session: number)
             link.setRemoteVolume(muted || liveSpeechStopped ? 0 : 1)
             if usesLive { watchLivePlayback(link, session: number) }
@@ -762,11 +775,9 @@ final class VoiceModel {
             // Ended while connecting: stop() already put everything back.
             guard number == session, liveCloseTimeout == nil else { return }
             transcript = nil
-            if subscription { CodexVoice.shared.stop(); usesCodexLive = false }
-            link?.close()
-            link = nil
-            holdingMicrophone = false
+            endSession()
             phase = .lost(VoiceError.reason(for: error))
+            needsChatGPTSignIn = error as? CodexVoice.Failure == .signIn
             log.add("voice", "could not connect: \(error.localizedDescription)")
         }
     }
@@ -842,7 +853,7 @@ final class VoiceModel {
     /// the conversation are kept for one opened soon after, before the chat takes them.
     private func endSession() {
         if usesCodexLive {
-            CodexVoice.shared.stop()
+            codex.stop()
             usesCodexLive = false
         }
         keepOpen()
@@ -967,11 +978,15 @@ final class VoiceModel {
             while !Task.isCancelled {
                 let playing = await link.hasRemoteSpeech()
                 guard let self, number == session, !Task.isCancelled else { return }
-                if ready && playing && !liveSpeechStopped {
+                if ready && playing && !liveSpeechStopped && (!usesCodexLive || phase != .hearing) {
                     quiet = 0
                     keepOpen()
                     lastActivity = time.now()
                     phase = .speaking
+                    if usesCodexLive, awaitingAnswer {
+                        awaitingAnswer = false
+                        recordSpokenAnswer(at: lastActivity)
+                    }
                     if liveAwaitingPlayback, !awaitingAnswer, activeResponse == nil {
                         liveAwaitingPlayback = false
                         recordSpokenAnswer(at: lastActivity)
@@ -1157,7 +1172,18 @@ final class VoiceModel {
     private func handleCodex(_ method: String, params: CodexVoice.JSON, session number: Int) {
         guard number == session, usesCodexLive, link != nil else { return }
         if method == "thread/realtime/closed" || method == "thread/realtime/error" {
+            let needsSignIn = CodexVoice.failure(in: params, fallback: .ended) == .signIn
             closed("the ChatGPT voice session ended", session: number, confirmed: method == "thread/realtime/closed")
+            if needsSignIn {
+                needsChatGPTSignIn = true
+                phase = .lost(CodexVoice.Failure.signIn.localizedDescription)
+            }
+            return
+        }
+        if method == "thread/realtime/transcript/delta", params["role"] as? String == "user" {
+            lastActivity = time.now()
+            keepOpen()
+            phase = .hearing
             return
         }
         guard method == "thread/realtime/transcript/done", let text = params["text"] as? String,
@@ -1166,6 +1192,9 @@ final class VoiceModel {
         keepOpen()
         if role == "user" {
             lines.append(VoiceLine(role: .you, text: text))
+            awaitingAnswer = true
+            phase = .thinking
+            watchForStall(session: number)
         } else if role == "assistant" {
             lines.append(VoiceLine(role: .poki, text: text))
         }
