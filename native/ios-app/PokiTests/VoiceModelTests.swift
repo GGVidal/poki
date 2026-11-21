@@ -1363,15 +1363,15 @@ final class VoiceModelTests: XCTestCase {
         let screen = "app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"# + "\n" + #"2 TextView "周五" [16,120,360,400]"#
         let h = Harness(phoneTool: { name, arguments in
             let args = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
-            if name == "open_app" {
-                return ("app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"#, false, nil)
-            }
             if name == "look" {
                 looks += 1
                 return (screen, false, nil)
             }
             if name == "do" {
                 let actions = args["actions"] as? [[String: Any]] ?? []
+                if actions.contains(where: { $0["launch"] != nil }) {
+                    return ("app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"#, false, nil)
+                }
                 if actions.contains(where: { $0["tap"] as? Int == 1 }) {
                     draftCreations += 1
                     return ("unknown: the bridge did not answer; the action may have run. Read the screen before trying again.", true, nil)
@@ -1388,7 +1388,7 @@ final class VoiceModelTests: XCTestCase {
         h.link.play(["type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "打开备忘录，写周五"],
                     ["type": "response.created", "response": ["id": "r1"]],
                     ["type": "response.output_item.done", "response_id": "r1",
-                     "item": ["type": "function_call", "call_id": "c-open", "name": "open_app", "arguments": #"{"app":"备忘录"}"#]])
+                     "item": ["type": "function_call", "call_id": "c-open", "name": "do", "arguments": #"{"actions":[{"launch":"com.apple.mobilenotes"}]}"#]])
         await h.time.settle()
         h.link.play(["type": "response.output_item.done", "response_id": "r1",
                      "item": ["type": "function_call", "call_id": "c-draft-unknown", "name": "do", "arguments": #"{"actions":[{"tap":1},{"type":"周五"}]}"#]],
@@ -1430,12 +1430,13 @@ final class VoiceModelTests: XCTestCase {
         let h = Harness(time: time, phoneTool: { name, arguments in
             let args = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
             switch name {
-            case "open_app":
-                return ("app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"#, false, nil)
             case "look":
                 return (screen, false, nil)
             case "do":
                 let actions = args["actions"] as? [[String: Any]] ?? []
+                if actions.contains(where: { $0["launch"] != nil }) {
+                    return ("app: 备忘录\n" + #"1 Button "新建备忘录" [340,800,44,44]"#, false, nil)
+                }
                 if actions.contains(where: { $0["tap"] as? Int == 1 }) {
                     await time.clock.sleep(.seconds(1))
                     draftCreations += 1
@@ -1458,7 +1459,7 @@ final class VoiceModelTests: XCTestCase {
         h.link.play(["type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "打开备忘录，写周五"],
                     ["type": "response.created", "response": ["id": "r1"]],
                     ["type": "response.output_item.done", "response_id": "r1",
-                     "item": ["type": "function_call", "call_id": "c-open", "name": "open_app", "arguments": #"{"app":"备忘录"}"#]])
+                     "item": ["type": "function_call", "call_id": "c-open", "name": "do", "arguments": #"{"actions":[{"launch":"com.apple.mobilenotes"}]}"#]])
         await time.settle()
         h.link.play(["type": "response.output_item.done", "response_id": "r1",
                      "item": ["type": "function_call", "call_id": "c-draft", "name": "do", "arguments": #"{"actions":[{"tap":1},{"type":"周五"}]}"#]])
