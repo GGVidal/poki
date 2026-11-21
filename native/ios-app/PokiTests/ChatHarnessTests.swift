@@ -2638,6 +2638,102 @@ final class ChatHarnessTests: XCTestCase {
         XCTAssertEqual(named.subtracting(tools), [], "named in agent-system.md but not offered to the model")
     }
 
+    func testOrdinaryTasksOmitCountedScrollAndUnusedMemoryAttribution() async throws {
+        let priorNotes = SkillStore.shared.notes
+        let backup = priorNotes.isEmpty ? nil : try SkillStore.shared.exportData()
+        for note in priorNotes { MemoryLibrary.shared.forget(note.id) }
+        defer {
+            if let backup { _ = try? SkillStore.shared.importData(backup, by: "Poki") }
+        }
+
+        let ordinaryRequests = [
+            "打开设置帮我发一条消息测试",
+            "帮我发一条微信给张三说晚上七点见",
+            "Send one message to Mom",
+        ]
+        for request in ordinaryRequests {
+            let server = try FakeCompletions(replies: [
+                FakeCompletions.tool("report_plan", ["steps": ["Finish task"], "currentStep": 1]),
+                FakeCompletions.tool("finish_task", [
+                    "success": true, "summary": "Done.", "details": [], "answer": ["kind": "action"],
+                ]),
+                FakeCompletions.text("Done."),
+            ])
+            let chat = chat(on: server, transport: MessageListTransport())
+            let result = await chat.runDelegated(request)
+            XCTAssertEqual(result.success, true, "\(request): \(result.text)")
+
+            let first = try XCTUnwrap(server.requests.first)
+            let system = FakeCompletions.system(first)
+            XCTAssertFalse(system.contains("count_messages"), "\(request): counted scroll instructions leaked into ordinary task")
+            XCTAssertFalse(system.contains("used_memory_ids"), "\(request): memory attribution instructions leaked when no notes exist")
+
+            let tools = first["tools"] as? [[String: Any]] ?? []
+            let toolNames = Set(tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+            XCTAssertFalse(toolNames.contains("count_messages"), "\(request): count_messages exposed on ordinary task")
+            XCTAssertFalse(toolNames.contains(Harness.countedScrollReplyTool), "\(request): wait_for_counted_scroll_reply exposed on ordinary task")
+
+            for tool in tools {
+                guard let fn = tool["function"] as? [String: Any],
+                      let name = fn["name"] as? String,
+                      ["do", "web_open", "web_click", "web_type", "finish_task"].contains(name),
+                      let params = fn["parameters"] as? [String: Any],
+                      let props = params["properties"] as? [String: Any] else { continue }
+                XCTAssertNil(props["used_memory_ids"], "\(request): \(name) exposed used_memory_ids when no notes exist")
+            }
+        }
+
+        let scrollServer = try FakeCompletions(replies: [
+            FakeCompletions.tool("report_plan", ["steps": ["Scroll back"], "currentStep": 1]),
+            FakeCompletions.tool("finish_task", [
+                "success": false, "summary": "Stopped.", "details": [], "answer": ["kind": "action"],
+            ]),
+            FakeCompletions.text("Stopped."),
+        ])
+        let scrollChat = chat(on: scrollServer, transport: MessageListTransport())
+        _ = await scrollChat.runDelegated("Scroll up 20 messages.")
+        let scrollReq = try XCTUnwrap(scrollServer.requests.first)
+        XCTAssertTrue(FakeCompletions.system(scrollReq).contains("count_messages"))
+        let scrollTools = Set((scrollReq["tools"] as? [[String: Any]] ?? []).compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+        XCTAssertTrue(scrollTools.contains("count_messages"))
+        XCTAssertTrue(scrollTools.contains(Harness.countedScrollReplyTool))
+    }
+
+    func testAppMemoryBriefDoesNotDuplicateNotesAlreadyInTaskBrief() async throws {
+        let fixture = SkillStore(url: nil)
+        let note = try XCTUnwrap(fixture.remember("Check the Wi-Fi row first in Settings.", by: "Poki", app: "com.apple.Preferences"))
+        let automation = FakeAutomation()
+        _ = automation.prepare()
+        let server = try FakeCompletions(replies: [
+            FakeCompletions.tool("do", ["actions": [["launch": "com.apple.Preferences"]]]),
+            FakeCompletions.tool("finish_task", [
+                "success": true, "summary": "Checked Settings.", "details": [], "answer": ["kind": "action"],
+            ]),
+            FakeCompletions.text("Checked Settings."),
+        ])
+        let chat = chat(on: server, transport: SessionScreenTransport(session: automation), automation: automation)
+        let app = try XCTUnwrap(app)
+        let imported = await app.runTool("skills", arguments: Self.json([
+            "action": "import", "data": String(decoding: try fixture.exportData(), as: UTF8.self),
+        ]))
+        XCTAssertFalse(imported.isError, imported.text)
+        defer { MemoryLibrary.shared.forget(note.id); SessionStore.shared.delete(chat.sessionID) }
+
+        let result = await chat.runDelegated("打开设置查看无线局域网")
+        XCTAssertEqual(result.success, true, result.text)
+
+        let first = try XCTUnwrap(server.requests.first)
+        let system = FakeCompletions.system(first)
+        XCTAssertTrue(system.contains(note.id), "taskBrief should offer the app note in the system prompt")
+        XCTAssertTrue(system.contains("used_memory_ids"), "memory attribution instructions should be present when notes exist")
+
+        let answers = server.requests.dropFirst().map(Self.toolAnswer)
+        XCTAssertFalse(answers.contains { $0.contains("Saved memories for this app") },
+                       "First read of an already-briefed app must not duplicate its notes: \(answers)")
+        XCTAssertFalse(answers.contains { $0.contains(note.id) },
+                       "Already-offered note ID must not be injected a second time in the tool answer: \(answers)")
+    }
+
     func testChineseAppTaskOffersMatchingSkillInPromptAndOmitsUnrelatedSkills() async throws {
         let skillName = "查电池健康"
         let session = FakeAutomation()

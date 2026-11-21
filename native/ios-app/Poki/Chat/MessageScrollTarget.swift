@@ -16,6 +16,12 @@ enum MessageScrollTarget {
     private static let countBoundary = #"(?<![0-9+-])(?<![0-9][.,])"#
     private static let englishModifiers = #"(?:\s+[a-z]+(?:[-'][a-z]+)*)*?\s*"#
     private static let messageUnits: Set<String> = ["条", "條", "则", "則", "message", "messages", "msg", "msgs"]
+    private static let explicitScrollCues = [
+        "scroll", "swipe", "back", "earlier", "older", "previous",
+        "翻", "滑", "滚", "滾", "之前", "以前", "消息前", "訊息前", "记录前", "記錄前", "更早",
+    ]
+    private static let chatHistoryCues = ["群聊", "私聊", "聊天记录", "聊天記錄"]
+    private static let nonScrollVerbs = ["发", "發", "写", "寫", "记", "記", "删", "刪", "回", "转", "轉", "买", "買", "订", "訂", "查", "搜"]
 
     private static let patterns = [
         "\(countBoundary)(\(digits)|\(chineseNumber))\\s*([条條则則页頁屏])",
@@ -24,6 +30,7 @@ enum MessageScrollTarget {
 
     static func parse(_ request: String) -> MessageScrollTarget? {
         let text = request.folding(options: .widthInsensitive, locale: nil).lowercased()
+        guard hasScrollIntent(text) else { return nil }
         let range = NSRange(text.startIndex..., in: text)
         let matches = patterns.flatMap { $0.matches(in: text, range: range) }
             .sorted { $0.range.location < $1.range.location }
@@ -34,6 +41,12 @@ enum MessageScrollTarget {
             return messageUnits.contains(String(text[unit])) ? .messages(count) : .screens(count)
         }
         return nil
+    }
+
+    private static func hasScrollIntent(_ text: String) -> Bool {
+        if explicitScrollCues.contains(where: { text.contains($0) }) { return true }
+        return chatHistoryCues.contains(where: { text.contains($0) })
+            && !nonScrollVerbs.contains(where: { text.contains($0) })
     }
 
     private static func integer(_ words: Substring) -> Int? {
