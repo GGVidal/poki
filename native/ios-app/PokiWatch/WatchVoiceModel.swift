@@ -160,6 +160,31 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         }
     }
 
+    func loadFullResult(_ id: UUID) async -> Bool {
+        guard let result = results.first(where: { $0.id == id }),
+              let total = result.fullTextBytes else { return true }
+        var received = Data()
+        while received.count < total {
+            guard !Task.isCancelled, session.activationState == .activated, session.isReachable,
+                  let request = try? JSONEncoder().encode(WatchVoiceRequest.result(id: id, offset: received.count)),
+                  let chunk = await resultReply(to: request),
+                  chunk.count == min(total - received.count, WatchVoiceRequest.resultChunkBytes) else { return false }
+            received.append(chunk)
+        }
+        guard !Task.isCancelled, let text = String(data: received, encoding: .utf8),
+              let index = archive.results.firstIndex(where: { $0.id == id }) else { return false }
+        var next = archive
+        next.results[index] = WatchVoiceUpdate(id: id, phase: result.phase, text: text)
+        return save(next)
+    }
+
+    private func resultReply(to request: Data) async -> Data? {
+        await withCheckedContinuation { continuation in
+            session.sendMessageData(request, replyHandler: { continuation.resume(returning: $0) },
+                                    errorHandler: { _ in continuation.resume(returning: nil) })
+        }
+    }
+
     private func save(_ next: Archive) -> Bool {
         do {
             try FileManager.default.createDirectory(at: archiveURL.deletingLastPathComponent(), withIntermediateDirectories: true)

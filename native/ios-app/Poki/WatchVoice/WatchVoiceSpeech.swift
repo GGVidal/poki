@@ -20,6 +20,11 @@ enum WatchVoiceSpeechError: LocalizedError {
 
 extension Dictation {
     static func transcribe(recording: Data) async throws -> String {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("-pokiWatchVoiceTestTranscript") {
+            return "Check whether Poki automation is on on this iPhone."
+        }
+        #endif
         let permission = SFSpeechRecognizer.authorizationStatus()
         if permission == .notDetermined, UIApplication.shared.applicationState == .active {
             let granted = await withCheckedContinuation { continuation in

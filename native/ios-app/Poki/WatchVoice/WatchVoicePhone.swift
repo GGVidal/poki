@@ -40,29 +40,35 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         updates = next
     }
 
-    private func reply(to request: WatchVoiceRequest) -> WatchVoiceUpdate? {
+    private func reply(to request: WatchVoiceRequest) -> Data {
         switch request {
         case .status(let id):
-            return status(for: id)
+            return encodeUpdate(status(for: id))
         case .submit(let id, let audio):
-            if let existing = status(for: id) { return existing }
-            guard !audio.isEmpty, audio.count <= WatchVoiceRequest.maxAudioBytes else {
-                return blocked(id, "The recording is empty or too long. Record a shorter request.")
-            }
-            let receipt = WatchVoiceUpdate(id: id, phase: .received, text: nil)
-            do {
-                try store(receipt)
-            } catch {
-                return blocked(id, "Poki couldn’t save this request on iPhone. Check available storage and try again.")
-            }
-            AppLog.shared.add("watch", "Received Watch task \(id)")
-            guard activeID == nil else {
-                return complete(blocked(id, "Poki is handling another Watch task. Wait for it to finish and try again."))
-            }
-            activeID = id
-            work = Task { await run(id, audio: audio) }
-            return receipt
+            return encodeUpdate(accept(id, audio: audio))
+        case .result(let id, let offset):
+            return updates[id]?.resultChunk(at: offset) ?? Data()
         }
+    }
+
+    private func accept(_ id: UUID, audio: Data) -> WatchVoiceUpdate {
+        if let existing = status(for: id) { return existing }
+        guard !audio.isEmpty, audio.count <= WatchVoiceRequest.maxAudioBytes else {
+            return blocked(id, "The recording is empty or too long. Record a shorter request.")
+        }
+        let receipt = WatchVoiceUpdate(id: id, phase: .received, text: nil)
+        do {
+            try store(receipt)
+        } catch {
+            return blocked(id, "Poki couldn’t save this request on iPhone. Check available storage and try again.")
+        }
+        AppLog.shared.add("watch", "Received Watch task \(id)")
+        guard activeID == nil else {
+            return complete(blocked(id, "Poki is handling another Watch task. Wait for it to finish and try again."))
+        }
+        activeID = id
+        work = Task { await run(id, audio: audio) }
+        return receipt
     }
 
     private func status(for id: UUID) -> WatchVoiceUpdate? {
@@ -95,7 +101,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
             let task = ChatModel(app: app, kind: .handoff, requester: "Apple Watch", sessionID: id.uuidString)
             let result = await task.runDelegated(transcript)
             let update = WatchVoiceUpdate(id: id, phase: result.success == true ? .finished : .blocked,
-                                          text: String(result.text.prefix(2_000)))
+                                          text: result.text)
             complete(update)
         } catch is CancellationError {
             complete(blocked(id, "iPhone stopped the background task. Check Poki on iPhone before trying again."))
@@ -144,8 +150,9 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
     }
 
     private func publish(_ update: WatchVoiceUpdate) {
-        guard session.activationState == .activated, session.isWatchAppInstalled,
-              let data = try? JSONEncoder().encode(update) else { return }
+        guard session.activationState == .activated, session.isWatchAppInstalled else { return }
+        let data = encodeUpdate(update)
+        guard !data.isEmpty else { return }
         if session.isReachable { session.sendMessageData(data, replyHandler: nil, errorHandler: nil) }
         if update.phase.isTerminal {
             do {
@@ -156,16 +163,18 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         }
     }
 
+    private func encodeUpdate(_ update: WatchVoiceUpdate?) -> Data {
+        guard let update else { return Data() }
+        return (try? JSONEncoder().encode(update.forDelivery())) ?? Data()
+    }
+
     nonisolated func session(_ session: WCSession, didReceiveMessageData data: Data, replyHandler: @escaping (Data) -> Void) {
         guard data.count <= WatchVoiceRequest.maxMessageBytes,
               let request = try? JSONDecoder().decode(WatchVoiceRequest.self, from: data) else {
             replyHandler(Data())
             return
         }
-        Task { @MainActor in
-            let update = self.reply(to: request)
-            replyHandler(update.flatMap { try? JSONEncoder().encode($0) } ?? Data())
-        }
+        Task { @MainActor in replyHandler(self.reply(to: request)) }
     }
 
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {}
