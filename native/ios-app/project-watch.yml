@@ -9,8 +9,6 @@ targets:
     dependencies:
       - target: PokiWatch
         embed: true
-    sources:
-      - WatchVoice
     settings:
       base:
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) POKI_APP POKI_WATCH

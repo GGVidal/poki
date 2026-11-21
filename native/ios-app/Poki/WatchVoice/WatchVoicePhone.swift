@@ -13,6 +13,17 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
     private var journalAvailable = true
     private var activeID: UUID?
     private var work: Task<Void, Never>?
+    private var latestTaskContext: Data?
+    private var latestRemoteContext: Data?
+    private var handlingRemoteCommand = false
+    private var remoteBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private lazy var remoteHost: WatchVoiceRemoteHost = {
+        let host = WatchVoiceRemoteHost(app: app, chat: chat, isWatchTaskBusy: { [weak self] in self?.activeID != nil })
+        host.onSnapshot = { [weak self] snapshot in self?.publishRemoteSnapshot(snapshot) }
+        host.onMeter = { [weak self] meter in self?.publishRemoteMeter(meter) }
+        host.onResult = { [weak self] result in self?.storeRemoteResult(result) }
+        return host
+    }()
 
     init(app: AppModel, chat: ChatModel) {
         self.app = app
@@ -27,6 +38,7 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
             // An unreadable journal cannot safely distinguish a new request from a retry.
             journalAvailable = false
         }
+        remoteHost.startObserving()
         session.delegate = self
         session.activate()
     }
@@ -155,17 +167,97 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         guard !data.isEmpty else { return }
         if session.isReachable { session.sendMessageData(data, replyHandler: nil, errorHandler: nil) }
         if update.phase.isTerminal {
-            do {
-                try session.updateApplicationContext([WatchVoiceRequest.contextKey: data])
-            } catch {
-                AppLog.shared.add("watch", "Watch task result saved for the next status request")
+            latestTaskContext = data
+            syncApplicationContext()
+        }
+    }
+
+    private func storeRemoteResult(_ update: WatchVoiceUpdate) {
+        do {
+            try store(update)
+        } catch {
+            updates[update.id] = update
+        }
+    }
+
+    private func publishRemoteSnapshot(_ snapshot: WatchVoiceRemoteSnapshot) {
+        if !snapshot.state.isActiveCall && snapshot.state != .ending {
+            endRemoteBackgroundTask()
+        }
+        guard !handlingRemoteCommand,
+              let data = try? JSONEncoder().encode(snapshot) else { return }
+        latestRemoteContext = data
+        guard session.activationState == .activated else { return }
+        if session.isReachable {
+            session.sendMessage([WatchVoiceRemote.snapshotKey: data], replyHandler: nil, errorHandler: nil)
+        }
+        syncApplicationContext()
+    }
+
+    private func syncRemoteContext(_ snapshot: WatchVoiceRemoteSnapshot) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        latestRemoteContext = data
+        syncApplicationContext()
+    }
+
+    private func beginRemoteBackgroundTask() {
+        guard remoteBackgroundTask == .invalid else { return }
+        remoteBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Poki Watch voice remote") { [weak self] in
+            Task { @MainActor in
+                self?.endRemoteBackgroundTask()
             }
+        }
+    }
+
+    private func endRemoteBackgroundTask() {
+        guard remoteBackgroundTask != .invalid else { return }
+        let id = remoteBackgroundTask
+        remoteBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(id)
+    }
+
+    private func publishRemoteMeter(_ meter: WatchVoiceRemoteMeter) {
+        guard session.activationState == .activated, session.isReachable,
+              let data = try? JSONEncoder().encode(meter) else { return }
+        session.sendMessage([WatchVoiceRemote.meterKey: data], replyHandler: nil, errorHandler: nil)
+    }
+
+    private func syncApplicationContext() {
+        guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled else { return }
+        var context: [String: Any] = [:]
+        if let latestTaskContext { context[WatchVoiceRequest.contextKey] = latestTaskContext }
+        if let latestRemoteContext { context[WatchVoiceRemote.contextKey] = latestRemoteContext }
+        guard !context.isEmpty else { return }
+        do {
+            try session.updateApplicationContext(context)
+        } catch {
+            AppLog.shared.add("watch", "Watch application context sync deferred")
         }
     }
 
     private func encodeUpdate(_ update: WatchVoiceUpdate?) -> Data {
         guard let update else { return Data() }
         return (try? JSONEncoder().encode(update.forDelivery())) ?? Data()
+    }
+
+    private func handleRemoteMessage(_ message: [String: Any]) -> [String: Any] {
+        guard let data = message[WatchVoiceRemote.commandKey] as? Data,
+              data.count <= WatchVoiceRequest.maxMessageBytes,
+              let command = try? JSONDecoder().decode(WatchVoiceRemoteCommand.self, from: data) else {
+            return [:]
+        }
+        handlingRemoteCommand = true
+        let reply = remoteHost.handle(command)
+        handlingRemoteCommand = false
+        if reply.snapshot.state.isActiveCall || reply.snapshot.state == .ending {
+            beginRemoteBackgroundTask()
+        } else {
+            endRemoteBackgroundTask()
+        }
+        syncRemoteContext(reply.snapshot)
+        AppLog.shared.add("watch", "Watch remote \(command.action) (\(command.requestID)) -> \(reply.outcome.rawValue), state \(reply.snapshot.state.rawValue) [\(reply.snapshot.epoch):\(reply.snapshot.sequence)]")
+        guard let encoded = try? JSONEncoder().encode(reply) else { return [:] }
+        return [WatchVoiceRemote.replyKey: encoded]
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessageData data: Data, replyHandler: @escaping (Data) -> Void) {
@@ -177,7 +269,39 @@ final class WatchVoicePhone: NSObject, WCSessionDelegate {
         Task { @MainActor in replyHandler(self.reply(to: request)) }
     }
 
-    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {}
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        Task { @MainActor in replyHandler(self.handleRemoteMessage(message)) }
+    }
+
+    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+        Task { @MainActor in
+            guard activationState == .activated else { return }
+            remoteHost.setMeterStreaming(session.isReachable)
+            publishRemoteSnapshot(remoteHost.currentSnapshot())
+        }
+    }
+
+    nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        Task { @MainActor in
+            remoteHost.setMeterStreaming(session.isReachable)
+            if session.isReachable {
+                publishRemoteSnapshot(remoteHost.currentSnapshot())
+            }
+        }
+    }
+
+    nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
+        Task { @MainActor in
+            remoteHost.setMeterStreaming(session.isReachable)
+            if session.isPaired, session.isWatchAppInstalled {
+                syncRemoteContext(remoteHost.currentSnapshot())
+            }
+            if session.isReachable {
+                publishRemoteSnapshot(remoteHost.currentSnapshot())
+            }
+        }
+    }
+
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
     nonisolated func sessionDidDeactivate(_ session: WCSession) { session.activate() }
 }

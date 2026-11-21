@@ -31,6 +31,8 @@ final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
     private let onEvent: @MainActor ([String: Any]) -> Void
     private let onClosed: @MainActor (String) -> Void
     private var script: Task<Void, Never>?
+    private let lock = NSLock()
+    private var speaking = false
 
     init(onEvent: @escaping @MainActor ([String: Any]) -> Void, onClosed: @escaping @MainActor (String) -> Void) {
         self.onEvent = onEvent
@@ -78,6 +80,12 @@ final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(at - clock))
                 guard !Task.isCancelled else { return }
                 clock = at
+                if let type = event["type"] as? String {
+                    self.lock.withLock {
+                        if type == "output_audio_buffer.started" { self.speaking = true }
+                        else if type == "output_audio_buffer.stopped" || type == "output_audio_buffer.cleared" { self.speaking = false }
+                    }
+                }
                 onEvent(event)
                 if let hold, reaches == hold { return }
                 if hold?.isFailed == true, reaches == .listening { break }
@@ -93,10 +101,15 @@ final class TalkRehearsal: VoiceConnection, @unchecked Sendable {
     func connectLive(microphone: Bool, direct: Bool, exchange: (String) async throws -> String) async throws {
         throw VoiceError.noBridge
     }
-    func hasRemoteSpeech() async -> Bool { false }
+    func hasRemoteSpeech() async -> Bool { lock.withLock { speaking } }
+    func remoteAudioLevel() async -> Double? { lock.withLock { speaking ? 0.65 : 0.0 } }
     func setRemoteVolume(_ value: Double) {}
-    func diagnose(_ write: @escaping @MainActor (String) -> Void) {}
-    func close() { script?.cancel() }
+    func setLocalAudioEnabled(_ enabled: Bool) {}
+    @MainActor func diagnose(_ write: @escaping @MainActor (String) -> Void) {}
+    func close() {
+        lock.withLock { speaking = false }
+        script?.cancel()
+    }
 }
 
 extension TalkState {
