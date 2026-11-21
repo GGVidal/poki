@@ -165,6 +165,7 @@ private extension WatchVoiceUpdate.Phase {
     var title: LocalizedStringResource {
         switch self {
         case .received: "iPhone received it"
+        case .waitingForUnlock: "Received. Unlock your iPhone."
         case .running: "Poki is working"
         case .finished: "Task finished"
         case .blocked: "Task needs attention"
@@ -174,6 +175,7 @@ private extension WatchVoiceUpdate.Phase {
     var symbol: String {
         switch self {
         case .received: "iphone"
+        case .waitingForUnlock: "lock.fill"
         case .running: "ellipsis.circle"
         case .finished: "checkmark.circle"
         case .blocked: "exclamationmark.circle"
