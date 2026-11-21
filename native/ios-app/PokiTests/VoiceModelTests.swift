@@ -1461,20 +1461,23 @@ extension VoiceModelTests {
     }
 
     func testSharedVoiceSpecCoversStableSectionsAndStaysWithinBaselineBudget() throws {
-        let expectedSections = ["executor", "language", "brevity", "capabilities", "evidence", "interruption", "recovery"]
-        let phoneTools = ["get_ios_version", "look", "open_app", "do"]
-        let liveTools = phoneTools + [VoiceDirect.cancelCurrentTask]
-        let budgets: [(language: String, realtime: Int, liveVoice: Int, liveExecutor: Int)] = [
-            ("zh-Hans", 3382, 1871, 3419),
-            ("en", 3370, 1859, 3407),
+        let headings: (String) -> [String] = { prompt in
+            prompt.split(separator: "\n").filter { $0.hasPrefix("# ") }.map { String($0.dropFirst(2)) }
+        }
+        let expectedAll = ["Executor", "Language", "Brevity", "Capabilities", "Evidence", "Interruption", "Recovery"]
+        let expectedLiveVoice = ["Executor", "Language", "Brevity", "Evidence", "Interruption", "Recovery"]
+        let budgets: [(language: String, name: String, realtime: Int, liveVoice: Int, liveExecutor: Int)] = [
+            ("zh-Hans", "Chinese, Simplified", 3382, 1871, 3419),
+            ("en", "English", 3370, 1859, 3407),
         ]
 
         for entry in budgets {
             let realtime = VoiceDirect.realtimeSession(for: .openai, language: entry.language)
             let realtimePrompt = try XCTUnwrap(realtime["instructions"] as? String)
-            let builtRealtime = VoiceBehaviorSpec.shared.build(role: .realtime, language: entry.language, tools: phoneTools, host: .phone)
-            XCTAssertEqual(realtimePrompt, builtRealtime.text)
-            XCTAssertEqual(builtRealtime.sectionIds, expectedSections)
+            XCTAssertEqual(headings(realtimePrompt), expectedAll)
+            XCTAssertTrue(realtimePrompt.contains("Speak \(entry.name), the language of Poki's interface, from your first sentence on."))
+            XCTAssertTrue(realtimePrompt.contains("Before using tools for a new task, say one short sentence about what you will do."))
+            XCTAssertTrue(realtimePrompt.contains("Never repeat an action that already ran"))
             XCTAssertLessThanOrEqual(realtimePrompt.count, entry.realtime, "\(entry.language) realtime exceeded budget")
 
             let live = VoiceDirect.liveSession(model: "gpt-live-1.1", language: entry.language)
@@ -1482,11 +1485,10 @@ extension VoiceModelTests {
             let delegation = try XCTUnwrap(live["delegation"] as? [String: Any])
             let backend = try XCTUnwrap(delegation["responses"] as? [String: Any])
             let liveExecutorPrompt = try XCTUnwrap(backend["instructions"] as? String)
-            let builtVoice = VoiceBehaviorSpec.shared.build(role: .liveVoice, language: entry.language, tools: liveTools, host: .phone)
-            let builtExecutor = VoiceBehaviorSpec.shared.build(role: .liveExecutor, language: entry.language, tools: liveTools, host: .phone)
-            XCTAssertEqual(liveVoicePrompt, builtVoice.text)
-            XCTAssertEqual(liveExecutorPrompt, builtExecutor.text)
-            XCTAssertEqual(builtExecutor.sectionIds, expectedSections)
+            XCTAssertEqual(headings(liveVoicePrompt), expectedLiveVoice)
+            XCTAssertEqual(headings(liveExecutorPrompt), expectedAll)
+            XCTAssertTrue(liveVoicePrompt.contains("Speak \(entry.name)."))
+            XCTAssertTrue(liveExecutorPrompt.contains("Start promptly."))
             XCTAssertLessThanOrEqual(liveVoicePrompt.count, entry.liveVoice, "\(entry.language) live voice exceeded budget")
             XCTAssertLessThanOrEqual(liveExecutorPrompt.count, entry.liveExecutor, "\(entry.language) live executor exceeded budget")
         }
@@ -1517,37 +1519,108 @@ extension VoiceModelTests {
         XCTAssertFalse(liveTools.contains { $0["name"] as? String == VoiceDirect.cancelCurrentTask })
         XCTAssertFalse(liveVoicePrompt.contains(VoiceDirect.cancelCurrentTask))
         XCTAssertFalse(liveExecutorPrompt.contains(VoiceDirect.cancelCurrentTask))
+
+        let cancelOnly = VoiceDirect.liveSession(model: "gpt-live-1.1", language: "zh-Hans",
+                                                 hiddenTools: ["get_ios_version", "open_app", "do", "look"])
+        let cancelOnlyDelegation = try XCTUnwrap(cancelOnly["delegation"] as? [String: Any])
+        let cancelOnlyBackend = try XCTUnwrap(cancelOnlyDelegation["responses"] as? [String: Any])
+        let cancelOnlyTools = try XCTUnwrap(cancelOnlyBackend["tools"] as? [[String: Any]])
+        XCTAssertEqual(cancelOnlyTools.compactMap { $0["name"] as? String }, [VoiceDirect.cancelCurrentTask])
+        for prompt in [try XCTUnwrap(cancelOnly["instructions"] as? String),
+                       try XCTUnwrap(cancelOnlyBackend["instructions"] as? String)] {
+            XCTAssertTrue(prompt.contains(VoiceDirect.cancelCurrentTask))
+            for forbidden in ["把停字发过去", "在备忘录输入停", "normal phone tools",
+                              "Before delegating a new task", "Start promptly.",
+                              "Use the appropriate tool", "operates the user's iPhone with tools"] {
+                XCTAssertFalse(prompt.contains(forbidden), "unexpected promise \(forbidden)")
+            }
+        }
     }
 
     func testVoiceStartupLogsTemplateVersionModeAndCommitState() async {
-        AppLog.shared.clear()
-        let realtime = Harness()
-        await realtime.talk()
-        let realtimeLogs = AppLog.shared.lines.joined(separator: "\n")
-        XCTAssertTrue(realtimeLogs.contains("template=\(VoiceBehaviorSpec.version)"), realtimeLogs)
-        XCTAssertTrue(realtimeLogs.contains("mode=realtime_bridge"), realtimeLogs)
-        XCTAssertTrue(realtimeLogs.contains("commit_state=submitted"), realtimeLogs)
-        XCTAssertTrue(realtimeLogs.contains("commit_state=confirmed"), realtimeLogs)
-        realtime.voice.stop()
+        final class VersionedBridgeStub: URLProtocol {
+            static let realtimeAddress = "http://voice-versioned-bridge.test/voice/0123456789abcdef"
+            static let liveAddress = "http://voice-versioned-live.test/voice/0123456789abcdef"
+            static let version = "voice-spec-bridge-2"
+            override class func canInit(with request: URLRequest) -> Bool {
+                ["voice-versioned-bridge.test", "voice-versioned-live.test"].contains(request.url?.host())
+            }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+            override func startLoading() {
+                let body: String
+                if request.url?.host() == "voice-versioned-live.test" {
+                    body = request.url?.lastPathComponent == "session"
+                        ? #"{"sdp":"sdp-answer"}"#
+                        : #"{"live":true,"model":"gpt-live-1.1","local_tools":["get_ios_version","look","open_app","do"]}"#
+                } else {
+                    body = #"{"value":"ek_test","model":"gpt-realtime","local_tools":["get_ios_version","look","do"]}"#
+                }
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                               headerFields: [VoiceBridge.templateHeader: Self.version])!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data(body.utf8))
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            override func stopLoading() {}
+        }
 
-        AppLog.shared.clear()
-        let live = Harness()
-        await live.liveTalk()
-        let liveLogs = AppLog.shared.lines.joined(separator: "\n")
-        XCTAssertTrue(liveLogs.contains("template=\(VoiceBehaviorSpec.version)"), liveLogs)
-        XCTAssertTrue(liveLogs.contains("mode=live_bridge"), liveLogs)
-        XCTAssertTrue(liveLogs.contains("commit_state=submitted"), liveLogs)
-        XCTAssertTrue(liveLogs.contains("commit_state=confirmed"), liveLogs)
-        live.voice.stop()
-
+        URLProtocol.registerClass(VersionedBridgeStub.self)
         URLProtocol.registerClass(BridgeTroubleStub.self)
-        defer { URLProtocol.unregisterClass(BridgeTroubleStub.self) }
+        defer {
+            URLProtocol.unregisterClass(VersionedBridgeStub.self)
+            URLProtocol.unregisterClass(BridgeTroubleStub.self)
+        }
+
+        AppLog.shared.clear()
+        let legacyRealtime = Harness()
+        await legacyRealtime.talk()
+        let legacyRealtimeLogs = AppLog.shared.lines.joined(separator: "\n")
+        XCTAssertTrue(legacyRealtimeLogs.contains("template=unknown"), legacyRealtimeLogs)
+        XCTAssertFalse(legacyRealtimeLogs.contains("template=\(VoiceBehaviorSpec.version)"), legacyRealtimeLogs)
+        XCTAssertTrue(legacyRealtimeLogs.contains("mode=realtime_bridge"), legacyRealtimeLogs)
+        XCTAssertTrue(legacyRealtimeLogs.contains("commit_state=submitted"), legacyRealtimeLogs)
+        XCTAssertTrue(legacyRealtimeLogs.contains("commit_state=confirmed"), legacyRealtimeLogs)
+        legacyRealtime.voice.stop()
+
+        AppLog.shared.clear()
+        let versionedRealtime = Harness()
+        XCTAssertTrue(versionedRealtime.voice.setBridge(VersionedBridgeStub.realtimeAddress))
+        await versionedRealtime.talk()
+        let versionedRealtimeLogs = AppLog.shared.lines.joined(separator: "\n")
+        XCTAssertTrue(versionedRealtimeLogs.contains("template=\(VersionedBridgeStub.version)"), versionedRealtimeLogs)
+        XCTAssertTrue(versionedRealtimeLogs.contains("mode=realtime_bridge"), versionedRealtimeLogs)
+        XCTAssertTrue(versionedRealtimeLogs.contains("commit_state=submitted"), versionedRealtimeLogs)
+        XCTAssertTrue(versionedRealtimeLogs.contains("commit_state=confirmed"), versionedRealtimeLogs)
+        versionedRealtime.voice.stop()
+
+        AppLog.shared.clear()
+        let versionedLive = Harness()
+        XCTAssertTrue(versionedLive.voice.setBridge(VersionedBridgeStub.liveAddress))
+        await versionedLive.connect()
+        versionedLive.link.play(["type": "session.started"])
+        let versionedLiveLogs = AppLog.shared.lines.joined(separator: "\n")
+        XCTAssertTrue(versionedLiveLogs.contains("template=\(VersionedBridgeStub.version)"), versionedLiveLogs)
+        XCTAssertTrue(versionedLiveLogs.contains("mode=live_bridge"), versionedLiveLogs)
+        XCTAssertTrue(versionedLiveLogs.contains("commit_state=submitted"), versionedLiveLogs)
+        XCTAssertTrue(versionedLiveLogs.contains("commit_state=confirmed"), versionedLiveLogs)
+        versionedLive.voice.stop()
+
+        AppLog.shared.clear()
+        let dropped = Harness()
+        XCTAssertTrue(dropped.voice.setBridge(VersionedBridgeStub.realtimeAddress))
+        await dropped.connect()
+        dropped.link.onClosed?("transport dropped before ready")
+        let droppedLogs = AppLog.shared.lines.joined(separator: "\n")
+        XCTAssertTrue(droppedLogs.contains("template=\(VersionedBridgeStub.version)"), droppedLogs)
+        XCTAssertTrue(droppedLogs.contains("commit_state=submitted"), droppedLogs)
+        XCTAssertTrue(droppedLogs.contains("commit_state=failed"), droppedLogs)
+
         AppLog.shared.clear()
         let failing = Harness()
         XCTAssertTrue(failing.voice.setBridge(BridgeTroubleStub.gone))
         await failing.connect()
         let failLogs = AppLog.shared.lines.joined(separator: "\n")
-        XCTAssertTrue(failLogs.contains("template=\(VoiceBehaviorSpec.version)"), failLogs)
+        XCTAssertTrue(failLogs.contains("template=unknown"), failLogs)
         XCTAssertTrue(failLogs.contains("mode=realtime_bridge"), failLogs)
         XCTAssertTrue(failLogs.contains("commit_state=failed"), failLogs)
     }
