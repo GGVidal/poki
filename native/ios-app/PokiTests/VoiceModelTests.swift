@@ -789,6 +789,11 @@ final class VoiceModelTests: XCTestCase {
             do {
                 let stored = try JSONDecoder().decode(SavedSession.self, from: Data(contentsOf: savedFile))
                 XCTAssertTrue(stored.entries.contains { $0.kind == .poki(final + lastWords) })
+                if hasTranscript {
+                    XCTAssertTrue(stored.entries.contains {
+                        $0.kind == .you("Which platform?", delivered: true) && $0.spoken == true
+                    })
+                }
             } catch {
                 XCTFail("The previous call must be on disk before the new connection: \(error)")
             }

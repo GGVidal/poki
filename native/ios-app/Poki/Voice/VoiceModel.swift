@@ -463,6 +463,10 @@ final class VoiceModel {
     /// An answer is expected (the person stopped speaking, or response.create went out) and the server
     /// has not started it yet.
     private var awaitingAnswer = false
+    // In manual mode VAD stops before a user item is committed. Only a response request
+    // that was actually sent can leave us waiting for the model's answer.
+    private struct RealtimeCommitWait { let item: String? }
+    private var awaitingRealtimeCommit: RealtimeCommitWait?
     /// The event_id of the response.create Poki sent and the server has not started yet: an error naming
     /// it means that answer is not coming.
     private var requestedAnswer: String?
@@ -883,6 +887,7 @@ final class VoiceModel {
         liveSpeechByDelegation.removeAll()
         realtimeSpeechByResponse.removeAll()
         awaitingAnswer = false
+        awaitingRealtimeCommit = nil
         requestedAnswer = nil
     }
 
@@ -894,14 +899,14 @@ final class VoiceModel {
     var midTurn: Bool { isOn && (answerDue || phase == .thinking) }
 
     private var answerDue: Bool {
-        awaitingAnswer || liveAwaitingPlayback || !liveResultReceipts.isEmpty || activeResponse != nil || wantsResponse || pendingRealtimeTurns > 0
+        awaitingRealtimeCommit != nil || awaitingAnswer || liveAwaitingPlayback || !liveResultReceipts.isEmpty || activeResponse != nil || wantsResponse || pendingRealtimeTurns > 0
             || phase == .hearing || phase == .speaking || calls.contains { $0.state == .running }
     }
 
     /// The server owes something: the end of the person's speech, an answer, the end of the audio. A step
     /// that is running is not the server's to answer for, and it has its own time limits.
     private var waitingOnServer: Bool {
-        !ready || (awaitingAnswer || liveAwaitingPlayback || !liveResultReceipts.isEmpty || activeResponse != nil || wantsResponse
+        !ready || (awaitingRealtimeCommit != nil || awaitingAnswer || liveAwaitingPlayback || !liveResultReceipts.isEmpty || activeResponse != nil || wantsResponse
             || pendingRealtimeTurns > 0 || phase == .hearing || phase == .speaking)
             && !calls.contains { $0.state == .running }
     }
@@ -1195,14 +1200,18 @@ final class VoiceModel {
             let start = event["start_ms"] as? Int
             let end = event["end_ms"] as? Int
             let itemID = event["item_id"] as? String
-            if role == .you, let committedSpeech, committedSpeech.replayed,
-               itemID == nil || itemID == committedSpeech.item { return }
+            if role == .you {
+                if let committedSpeech, committedSpeech.replayed, itemID == nil || itemID == committedSpeech.item { return }
+                if let itemID, let currentItem = committedSpeech?.item ?? liveCallerSpeech.itemID,
+                   itemID != currentItem,
+                   committedSpeechItems.contains(itemID) || liveCallerSpeech.handledItems.contains(itemID) { return }
+            }
             keepOpen()
             appendLiveCaption(text, role: role, start: start ?? 0, end: end ?? 0)
             if role == .you {
                 let audio: Range<Int>? = if let start, let end, start >= 0, end > start { start..<end } else { nil }
                 if liveCallerSpeech.isReplay(itemID: itemID ?? liveCallerSpeech.itemID, audio: audio) {
-                    liveCallerSpeech.discardReplay()
+                    if itemID == nil { liveCallerSpeech.discardReplay() }
                     endIfDone()
                     return
                 }
@@ -1222,9 +1231,13 @@ final class VoiceModel {
             if liveCloseTimeout == nil { endIfDone() }
         case "session.delegation.created":
             if let id = (event["delegation"] as? [String: Any])?["id"] as? String, liveDelegations[id] == nil {
-                if let committedSpeech { liveSpeechByDelegation[id] = committedSpeech }
-                let handled = committedSpeech.map { $0.replayed || liveCallerSpeech.handledItems.contains($0.item) } ?? false
-                if handled || liveCallerSpeech.alreadyHandled {
+                let commit = committedSpeech.flatMap { speech in
+                    liveCallerSpeech.itemID.map { $0 != speech.item } == true ? nil : speech
+                }
+                if let commit { liveSpeechByDelegation[id] = commit }
+                let handled = commit.map { $0.replayed || liveCallerSpeech.handledItems.contains($0.item) }
+                    ?? liveCallerSpeech.alreadyHandled
+                if handled {
                     liveCallerSpeech.clearPendingSpeech()
                     liveDelegations[id] = .duplicate
                     return
@@ -1232,7 +1245,7 @@ final class VoiceModel {
                 let parts = Self.liveSpeechParts(liveCallerSpeech.text)
                 let audio = liveCallerSpeech.pending?.audio
                 let fallback = liveCallerSpeech.pendingTextReceipt
-                liveCallerSpeech.markHandled(committedItem: committedSpeech?.item)
+                liveCallerSpeech.markHandled(committedItem: commit?.item)
                 if !parts.isEmpty, parts.allSatisfy(Self.liveBackchannels.contains) {
                     liveDelegations[id] = .acknowledgment
                     return
@@ -1292,20 +1305,40 @@ final class VoiceModel {
         case "input_audio_buffer.speech_stopped":
             guard !usesLive else { return }
             phase = .thinking
-            awaitingAnswer = true
+            if manualRealtimeTurns {
+                awaitingRealtimeCommit = RealtimeCommitWait(item: event["item_id"] as? String)
+            } else {
+                awaitingAnswer = true
+            }
             clock = TurnClock(said: Date())
         case "input_audio_buffer.committed":
             let item = (event["item_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let resolvesWait = awaitingRealtimeCommit.map { $0.item == nil || $0.item == item } ?? false
+            if resolvesWait { awaitingRealtimeCommit = nil }
             if let item {
-                guard committedSpeechItems.insert(item).inserted else { return }
+                guard committedSpeechItems.insert(item).inserted else {
+                    if resolvesWait { finishSkippedRealtimeTurn() }
+                    return
+                }
                 committedSpeech = SpeechCommit(item: item, replayed: !sessionStore.beginVoiceOperation(item))
             } else {
                 committedSpeech = nil
             }
-            guard committedSpeech?.replayed != true else { return }
             if usesLive {
+                guard committedSpeech?.replayed != true else { return }
+                if let item {
+                    if let previous = liveCallerSpeech.itemID, previous != item {
+                        liveCallerSpeech.begin(itemID: item)
+                    } else {
+                        liveCallerSpeech.itemID = item
+                    }
+                }
                 liveCallerSpeech.recordInput(id: item ?? (event["event_id"] as? String))
-            } else if manualRealtimeTurns, item != nil {
+            } else if manualRealtimeTurns {
+                guard item != nil, committedSpeech?.replayed != true else {
+                    if resolvesWait { finishSkippedRealtimeTurn() }
+                    return
+                }
                 pendingRealtimeTurns += 1
                 flush()
             }
@@ -1403,11 +1436,22 @@ final class VoiceModel {
             } else if requestedAnswer == nil, !usesLive || about == nil {
                 awaitingAnswer = false
             }
-            if manualRealtimeTurns, pendingRealtimeTurns > 0 { flush() }
+            if manualRealtimeTurns {
+                if requestedAnswer == nil, awaitingRealtimeCommit != nil {
+                    awaitingRealtimeCommit = nil
+                    finishSkippedRealtimeTurn()
+                }
+                if pendingRealtimeTurns > 0 { flush() }
+            }
             endIfDone()
         default:
             break
         }
+    }
+
+    private func finishSkippedRealtimeTurn() {
+        if phase == .thinking, !answerDue { phase = .listening }
+        endIfDone()
     }
 
     private func recordSpokenAnswer(at start: Date) {

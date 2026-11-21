@@ -52,13 +52,16 @@ struct SavedSession: Codable, Identifiable, Equatable {
         }
         guard kind == .poki else { return }
 
-        // A backup can round two independent dates to the same second. Require a
-        // voice-only step or closing note before treating any part of a legacy block as speech.
+        // The voice writer copied the exact start date into both fields; the text writer read
+        // the clock twice. Second-precision backups still require evidence inside the block.
         var start: Int?
+        var preciseTalkStart = false
         for index in entries.indices {
             let entry = entries[index]
             if case .time(let date) = entry.kind {
                 start = entry.spoken == nil && entry.at == date ? index : nil
+                let seconds = date.timeIntervalSinceReferenceDate
+                preciseTalkStart = start != nil && seconds != seconds.rounded(.towardZero)
                 continue
             }
             guard let voiceStart = start, entry.spoken == nil else {
@@ -70,7 +73,9 @@ struct SavedSession: Codable, Identifiable, Equatable {
                 && entry.continuedTask == nil && entry.countedScrollRequestID == nil:
                 continue
             case .poki where entry.continuationChoices == nil:
-                continue
+                if index == entries.count - 1, preciseTalkStart, !live, outcome == nil {
+                    mark(voiceStart..<(index + 1))
+                }
             case .step(_, true):
                 mark(voiceStart..<(index + 1))
                 start = index + 1
