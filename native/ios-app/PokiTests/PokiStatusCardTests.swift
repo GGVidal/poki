@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class PokiStatusCardTests: XCTestCase {
-    func testStatusCardExpandsApprovalsInlineHidesAutoUnlockAndOpensCustomization() async throws {
+    func testStatusCardExpandsApprovalsInlineHidesAutoUnlockAndRequestsCustomization() async throws {
         let savedMode = UserDefaults.standard.object(forKey: ApprovalClassifier.modeKey)
         defer { UserDefaults.standard.set(savedMode, forKey: ApprovalClassifier.modeKey) }
         UserDefaults.standard.set(ApprovalClassifier.Mode.confirm.rawValue, forKey: ApprovalClassifier.modeKey)
@@ -14,12 +14,12 @@ final class PokiStatusCardTests: XCTestCase {
         let model = AppModel(launcher: FakeLauncher(), pairer: FakePairing())
         let chat = ChatModel(app: model)
         var presented = true
-        var openedCustomization = false
+        var requestedCustomization = false
         let window = try showCard(
             model: model,
             chat: chat,
             isPresented: Binding(get: { presented }, set: { presented = $0 }),
-            openCustomization: { openedCustomization = true }
+            openCustomization: { requestedCustomization = true }
         )
         defer { window.isHidden = true }
 
@@ -37,12 +37,14 @@ final class PokiStatusCardTests: XCTestCase {
 
         XCTAssertTrue(offOption.accessibilityActivate())
         try await waitUntil(in: window) {
-            model.approvalMode == .off && Self.element(in: window, id: "status.approvals.off") == nil
+            model.approvalMode == .off
+                && UserDefaults.standard.string(forKey: ApprovalClassifier.modeKey) == ApprovalClassifier.Mode.off.rawValue
+                && Self.element(in: window, id: "status.approvals.off") == nil
         }
 
         let customize = try await waitForElement(in: window, id: "status.customizePoki")
         XCTAssertTrue(customize.accessibilityActivate())
-        try await waitUntil(in: window) { openedCustomization && !presented }
+        try await waitUntil(in: window) { requestedCustomization && !presented }
     }
 
     func testStatusCardExpandsCustomProviderModelsInlineAndSelectsChoice() async throws {
@@ -102,6 +104,7 @@ final class PokiStatusCardTests: XCTestCase {
         try await waitUntil(in: window) {
             ModelKeys.selectedProvider == .custom
                 && ModelKeys.selectedModel == secondChoice
+                && UserDefaults.standard.string(forKey: "chat.model.custom") == secondChoice
                 && Self.element(in: window, id: "status.model.\(secondChoice)") == nil
         }
     }
