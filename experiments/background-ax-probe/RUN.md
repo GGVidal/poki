@@ -254,3 +254,33 @@ segmented control, text field set-value), scrolling, and escape (in the foregrou
 - **Common gate:** every activation path found for the four stock controls ends in a touch, either from the
   system (AXElement press, FKA) or in-process (`_keyboardActivate`). All of them need the window's render context,
   and iOS removes that context when the scene leaves the foreground.
+
+### Background focus: the three FKA commands (simulator 27.3, fixture)
+
+Prerequisites: Full Keyboard Access on (`_AXSFullKeyboardAccessEnabled`), app launched with
+`-FullKeyboardAccessUsesSimulatedKeyboardForAutomation YES`. Sent with `performAction:onElement:value:` through the
+XCTest daemon, in the background with Settings in front:
+
+| id | element | value | in-app call | effect |
+|---|---|---|---|---|
+| 5305 | application | NSNumber YES | `_accessibilitySetFocusEnabledInApplication:` → preferred window's focus system `_setEnabled:` | focus system enabled again in background |
+| 5310 | application | NSString scene id `sceneID:<bundle>-<uuid>` | `_accessibilityHandleFullKeyboardAccessAction:value:` → matching scene's window `makeKeyWindow` | window key (returns failure without the id) |
+| 2044 | control | nil | `_accessibilitySetNativeFocus` | native focus on the control (switch, cell, tab button) |
+
+### The in-process touch and where it stops in the background
+
+- Helper: `-[NSObject(AccessibilityActivation) _keyboardActivate]` (UIKitCore), generic for every NSObject. It uses
+  `_keyboardActivateEventDown:` (an IOHID digitizer finger event at `accessibilityActivationPoint`,
+  `BKSHIDEventSetDigitizerInfo` with `_accessibilityGetContextID`), then `[UIApp _enqueueHIDEvent:]` → `UIEventFetcher _receiveHIDEvent:`.
+  Down now, up after a `dispatch_after`. It's reached from the switch's FKA key commands (`_fkaSwitchOn/_fkaSwitchOff`).
+- Trace in the fixture (fixture key command "j" calls `_keyboardActivate` on the plain button):
+  - FG: contextID 3906509242 → `UIApplication sendEvent:` ×2 → `UIControl touchesBegan/Ended` → button action.
+  - BG (window not hidden, key, activation 2, `layer.context` nil): contextID 0 → no `sendEvent:` at all.
+    Substituting the last FG context id: still no `sendEvent:`.
+- Exact gate: `_UIEventHIDUIWindowForHIDEvent` reads the contextID from `BKSHIDEventGetBaseAttributes`; 0 → nil.
+  Otherwise `+[UIWindow _windowWithContextId:]` = `[CAContext contextWithId:].layer` → `_UIWindowFromRootLayer`.
+  With no live CAContext in the process there's no window, so the event is dropped before `sendEvent:`.
+- What removes the CAContext: `-[UIWindowScene _prepareForSuspend]` → `-[_UIContextBinder purgeContextsWithPurgeAction:afterPurgeAction:]`,
+  called from `UIScene scene:didUpdateWithDiff:transitionContext:completion:` when FrontBoard updates the scene settings.
+  `-[UIWindowScene _prepareForResume]` → `createContextsWithTest:creationAction:` → `+createContextForBindable:withSubstrate:` recreates it on return.
+  The testmanagerd background assertion keeps the process running, but doesn't stop the purge.

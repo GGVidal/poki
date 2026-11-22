@@ -10,6 +10,7 @@ enum Fix {
     static weak var label: UILabel?
     static weak var focusLabel: UILabel?
     static weak var sceneLabel: UILabel?
+    static weak var plainButton: UIButton?
     static func short(_ i: UIFocusItem) -> String {
         if let b = i as? UIButton { return "UIButton " + (b.currentTitle ?? "?") }
         if let v = i as? UIView { return String(describing: type(of: v)) + " " + (v.accessibilityLabel ?? "") }
@@ -29,6 +30,43 @@ enum Fix {
         }
     }
     static var hooked = false
+    static var traced = false
+    static var lastCtx: UInt32 = 0
+    static func swz(_ cls: AnyClass, _ name: String, _ arity: Int, _ tag: String) {
+        let sel = NSSelectorFromString(name)
+        guard let m = class_getInstanceMethod(cls, sel) else { NSLog("FIXLOG trace missing %@", name); return }
+        let st = { UIApplication.shared.applicationState.rawValue }
+        if arity == 0 {
+            typealias F = @convention(c) (AnyObject, Selector) -> UInt32
+            let o = unsafeBitCast(method_getImplementation(m), to: F.self)
+            let fake = ProcessInfo.processInfo.arguments.contains("-traceFakeCtx")
+            let b: @convention(block) (AnyObject) -> UInt32 = { me in
+                var r = o(me, sel)
+                if r != 0 { Fix.lastCtx = r } else if fake { r = Fix.lastCtx }
+                if me is UIButton { NSLog("FIXLOG trace %@ -> %u state=%d fake=%d", tag, r, st(), fake ? 1 : 0) }
+                return r }
+            method_setImplementation(m, imp_implementationWithBlock(b))
+        } else if arity == 1 {
+            typealias F = @convention(c) (AnyObject, Selector, AnyObject?) -> Void
+            let o = unsafeBitCast(method_getImplementation(m), to: F.self)
+            let b: @convention(block) (AnyObject, AnyObject?) -> Void = { me, a in NSLog("FIXLOG trace %@ %@ state=%d", tag, String(describing: type(of: me)), st()); o(me, sel, a) }
+            method_setImplementation(m, imp_implementationWithBlock(b))
+        } else {
+            typealias F = @convention(c) (AnyObject, Selector, AnyObject?, AnyObject?) -> Void
+            let o = unsafeBitCast(method_getImplementation(m), to: F.self)
+            let b: @convention(block) (AnyObject, AnyObject?, AnyObject?) -> Void = { me, a, c in if me is UIButton { NSLog("FIXLOG trace %@ state=%d", tag, st()) }; o(me, sel, a, c) }
+            method_setImplementation(m, imp_implementationWithBlock(b))
+        }
+    }
+    static func installTrace() {
+        guard !traced else { return }; traced = true
+        swz(NSObject.self, "_accessibilityGetContextID", 0, "getContextID")
+        swz(UIWindow.self, "sendEvent:", 1, "window.sendEvent")
+        swz(UIApplication.self, "sendEvent:", 1, "app.sendEvent")
+        swz(UIControl.self, "touchesBegan:withEvent:", 2, "control.touchesBegan")
+        swz(UIControl.self, "touchesEnded:withEvent:", 2, "control.touchesEnded")
+        NSLog("FIXLOG trace installed")
+    }
     static func hookSwitchKeyCommands() {
         guard !hooked else { return }
         let sel = NSSelectorFromString("_accessibilityKeyCommands")
@@ -110,7 +148,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
             if let p = priv, p.responds(to: NSSelectorFromString("_isEnabled")) { en = String(describing: p.perform(NSSelectorFromString("_isEnabled")) != nil) }
             let item = (pub ?? (priv as? UIFocusSystem))?.focusedItem
             let fkaFn = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXSFullKeyboardAccessEnabled").map { unsafeBitCast($0, to: (@convention(c) () -> Bool).self) }
-            Fix.hookSwitchKeyCommands()
+            Fix.hookSwitchKeyCommands(); Fix.installTrace()
+            if let c = w.value(forKey: "_contextId") as? UInt32, c != 0 { Fix.lastCtx = c }
             if Fix.dumped < 2, Date().timeIntervalSince(Fix.t0) > 8 { Fix.dumped += 1; Fix.dumpActions(w) }
             Fix.focus(item.map { Fix.short($0) } ?? "none")
             NSLog("FIXLOG focus fka=%@ pub=%@ priv=%@ enabled=%@ item=%@", fkaFn.map { $0() ? "1" : "0" } ?? "?", pub == nil ? "nil" : "yes", priv == nil ? "nil" : String(describing: type(of: priv!)), en, item.map { String(describing: $0).prefix(80).description } ?? "none")
@@ -169,7 +208,7 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
         let label = UILabel(); label.accessibilityIdentifier = "lastEvent"; label.text = "0 start"; Fix.label = label
         let focusLabel = UILabel(); focusLabel.accessibilityIdentifier = "focusNow"; focusLabel.text = "none"; Fix.focusLabel = focusLabel; focusLabel.font = .systemFont(ofSize: 9)
         let sceneLabel = UILabel(); sceneLabel.accessibilityIdentifier = "sceneId"; sceneLabel.text = "scene"; Fix.sceneLabel = sceneLabel; sceneLabel.font = .systemFont(ofSize: 9)
-        let button = UIButton(type: .system); button.setTitle("Plain button", for: .normal); button.addTarget(self, action: #selector(plain), for: .primaryActionTriggered)
+        let button = UIButton(type: .system); button.setTitle("Plain button", for: .normal); button.addTarget(self, action: #selector(plain), for: .primaryActionTriggered); Fix.plainButton = button
         let push = UIButton(type: .system); push.setTitle("Push level 2", for: .normal); push.addTarget(self, action: #selector(pushNext), for: .primaryActionTriggered)
         let sw = UISwitch(); sw.accessibilityLabel = "Switch"; sw.addTarget(self, action: #selector(switched(_:)), for: .valueChanged)
         let seg = UISegmentedControl(items: ["One", "Two", "Three"]); seg.selectedSegmentIndex = 0; seg.addTarget(self, action: #selector(segmented(_:)), for: .valueChanged)
@@ -189,9 +228,15 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
     }
     override var canBecomeFirstResponder: Bool { true }
     override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); becomeFirstResponder() }
-    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "k", modifierFlags: [], action: #selector(keyK)), UIKeyCommand(input: "k", modifierFlags: [.command], action: #selector(keyCmdK))] }
+    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "k", modifierFlags: [], action: #selector(keyK)), UIKeyCommand(input: "k", modifierFlags: [.command], action: #selector(keyCmdK)), UIKeyCommand(input: "j", modifierFlags: [], action: #selector(keyJ))] }
     @objc func keyK() { Fix.log("keyCommand k") }
     @objc func keyCmdK() { Fix.log("keyCommand cmd-k") }
+    @objc func keyJ() {
+        guard let b = Fix.plainButton else { return }
+        let w = b.window
+        NSLog("FIXLOG trace keyJ state=%d hidden=%d key=%d activation=%d layerCtx=%@ ctxId=%u point=%@", UIApplication.shared.applicationState.rawValue, w?.isHidden == true ? 1 : 0, w?.isKeyWindow == true ? 1 : 0, w?.windowScene?.activationState.rawValue ?? -9, w?.layer.value(forKey: "context") == nil ? "nil" : "yes", (w?.value(forKey: "_contextId") as? UInt32) ?? 0, NSCoder.string(for: b.accessibilityActivationPoint))
+        b.perform(NSSelectorFromString("_keyboardActivate"))
+    }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) { Fix.log("pressesBegan \(presses.first?.key?.characters ?? "?")"); super.pressesBegan(presses, with: event) }
     @objc func bar() { Fix.log("barButton -> push level 2"); navigationController?.pushViewController(LevelTwoController(), animated: true) }
     @objc func plain() { Fix.log("button"); NSLog("FIXLOG stack %@", Thread.callStackSymbols.prefix(40).joined(separator: " | ")) }

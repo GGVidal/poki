@@ -471,6 +471,19 @@ final class SimFixtureTests: XCTestCase {
         if bg { say("AD | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
     }
     // AE: background, force-enable focus with 5305 (FKA daemon op), then 2044 + Right arrow on the switch.
+    // AF: trace the in-process touch from _keyboardActivate (fixture key command "j"), FG vs BG.
+    var launchArgsOverride: [String] = []
+    func traceRoute(_ bg: Bool) {
+        launchArgs = launchArgsOverride
+        start(background: bg); sleep(launchArgsOverride.contains("-waitLLDB") ? 30 : 4)
+        let before = lastEvent(); let r = sendKey("j"); sleep(3)
+        say("AF | key j \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+    }
+    func testAF_traceBackgroundFakeCtx() { launchArgsOverride = ["-traceFakeCtx"]; traceRoute(true) }
+    func testAF_traceBackgroundLLDB() { launchArgsOverride = ["-waitLLDB"]; traceRoute(true) }
+    func testAF_traceForegroundLLDB() { launchArgsOverride = ["-waitLLDB"]; traceRoute(false) }
+    func testAF_traceForeground() { traceRoute(false) }
+    func testAF_traceBackground() { traceRoute(true) }
     func testAE_forceFocusBackground() {
         launchArgs = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
         start(background: true); sleep(2)
