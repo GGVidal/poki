@@ -384,3 +384,21 @@ buttons), UIKit alerts and action sheets, bar button items (primaryAction or tar
 work in the background through 2010/2004, with nothing reaching the front app. Not in the background: plain UIButtons in every
 form, UISwitch/UIStepper, list and table cells, tab bar buttons, back button, menus, Return-key submission, date picker, and
 WKWebView content.
+
+### Hosted scenes and the suspend decision (reading, simulator 27.3)
+
+- `_UIHostedWindow` is UIKit's window for view-service and extension processes whose UI is drawn in another process's host view
+  (`hostingHandle`, `_setHostBundleIdentifier:`, `_remoteContentParent`). `PGHostedWindow` (PegasusKit) is PiP's version
+  (`ForceHostedWindowBackedPIP`, "RoutingVideoToHostedWindow"). `_UIHostedWindowScene` belongs to scene hosting (`UISceneSessionRoleSceneHosting`,
+  `LACUIHostedWindowScene` for LocalAuthentication). An app's own main scene is a plain `UIWindowScene`, and no route found
+  makes a third-party app's main UI a hosted scene.
+- Suspend: `-[_UIWindowSceneFBSSceneLifecycleMonitor transitionToTargetState:fromState:withTransitionContext:preparations:]` computes the
+  target activation from FrontBoard settings with `+[UIScene _activationStateFromSceneSettings:]`, which reads `isForeground`, `underLock`
+  (with `_UISceneLifecycleStateIsSEO`) and `deactivationReasons`. Leaving the foreground runs `_prepareForSuspend` (context purge);
+  returning runs `_prepareForResume`. So the context lives while FrontBoard reports the scene as foreground, active or inactive
+  (inactive = foreground with deactivation reasons). It goes away when the scene is background.
+- Short-lived resumes: `-[UIApplication _performSnapshotsWithAction:forScene:completion:]` (SpringBoard snapshot actions via
+  `_UISceneSnapshotBSActionsHandler`), `-[UIApplication _performRefreshForUIScene:disposeAfter:completion:]` (from the app's own
+  `requestSceneSessionRefresh:`) and background-event state restoration (`_handleNonLaunchSpecificActions:`) each call `_prepareForResume`, then
+  `_prepareForSuspend`, synchronously on the main thread. An externally queued event runs after that. Matches the diagnostic:
+  `_updateSnapshotForBackgroundApplication:` left the context nil.
