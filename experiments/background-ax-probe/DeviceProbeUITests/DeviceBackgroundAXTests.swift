@@ -64,6 +64,119 @@ final class DeviceBackgroundAXTests: XCTestCase {
         say("[\(tag)] verification (foreground, one-off): static texts=[\(labels)]")
     }
 
+    func frontName() -> String {
+        let apps: [(String, String)] = [("com.apple.Preferences", "Settings"), ("com.apple.mobilenotes", "Notes"), ("com.apple.calculator", "Calculator")]
+        return apps.map { "\($0.1)=\(XCUIApplication(bundleIdentifier: $0.0).state.rawValue)" }.joined(separator: " ")
+    }
+    func calcDisplay(_ s: XCUIElementSnapshot) -> String {
+        var v = ""
+        func w(_ e: XCUIElementSnapshot) { if v.isEmpty, e.elementType == .textField || e.elementType == .staticText, e.label == "Edit field" { v = (e.value as? String) ?? "" }; e.children.forEach(w) }
+        w(s); return v
+    }
+
+    // F: concurrency. The owner uses the handset (Settings, Notes) for 5 minutes while the probe
+    // presses one digit every 10 s in the background Calculator and checks the display each time.
+    func testF_concurrentUse() {
+        target.launch()
+        let pid = (target.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        if let s0 = try? target.snapshot(), let ac = publicKey(s0, "All Clear") ?? publicKey(s0, "Clear") { _ = PBHelper.pressSnapshot(ac, action: 2010, error: nil) }
+        say("[F] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        settings.activate()
+        _ = settings.wait(for: .runningForeground, timeout: 10)
+        say("[F] START: owner may now use the phone (Settings / Notes). \(frontName())")
+        var expected = ""
+        var pass = 0, fail = 0
+        let start = Date()
+        var i = 0
+        while Date().timeIntervalSince(start) < 300 {
+            i += 1
+            let digit = String((i % 9) + 1)
+            let t0 = Date()
+            guard let snap = try? target.snapshot(), let k = publicKey(snap, digit) else { fail += 1; say("[F] #\(i) snapshot/key failed | \(frontName())"); sleep(10); continue }
+            var err: NSString?
+            let ok = PBHelper.pressSnapshot(k, action: 2010, error: &err)
+            usleep(500_000)
+            let shown = (try? target.snapshot()).map(calcDisplay) ?? "nil"
+            if ok { expected += digit }
+            if expected.count > 9 { // keep the number short: clear and restart
+                if let s2 = try? target.snapshot(), let c = publicKey(s2, "Clear") ?? publicKey(s2, "All Clear") { _ = PBHelper.pressSnapshot(c, action: 2010, error: nil) }
+                expected = ""
+            }
+            let match = shown.replacingOccurrences(of: ",", with: "") == expected || (expected.isEmpty)
+            if ok && (shown.replacingOccurrences(of: ",", with: "").hasSuffix(digit)) { pass += 1 } else { fail += 1 }
+            say("[F] #\(i) +\(Int(Date().timeIntervalSince(start)))s press \(digit) ok=\(ok) err=\(err ?? "nil") display=\(shown) expected=\(expected) match=\(match) in \(Int(Date().timeIntervalSince(t0)*1000)) ms | \(frontName())")
+            sleep(10)
+        }
+        say("[F] END: presses verified=\(pass) failed=\(fail) | \(frontName())")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.lifetime = .keepAlways; add(shot)
+    }
+
+    // G: generality, each its own test. Target Settings in the background, Notes in front.
+    func testGa_navigationInBackgroundSettings() {
+        let notes = XCUIApplication(bundleIdentifier: "com.apple.mobilenotes")
+        settings.launch()
+        let pid = (settings.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[Ga] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        notes.activate(); _ = notes.wait(for: .runningForeground, timeout: 10)
+        func labels(_ s: XCUIElementSnapshot) -> [String] { var o: [String] = []; func w(_ e: XCUIElementSnapshot) { if !e.label.isEmpty { o.append(e.label) }; e.children.forEach(w) }; w(s); return o }
+        func cell(_ s: XCUIElementSnapshot, _ label: String) -> XCUIElementSnapshot? {
+            if (s.elementType == .cell || s.elementType == .button || s.elementType == .staticText) && s.label == label { return s }
+            for c in s.children { if let h = cell(c, label) { return h } }; return nil
+        }
+        for step in ["General", "About"] {
+            guard let snap = try? settings.snapshot() else { say("[Ga] snapshot failed"); return }
+            guard let c = cell(snap, step) else { say("[Ga] '\(step)' not found; visible: \(labels(snap).prefix(25))"); return }
+            var err: NSString?
+            let ok = PBHelper.pressSnapshot(c, action: 2010, error: &err)
+            sleep(2)
+            let after = (try? settings.snapshot()).map { labels($0).prefix(20).joined(separator: " / ") } ?? "nil"
+            say("[Ga] press '\(step)' ok=\(ok) err=\(err ?? "nil") -> \(after) | \(frontName())")
+        }
+    }
+
+    func testGb_textEntryInBackgroundSettings() {
+        let notes = XCUIApplication(bundleIdentifier: "com.apple.mobilenotes")
+        settings.launch()
+        let pid = (settings.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[Gb] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        notes.activate(); _ = notes.wait(for: .runningForeground, timeout: 10)
+        func field(_ s: XCUIElementSnapshot) -> XCUIElementSnapshot? {
+            if s.elementType == .searchField || s.elementType == .textField { return s }
+            for c in s.children { if let h = field(c) { return h } }; return nil
+        }
+        guard let snap = try? settings.snapshot(), let f = field(snap) else { say("[Gb] no text field in background Settings"); return }
+        for name in ["AXValue", "XC_kAXXCAttributeValue", "2006", "AXValueAttribute"] {
+            var err: NSString?
+            let ok = PBHelper.setAttribute(name, value: "wifi" as NSString, onSnapshot: f, error: &err)
+            sleep(1)
+            let v = (try? settings.snapshot()).flatMap { field($0)?.value as? String } ?? "nil"
+            say("[Gb] setAttribute(\(name)) ok=\(ok) err=\(err ?? "nil") field value now=\(v) | \(frontName())")
+        }
+    }
+
+    func testGc_scrollInBackgroundSettings() {
+        let notes = XCUIApplication(bundleIdentifier: "com.apple.mobilenotes")
+        settings.launch()
+        let pid = (settings.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[Gc] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        notes.activate(); _ = notes.wait(for: .runningForeground, timeout: 10)
+        func labels(_ s: XCUIElementSnapshot) -> [String] { var o: [String] = []; func w(_ e: XCUIElementSnapshot) { if e.elementType == .cell || e.elementType == .staticText, !e.label.isEmpty { o.append(e.label) }; e.children.forEach(w) }; w(s); return o }
+        func scrollable(_ s: XCUIElementSnapshot) -> XCUIElementSnapshot? {
+            if s.elementType == .table || s.elementType == .collectionView || s.elementType == .scrollView { return s }
+            for c in s.children { if let h = scrollable(c) { return h } }; return nil
+        }
+        guard let snap = try? settings.snapshot(), let list = scrollable(snap) else { say("[Gc] no scrollable list"); return }
+        say("[Gc] before: \(labels(snap).count) labels, last=\(labels(snap).suffix(3))")
+        // AXRuntime scroll actions (hypothesis numbering): 2007 scroll-to-visible, 2008/2009 increment/decrement, 2018-2021 page scroll.
+        for action in [2018, 2019, 2020, 2021, 2008] {
+            var err: NSString?
+            let ok = PBHelper.pressSnapshot(list, action: action, error: &err)
+            usleep(800_000)
+            let a = (try? settings.snapshot()).map(labels) ?? []
+            say("[Gc] action \(action) ok=\(ok) err=\(err ?? "nil") labels=\(a.count) last=\(a.suffix(3)) | \(frontName())")
+        }
+    }
+
     // E: public XCTest snapshot of the background app (fast in D), then AXPress by element.
     func describe(_ s: XCUIElementSnapshot) -> String {
         var out: [String] = []

@@ -89,6 +89,20 @@
     return root ?: result;
 }
 
+// -[XCAXClient_iOS setAttribute:(NSString *)value:element:outError:] (B48@0:8@"NSString"16@24@"XCAccessibilityElement"32^@40).
++ (BOOL)setAttribute:(NSString *)name value:(id)value onSnapshot:(id)snapshot error:(NSString **)error {
+    id ax = [self ax];
+    id element = nil;
+    @try { element = [snapshot valueForKey:@"accessibilityElement"]; } @catch (__unused NSException *x) {}
+    SEL s = NSSelectorFromString(@"setAttribute:value:element:outError:");
+    if (!element || ![ax respondsToSelector:s]) { if (error) *error = @"no element or selector"; return NO; }
+    NSError *err = nil; BOOL ok = NO;
+    @try { ok = ((BOOL (*)(id, SEL, id, id, id, NSError **))objc_msgSend)(ax, s, name, value, element, &err); }
+    @catch (NSException *x) { if (error) *error = [NSString stringWithFormat:@"exception %@: %@", x.name, x.reason]; return NO; }
+    if (error) *error = err ? err.description : @"none";
+    return ok;
+}
+
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString **)error {
     id ax = [self ax];
     id element = nil;
