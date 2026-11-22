@@ -232,3 +232,12 @@ segmented control, text field set-value), scrolling, and escape (in the foregrou
   `_keyboardActivate` (in-process toggle). Foreground, launch argument + FKA: 2044 native focus on the switch, then
   Right arrow via 2034 → handler "switch true", no touch. Left arrow did not toggle it back. Without native focus
   (none, or 5308 AX focus) nothing fires. Background: 2044 fails (no focus system), so nothing fires.
+- **Attribute setters** (`_iosAccessibilitySetValue:forAttribute:`): 2006 `_accessibilitySetValue:` (implemented
+  only by slider and text classes), 2005 selected text range, 3002 becomeFirstResponder, 2018 "focused" dict,
+  2208 `_accessibilitySetSelectedChildren:` (empty base stub, no override). Nothing for switch, cell, tab, button.
+- **Key commands without focus:** a real hardware Cmd-2 does not switch tabs on iPhone (reaches the app as
+  pressesBegan). Arrows/Return/Space via 2034 select no row. The 2034 path drops modifier flags (Cmd-K command
+  did not fire for any modifierState/gsModifierState encoding; a hardware Cmd-K did).
+- **Focus plus keys, foreground:** with native focus on the cell, a tab button or a plain button, arrows, Return and
+  Space via 2034 neither move focus nor select. 2034 runs key commands found from the responder chain of the
+  focused item; the switch's own arrow commands are the only stock control commands among our four.

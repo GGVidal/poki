@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)postTapAt:(CGPoint)p contextId:(unsigned)ctx pid:(int)pid displayId:(unsigned)display down:(int)down up:(int)up;
 + (unsigned)contextIdOfSnapshot:(id)snapshot;
 + (nullable id)keyEvent:(NSString *)input down:(BOOL)down asData:(BOOL)asData;
++ (nullable id)keyEvent:(NSString *)input down:(BOOL)down modifierKey:(NSString *)key modifierValue:(NSUInteger)value;
 + (NSString *)directAction:(NSInteger)action value:(nullable id)value onSnapshot:(id)snapshot;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(nullable id)value error:(NSString * _Nullable * _Nullable)error;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;

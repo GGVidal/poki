@@ -157,8 +157,9 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
     }
     override var canBecomeFirstResponder: Bool { true }
     override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); becomeFirstResponder() }
-    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "k", modifierFlags: [], action: #selector(keyK))] }
+    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "k", modifierFlags: [], action: #selector(keyK)), UIKeyCommand(input: "k", modifierFlags: [.command], action: #selector(keyCmdK))] }
     @objc func keyK() { Fix.log("keyCommand k") }
+    @objc func keyCmdK() { Fix.log("keyCommand cmd-k") }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) { Fix.log("pressesBegan \(presses.first?.key?.characters ?? "?")"); super.pressesBegan(presses, with: event) }
     @objc func bar() { Fix.log("barButton -> push level 2"); navigationController?.pushViewController(LevelTwoController(), animated: true) }
     @objc func plain() { Fix.log("button"); NSLog("FIXLOG stack %@", Thread.callStackSymbols.prefix(40).joined(separator: " | ")) }

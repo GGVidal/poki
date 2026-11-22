@@ -426,6 +426,64 @@ final class SimFixtureTests: XCTestCase {
         }
         if bg { say("AA | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
     }
+    func sendModKey(_ k: String, _ mk: String, _ mv: UInt) -> String {
+        guard let app = snap() else { return "no app" }
+        var rs: [String] = []
+        for down in [true, false] { var e: NSString?; rs.append(PBHelper.pressSnapshot(app, action: 2034, value: PBHelper.keyEvent(k, down: down, modifierKey: mk, modifierValue: mv), error: &e) ? "ok" : "fail"); usleep(120_000) }
+        return rs.joined(separator: "/")
+    }
+    // AB: key commands UIKit installs without focus: Cmd-2 for the tab bar (several modifier encodings),
+    // arrows / Return / Space for the table. No launch argument.
+    func noFocusKeys(_ bg: Bool) {
+        launchArgs = []
+        start(background: bg); sleep(2)
+        let fb = bg ? frontSummary() : "-"
+        for (mk, mv) in [("modifierState", UInt(1 << 20)), ("modifierState", UInt(1 << 16)), ("gsModifierState", UInt(1 << 16)), ("gsModifierState", UInt(1 << 20))] {
+            let before = lastEvent(); let r = sendModKey("2", mk, mv); usleep(1_200_000)
+            say("AB | Cmd-2 \(mk)=0x\(String(mv, radix: 16)) \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+            if lastEvent() != before { break }
+        }
+        for k in ["UIKeyInputDownArrow", "UIKeyInputDownArrow", "\r", " "] {
+            let before = lastEvent(); let r = sendKey(k); usleep(900_000)
+            say("AB | table key \(k == "\r" ? "Return" : k == " " ? "Space" : k) \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+        if bg { say("AB | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
+    }
+    // AD: native focus then arrows (selection follows focus?) on cell and tab, plus Tab key between groups.
+    func focusArrowRoute(_ bg: Bool) {
+        launchArgs = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        start(background: bg); sleep(2)
+        let fb = bg ? frontSummary() : "-"
+        let targets: [(String, (XCUIElementSnapshot) -> Bool)] = [
+            ("table cell", { $0.elementType == .cell }),
+            ("tab Controls", { $0.label == "Controls" && $0.elementType == .button }),
+            ("UIButton plain", { $0.label == "Push level 2" && $0.elementType == .button }),
+        ]
+        for (name, pred) in targets {
+            guard let e = find(snap(), pred) else { say("AD | \(name) | not found"); continue }
+            let f = act(e, 2044, nil); usleep(1_500_000)
+            say("AD | \(name) | 2044 \(f.prefix(10)) focus '\(focusNow())'")
+            for k in ["UIKeyInputDownArrow", "UIKeyInputRightArrow", "UIKeyInputUpArrow", "UIKeyInputLeftArrow", "\r", " "] {
+                let before = lastEvent(); let r = sendKey(k); usleep(1_000_000)
+                say("AD | \(name) | key \(k == "\r" ? "Return" : k == " " ? "Space" : k) \(r) | focus '\(focusNow())' | handler: \(lastEvent() == before ? "none" : lastEvent())")
+            }
+        }
+        if bg { say("AD | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
+    }
+    func testAD_focusArrowsForeground() { focusArrowRoute(false) }
+    func testAC_modifierProbe() {
+        launchArgs = []; start(background: false); sleep(2)
+        for (mk, mv) in [("modifierState", UInt(1 << 20)), ("modifierState", UInt(1 << 16)), ("gsModifierState", UInt(1 << 16)), ("gsModifierState", UInt(1 << 20)), ("modifierState", UInt(0x10)), ("gsModifierState", UInt(0x10))] {
+            let before = lastEvent(); let r = sendModKey("k", mk, mv); usleep(900_000)
+            say("AC | k + \(mk)=0x\(String(mv, radix: 16)) \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+        var before = lastEvent(); fixture.typeKey("k", modifierFlags: .command); sleep(1)
+        say("AC | hardware Cmd-K | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        before = lastEvent(); fixture.typeKey("2", modifierFlags: .command); sleep(1)
+        say("AC | hardware Cmd-2 | handler: \(lastEvent() == before ? "none" : lastEvent())")
+    }
+    func testAB_noFocusKeysForeground() { noFocusKeys(false) }
+    func testAB_noFocusKeysBackground() { noFocusKeys(true) }
     func testAA_switchKeysForeground() { switchKeyRoute(false, args: true) }
     func testAA_switchKeysBackground() { switchKeyRoute(true, args: true) }
     func testAA_switchKeysBackgroundNoArg() { switchKeyRoute(true, args: false) }
