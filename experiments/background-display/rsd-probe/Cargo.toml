@@ -1,0 +1,14 @@
+[package]
+name = "rsd-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Opens its own userspace CoreDevice tunnel (as Poki Setup does), prints the RSD service
+# list with advertised properties, and sends only an empty handshake to named services.
+[dependencies]
+idevice = { version = "=0.1.68", default-features = false, features = ["aws-lc", "usbmuxd", "core_device_proxy", "rsd", "tunnel_tcp_stack", "xpc"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
+
+[profile.dev]
+debug = 0
