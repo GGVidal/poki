@@ -222,7 +222,7 @@ final class AppModel {
     let host = AppCoreHost()
     let autoUnlock = AutoUnlock()
     // The 0.4.7 candidate keeps Automatic Unlock off, including existing opt-ins.
-    private static let automaticUnlockAvailable = false
+    nonisolated static let automaticUnlockAvailable = false
     var supportsAutoUnlock: Bool { Self.automaticUnlockAvailable && UIDevice.current.userInterfaceIdiom == .phone }
     /// Poki Runner or Poki's own process, fixed for this launch (Debug tab).
     let automationPath = AutomationPath.current
@@ -2163,13 +2163,13 @@ final class AppModel {
     }
 
     /// `conversation`: the chat a `skills` call comes from (a note keeps it as where it was heard).
-    func runToolOutcome(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil, conversation: String? = nil, localTask: String? = nil, onActionSucceeded: PokiCore.ActionSucceeded? = nil) async -> ToolRunOutcome {
+    func runToolOutcome(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil, conversation: String? = nil, localTask: String? = nil, offeredMemoryIDs: Set<String> = [], onActionSucceeded: PokiCore.ActionSucceeded? = nil) async -> ToolRunOutcome {
         if name == "status" || name == "skills" || name == "routines" || name == "screen_history" {
             let answer = await core.callTool(name, arguments: arguments, localSession: localSession, conversation: conversation)
             return ToolRunOutcome(answer: answer, failure: nil)
         }
         if probeDriven {
-            let answer = await core.callTool(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps, localTask: localTask, onActionSucceeded: onActionSucceeded)
+            let answer = await core.callTool(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps, localTask: localTask, offeredMemoryIDs: offeredMemoryIDs, onActionSucceeded: onActionSucceeded)
             return ToolRunOutcome(answer: answer, failure: toolFailure(for: answer, tool: name))
         }
         if !sessionOn {
@@ -2186,13 +2186,13 @@ final class AppModel {
             return ToolRunOutcome(answer: answer, failure: sessionOffFailure())
         }
         lastAgentActivity = Date(); lastStepAt = Date()
-        let answer = await core.callTool(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps, localTask: localTask, onActionSucceeded: onActionSucceeded)
+        let answer = await core.callTool(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps, localTask: localTask, offeredMemoryIDs: offeredMemoryIDs, onActionSucceeded: onActionSucceeded)
         return ToolRunOutcome(answer: answer, failure: toolFailure(for: answer, tool: name))
     }
 
     /// `conversation`: the chat a `skills` call comes from (a note keeps it as where it was heard).
-    func runTool(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil, conversation: String? = nil, localTask: String? = nil, onActionSucceeded: PokiCore.ActionSucceeded? = nil) async -> PokiCore.ToolAnswer {
-        await runToolOutcome(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps, conversation: conversation, localTask: localTask, onActionSucceeded: onActionSucceeded).answer
+    func runTool(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil, conversation: String? = nil, localTask: String? = nil, offeredMemoryIDs: Set<String> = [], onActionSucceeded: PokiCore.ActionSucceeded? = nil) async -> PokiCore.ToolAnswer {
+        await runToolOutcome(name, arguments: arguments, localSession: localSession, expectedApps: expectedApps, conversation: conversation, localTask: localTask, offeredMemoryIDs: offeredMemoryIDs, onActionSucceeded: onActionSucceeded).answer
     }
 
     func itemPictures(for card: ResultCard, localTask: String) async -> [String: Data]? {
