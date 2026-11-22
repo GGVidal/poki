@@ -109,8 +109,12 @@ final class AppIconStore {
         return looksLikeBundleID(name) ? name : nil
     }
 
+    /// "com.tencent.xin": reverse-DNS, three parts or more, each of ASCII letters, digits or hyphens
+    /// and at least one longer than a letter, so initials with dots ("A.B.C", "U.S.A") are not ids.
     static func looksLikeBundleID(_ text: String) -> Bool {
-        KnownApps.looksLikeBundleID(text)
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count >= 3 && text.count <= 155 && parts.contains { $0.count > 1 }
+            && parts.allSatisfy { !$0.isEmpty && $0.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" } }
     }
 
     /// The name an app goes by on this iPhone, in its first language (English, Simplified or

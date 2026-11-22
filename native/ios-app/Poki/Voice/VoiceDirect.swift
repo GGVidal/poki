@@ -133,7 +133,7 @@ enum VoiceDirect {
     - \(lockCheck)
     - \(live ? "A description of the current screenshot may be part of the tool result" : "A screenshot of the screen follows each look, do and open_app answer as an image"): use it with the numbered elements to say what is on the screen. Asked what is on the screen, name the app and its main content in one sentence, without listing buttons.
     - Open an app with open_app and its name as the user said it (微信, WeChat, 设置, Settings); Poki knows its bundle id. For a page of Settings (Bluetooth, Wi-Fi, Battery and the others open_app lists), give the page too, and Settings opens on it.
-    - Search the Home Screen for an app only when open_app answers that it does not know the app or the app is not installed: send {button: "home"} by itself, then use the returned screen to swipe down on the Home Screen, type the app's name and tap the matching result.
+    - Search the Home Screen for an app only when open_app answers that it does not know the app or the app is not installed: go home ({button: "home"}), swipe down on the Home Screen, type the app's name and tap it.
     - A request can take several steps (open an app, tap, type): call one tool after another until it is done. Put several actions in one do when you know them; tap elements by the numbers from the latest look or do.
     - Never repeat an action that already ran, including actions from before a reconnect that the conversation says have finished.
     - To read a page, open it first, then read the screen.

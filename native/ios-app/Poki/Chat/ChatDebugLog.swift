@@ -39,20 +39,113 @@ enum ChatDebugLog {
         case stopped
         case timeout
         case invalidArguments = "invalid_arguments"
+        case notSentTunnelDisconnected = "not_sent_tunnel_disconnected"
+        case notSentPairingRequired = "not_sent_pairing_required"
+        case notSentAppPreflight = "not_sent_app_preflight"
+        case notSentScreenEvidence = "not_sent_screen_evidence"
+        case notSentSessionNotReady = "not_sent_session_not_ready"
+        case notSentLocked = "not_sent_locked"
+        case notSentHandoff = "not_sent_handoff"
+        case notSentOwnApp = "not_sent_own_app"
+        case notSentApprovalDeclined = "not_sent_approval_declined"
+        case notSentSplitView = "not_sent_split_view"
+        case notSentTargetRefused = "not_sent_target_refused"
         case notSent = "not_sent"
         case failed
 
         init(answer: String) {
             let a = answer.lowercased()
+            let notSent = a.hasPrefix("not_sent") || a.contains("\nnot_sent")
+                || a.contains("nothing was sent") || a.contains("no requested action was sent")
+                || a.hasPrefix("runner:") || a.contains("\nrunner:")
+                || a.contains("not_hittable") || a.contains("is known on this phone")
             if a.contains("no app with that bundle id is installed") { self = .notInstalled }
             else if a.contains("approval_required") { self = .approval }
-            else if a.contains("busy") { self = .busy }
-            else if a.contains("could not turn on") { self = .sessionOff }
+            else if a.contains("busy") || (notSent && a.contains("still finishing")) { self = .busy }
             else if a.contains("task stopped") { self = .stopped }
             else if a.contains("timed out") || a.contains("timeout") || a.contains("did not answer in time") { self = .timeout }
+            else if notSent, Self.isTunnelDisconnected(a) { self = .notSentTunnelDisconnected }
+            else if notSent, Self.isPairingRequired(a) { self = .notSentPairingRequired }
+            else if a.contains("could not turn on") { self = .sessionOff }
+            else if notSent, Self.isAppPreflight(a) { self = .notSentAppPreflight }
+            else if notSent, Self.isScreenEvidence(a) { self = .notSentScreenEvidence }
+            else if notSent, Self.isSessionNotReady(a) { self = .notSentSessionNotReady }
+            else if notSent, Self.isLocked(a) { self = .notSentLocked }
+            else if notSent, a.contains("step is handed to the owner") { self = .notSentHandoff }
+            else if notSent, a.contains("leave poki first") { self = .notSentOwnApp }
+            else if notSent, Self.isApprovalDeclined(a) { self = .notSentApprovalDeclined }
+            else if notSent, Self.isSplitView(a) { self = .notSentSplitView }
+            else if notSent, Self.isTargetRefused(a) { self = .notSentTargetRefused }
             else if a.contains("not json") || a.contains("must be an array") || a.contains("needs a ") || a.contains("takes ") { self = .invalidArguments }
-            else if a.hasPrefix("not_sent") || a.contains("nothing was sent") { self = .notSent }
+            else if notSent { self = .notSent }
             else { self = .failed }
+        }
+
+        private static func isTunnelDisconnected(_ a: String) -> Bool {
+            a.contains("waiting for the loopback")
+                || a.contains("waiting for the local developer connection")
+                || a.contains("local connection is off")
+                || a.contains("choose and enable a local connection")
+                || a.contains("remote pairing")
+                || a.contains("loopback")
+                || a.contains("10.7.0.1")
+        }
+
+        private static func isPairingRequired(_ a: String) -> Bool {
+            a.contains("refused the pairing")
+                || a.contains("pair this iphone first")
+                || a.contains("pair again in poki's setup")
+                || a.contains("cannot read the pairing file")
+                || a.contains("pairing file is neither")
+        }
+
+        private static func isAppPreflight(_ a: String) -> Bool {
+            a.contains("is known on this phone")
+                || a.contains("apps by name")
+                || a.contains("does not know an app called")
+                || a.contains("could be any of")
+                || a.contains("is not installed on this iphone")
+        }
+
+        private static func isScreenEvidence(_ a: String) -> Bool {
+            a.contains("call look to read the current screen")
+                || a.contains("is not in the latest read")
+                || a.contains("needs a fresh read")
+                || a.contains("the iphone unlocked. no requested action was sent")
+                || a.contains("look at the selected pane")
+        }
+
+        private static func isSessionNotReady(_ a: String) -> Bool {
+            let passcode = AppLocalization.text(AppModel.passcodeConfirmationMessage).lowercased()
+            return a.contains(passcode)
+                || a.contains("open settings › connection")
+                || a.contains("设置 › 连接")
+                || a.contains("設定 › 連線")
+                || a.contains("waiting for automation to be ready")
+                || a.hasPrefix("runner:")
+                || a.contains("\nrunner:")
+        }
+
+        private static func isLocked(_ a: String) -> Bool {
+            a.contains("screen: locked")
+                || a.contains("automatic unlock could not be confirmed")
+        }
+
+        private static func isApprovalDeclined(_ a: String) -> Bool {
+            a.contains("declined on the phone")
+                || a.contains("approval request ended unanswered")
+                || a.contains("did not allow it on the phone in time")
+        }
+
+        private static func isSplitView(_ a: String) -> Bool {
+            a.contains("split view")
+                || a.contains("two visible apps")
+                || a.contains("already dropped")
+        }
+
+        private static func isTargetRefused(_ a: String) -> Bool {
+            a.contains("not_hittable")
+                || (a.hasPrefix("path:") && a.contains("nothing was sent"))
         }
     }
 
@@ -106,8 +199,21 @@ enum ChatDebugLog {
             let word = (value as? String) ?? ((value as? [String: Any])?["direction"] as? String)
             switch kind {
             case "launch":
-                let bundle = (value as? String) ?? ((value as? [String: Any])?["bundle"] as? String)
-                return bundle.flatMap { isKnownApp($0) ? "launch \($0)" : nil } ?? "launch"
+                if let given = value as? String {
+                    return isKnownApp(given) ? "launch \(given)" : "launch"
+                }
+                if let spec = value as? [String: Any] {
+                    if let bundle = spec["bundle"] as? String {
+                        return isKnownApp(bundle) ? "launch bundle \(bundle)" : "launch bundle"
+                    }
+                    if spec["name"] as? String != nil {
+                        return "launch name"
+                    }
+                    if let app = spec["app"] as? String {
+                        return isKnownApp(app) ? "launch \(app)" : "launch"
+                    }
+                }
+                return "launch"
             case "button", "key", "swipe":
                 return word.flatMap { directions[kind]?.contains($0) == true ? "\(kind) \($0)" : nil } ?? kind
             default:

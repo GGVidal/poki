@@ -53,6 +53,14 @@ enum DynamicApps {
         lock.withLock { byID[id.lowercased()]?.name }
     }
 
+    /// The installed app's bundle id when `id` matches it exactly.
+    static func installedID(forID id: String) -> String? {
+        lock.withLock {
+            guard let entry = byID[id.lowercased()], entry.id == id else { return nil }
+            return entry.id
+        }
+    }
+
     /// The installed User apps whose name no other installed app shares: the ones a name can stand for.
     static var uniquelyNamedUserApps: [Entry] {
         lock.withLock { entries.filter { $0.user && byName[$0.name.lowercased()]?.caseInsensitiveCompare($0.id) == .orderedSame } }
@@ -75,14 +83,6 @@ extension KnownApps {
         return DynamicApps.id(forName: given)
     }
 
-    /// "com.tencent.xin": reverse-DNS, three parts or more, each of ASCII letters, digits or hyphens
-    /// and at least one longer than a letter, so initials with dots ("A.B.C", "U.S.A") are not ids.
-    static func looksLikeBundleID(_ text: String) -> Bool {
-        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
-        return parts.count >= 3 && text.count <= 155 && parts.contains { $0.count > 1 }
-            && parts.allSatisfy { !$0.isEmpty && $0.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" } }
-    }
-
     static func installedLaunchID(_ given: String) -> String? {
         let name = given.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
@@ -91,17 +91,13 @@ extension KnownApps {
            let installedID = proxy.perform(identifier)?.takeUnretainedValue() as? String, installedID == name {
             return installedID
         }
-        if DynamicApps.name(forID: name) != nil { return name }
+        if let installedID = DynamicApps.installedID(forID: name) { return installedID }
         if let id = byName[name.lowercased()], let app = byID[id.lowercased()],
            let installed = app.ids.first(where: isInstalledOnPhone)
             ?? app.ids.first(where: { DynamicApps.name(forID: $0) != nil }) {
             return installed
         }
-        if let id = DynamicApps.id(forName: name) { return id }
-        if (name.contains(".") && byID[name.lowercased()] != nil) || looksLikeBundleID(name) {
-            return name
-        }
-        return nil
+        return DynamicApps.id(forName: name)
     }
 
     private static func isInstalledOnPhone(_ id: String) -> Bool {
