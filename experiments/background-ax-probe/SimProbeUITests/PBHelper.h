@@ -18,10 +18,17 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable id)keyEvent:(NSString *)input down:(BOOL)down modifierKey:(NSString *)key modifierValue:(NSUInteger)value;
 + (NSString *)directAction:(NSInteger)action value:(nullable id)value onSnapshot:(id)snapshot;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(nullable id)value error:(NSString * _Nullable * _Nullable)error;
++ (nullable id)paramAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(nullable id)param error:(NSError * _Nullable * _Nullable)err;
++ (NSString *)rawParamAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(nullable id)param;
++ (NSString *)setAXTimeout:(double)t;
++ (NSString *)daemonParamAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(nullable id)param;
++ (nullable id)paramAttributeString:(NSString *)attr onSnapshot:(id)snap parameter:(nullable id)param error:(NSError * _Nullable * _Nullable)err;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;
 + (NSString *)setFullKeyboardAccess:(BOOL)on;
 + (NSString *)daemonActivate:(NSString *)bundleID timeout:(NSTimeInterval)t;
 + (NSString *)synthTapAt:(CGPoint)p timeout:(NSTimeInterval)t;
 + (NSString *)setReduceMotion:(BOOL)on;
++ (int)pidAtPoint:(CGPoint)p;
++ (nullable id)keyEventUsagePage:(NSUInteger)page usage:(NSUInteger)usage input:(NSString *)input down:(BOOL)down;
 @end
 NS_ASSUME_NONNULL_END

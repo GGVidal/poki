@@ -231,6 +231,73 @@
     @catch (NSException *x) { return [NSString stringWithFormat:@"exception %@", x.reason]; }
 }
 
++ (id)paramAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(id)param error:(NSError **)err {
+    id el = [snap valueForKey:@"accessibilityElement"];
+    id ax = [self ax];
+    SEL s = NSSelectorFromString(@"parameterizedAttribute:forElement:parameter:error:");
+    if (![ax respondsToSelector:s]) { if (err) *err = [NSError errorWithDomain:@"PB" code:1 userInfo:@{NSLocalizedDescriptionKey:@"no selector"}]; return nil; }
+    typedef id (*F)(id, SEL, id, id, id, NSError **);
+    return ((F)objc_msgSend)(ax, s, @(attr), el, param, err);
+}
+
++ (NSString *)rawParamAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(id)param {
+    id el = [snap valueForKey:@"accessibilityElement"];
+    SEL axs = NSSelectorFromString(@"AXUIElement");
+    if (![el respondsToSelector:axs]) return @"no AXUIElement";
+    const void *ref = (__bridge const void *)((id (*)(id, SEL))objc_msgSend)(el, axs);
+    if (!ref) return @"no AXUIElement";
+    typedef int (*C)(const void *, long, const void *, const void **);
+    C f = (C)dlsym(RTLD_DEFAULT, "AXUIElementCopyParameterizedAttributeValue");
+    if (!f) return @"no symbol";
+    const void *out = NULL;
+    int e = f(ref, (long)attr, (__bridge const void *)param, &out);
+    return [NSString stringWithFormat:@"err %d value %@", e, out ? (__bridge id)out : @"nil"];
+}
+
++ (id)paramAttributeString:(NSString *)attr onSnapshot:(id)snap parameter:(id)param error:(NSError **)err {
+    id el = [snap valueForKey:@"accessibilityElement"];
+    id ax = [self ax];
+    SEL s = NSSelectorFromString(@"parameterizedAttribute:forElement:parameter:error:");
+    if (![ax respondsToSelector:s]) { if (err) *err = [NSError errorWithDomain:@"PB" code:1 userInfo:@{NSLocalizedDescriptionKey:@"no selector"}]; return nil; }
+    typedef id (*F)(id, SEL, id, id, id, NSError **);
+    return ((F)objc_msgSend)(ax, s, attr, el, param, err);
+}
+
++ (NSString *)daemonParamAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(id)param {
+    Class cls = NSClassFromString(@"XCTRunnerDaemonSession");
+    id session = ((id (*)(id, SEL))objc_msgSend)(cls, NSSelectorFromString(@"sharedSession"));
+    id proxy = ((id (*)(id, SEL))objc_msgSend)(session, NSSelectorFromString(@"daemonProxy"));
+    SEL s = NSSelectorFromString(@"_XCT_fetchParameterizedAttributeForElement:attributes:parameter:reply:");
+    if (!proxy) return @"no proxy";
+    if (![proxy respondsToSelector:s]) {
+        NSMutableArray *found = [NSMutableArray array];
+        for (NSString *n in @[@"_XCT_fetchParameterizedAttribute:forElement:parameter:reply:", @"_XCT_fetchParameterizedAttributeForElement:attributes:parameter:reply:"])
+            if ([proxy respondsToSelector:NSSelectorFromString(n)]) [found addObject:n];
+        NSString *caps = @"";
+        SEL rc = NSSelectorFromString(@"remoteInterfaceCapabilities");
+        if ([session respondsToSelector:rc]) caps = [((id (*)(id, SEL))objc_msgSend)(session, rc) description];
+        return [NSString stringWithFormat:@"no selector; responds %@; caps %@", found, caps];
+    }
+    id el = [snap valueForKey:@"accessibilityElement"];
+    __block NSString *res = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    ((void (*)(id, SEL, id, id, id, void (^)(id, NSError *)))objc_msgSend)(proxy, s, el, @(attr), param, ^(id value, NSError *error) {
+        if (error) res = [NSString stringWithFormat:@"err %@", error];
+        else res = [NSString stringWithFormat:@"ok class %@ len %lu", value ? NSStringFromClass([value class]) : @"nil", (unsigned long)[[value description] length]];
+        dispatch_semaphore_signal(sem);
+    });
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC))) return @"timeout";
+    return res;
+}
+
++ (NSString *)setAXTimeout:(double)t {
+    id ax = [self ax]; SEL s = NSSelectorFromString(@"setAXTimeout:error:");
+    if (![ax respondsToSelector:s]) return @"no selector";
+    NSError *e = nil; typedef BOOL (*F)(id, SEL, double, NSError **);
+    BOOL ok = ((F)objc_msgSend)(ax, s, t, &e);
+    return [NSString stringWithFormat:@"ok %d err %@", ok, e];
+}
+
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(id)value error:(NSString **)error {
     id ax = [self ax];
     id element = nil;
@@ -300,5 +367,26 @@
     BOOL (*get)(void) = dlsym(h ?: RTLD_DEFAULT, "_AXSReduceMotionEnabled");
     if (!set || !get) return @"missing";
     set(on); usleep(300000); return [NSString stringWithFormat:@"reduceMotion=%d", get()];
+}
++ (int)pidAtPoint:(CGPoint)p {
+    id proxy = [self daemonProxy]; if (!proxy) return -2;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0); __block int pid = -1;
+    void (^reply)(id, id) = ^(id el, id err) {
+        if (el && [el respondsToSelector:NSSelectorFromString(@"processIdentifier")]) pid = ((int (*)(id, SEL))objc_msgSend)(el, NSSelectorFromString(@"processIdentifier"));
+        dispatch_semaphore_signal(sem); };
+    ((void (*)(id, SEL, CGPoint, id))objc_msgSend)(proxy, NSSelectorFromString(@"_XCT_requestElementAtPoint:reply:"), p, reply);
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)));
+    return pid;
+}
++ (id)keyEventUsagePage:(NSUInteger)page usage:(NSUInteger)usage input:(NSString *)input down:(BOOL)down {
+    [self loadAXU];
+    id rep = ((id (*)(id, SEL, unsigned))objc_msgSend)(NSClassFromString(@"AXEventRepresentation"), NSSelectorFromString(@"keyRepresentationWithType:"), down ? 4500 : 4501);
+    id info = [NSClassFromString(@"AXEventKeyInfoRepresentation") new];
+    ((void (*)(id, SEL, id))objc_msgSend)(info, NSSelectorFromString(@"setUnmodifiedInput:"), input);
+    ((void (*)(id, SEL, id))objc_msgSend)(info, NSSelectorFromString(@"setModifiedInput:"), input);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(info, NSSelectorFromString(@"setKeyDown:"), down);
+    @try { [info setValue:@(usage) forKey:@"keyCode"]; [info setValue:@(page) forKey:@"usagePage"]; } @catch (NSException *e) { NSLog(@"SIMPROBE usage KVC failed %@", e); }
+    ((void (*)(id, SEL, id))objc_msgSend)(rep, NSSelectorFromString(@"setKeyInfo:"), info);
+    return ((id (*)(id, SEL))objc_msgSend)(rep, NSSelectorFromString(@"dataRepresentation"));
 }
 @end
