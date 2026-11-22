@@ -450,11 +450,14 @@ an outside way into `_keyboardActivate`, which only the switch's FKA key command
   `UISwitchAccessibility _fkaSwitchOn/_fkaSwitchOff` and `UIStepperAccessibility` key-command plus/minus. `_enqueueHIDEvent:` is called only by
   `_keyboardActivate` and `_UIRemoteViewControllerLegacyImpl __trampolineButtonPressData:`. So there's no outside path to an in-process tap
   for buttons, cells or tabs.
-- Round trip (fixture in background → `activate()` → `XCUIElement.tap()` on the plain button → `Settings.activate()`), 3 runs:
+- Round trip (rejected by the owner; record only) (fixture in background → `activate()` → `XCUIElement.tap()` on the plain button → `Settings.activate()`), 3 runs:
   to front 74–104 ms (call return; the switch animation continues), tap until handler 4.3–6.3 s (XCTest's element query and idle waits),
   back to Settings 0.28–1.2 s; total 4.7–7.1 s. The owner sees the fixture come to the front for the whole tap leg.
 
 ### Fast round trip (simulator 27.3, fixture), 2026-11-22 ET
+
+> **Rejected by the owner (2026-11-22):** Poki must never bring an app to the foreground to deliver actions. This section and the
+> round-trip timing above are kept only as a record. Not a design option.
 
 Path: element frame from the background snapshot → `fixture.activate()` → tap synthesized at that point with
 `-[XCSynthesizedEventRecord synthesizeWithError:]` (XCTest's authorized path; calling the daemon's `_XCT_synthesizeEvent:` directly from the runner was refused:
