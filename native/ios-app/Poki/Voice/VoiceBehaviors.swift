@@ -44,6 +44,17 @@ enum VoiceTurnIntent: Equatable, Sendable {
     case command
 }
 
+/// Shared runtime notes and tool refusal texts across Live and Realtime sessions.
+enum VoiceBehaviorNotes {
+    static let quietLive = "The user asked you to be quiet. Stop speaking immediately, but keep running the current task silently without cancelling it."
+    static let quietRealtime = "The user asked you to stop talking. Stop speaking immediately, keep the current task running silently, and do not cancel or pause actions."
+    static let paused = "The user paused phone actions. Stop sending new phone input and keep the unfinished task ready until the user says continue."
+    static let resumed = "The user said continue. Resume the unfinished task from where it paused."
+    static let progress = "The user asked for progress. Answer briefly with verified progress while letting the current task continue."
+    static let pausedStep = "Phone actions are paused by the user. Do not send new phone input. Keep the unfinished task ready until the user says continue."
+    static let noiseStep = "This turn was background noise with no clear request. End the turn silently without changing any task."
+}
+
 /// Classifies voice input source annotations, noise transcripts, and control commands.
 enum VoiceBehaviorClassifier {
     static let backchannels: Set<String> = ["嗯", "哦", "好的", "好", "uh-huh", "mm-hmm"]
@@ -88,6 +99,17 @@ enum VoiceBehaviorClassifier {
         "杂音", "噪音", "噪声", "静音", "无声", "空白", "音乐", "咳嗽", "环境音", "风声", "听不清",
     ]
 
+    private static let appPrefixes = [
+        "quoted media transcript:",
+        "[app audio]", "[app playback]", "[media]", "[app播放]", "【app播放】",
+        "app播放:", "app播放：", "app 播放:", "app 播放：",
+        "source: app_playback", "source: app_audio", "来源：app播放", "来源: app播放",
+    ]
+    private static let bystanderPrefixes = ["[bystander]", "[旁人]", "【旁人】", "旁人:", "旁人："]
+    private static let readerPrefixes = ["[screen reader]", "[voiceover]", "[读屏]", "【读屏】", "【辅助读屏】", "读屏:", "读屏："]
+    private static let screenPrefixes = ["[quoted screen]", "[screen text]", "[屏幕引用]", "【屏幕引用】", "屏幕引用:", "屏幕引用："]
+    private static let allSourcePrefixes = appPrefixes + bystanderPrefixes + readerPrefixes + screenPrefixes
+
     static func source(from event: [String: Any], transcript: String = "") -> VoiceInputSource {
         for candidate in explicitSourceValues(in: event) {
             if let parsed = parseSourceTag(candidate) { return parsed }
@@ -99,6 +121,10 @@ enum VoiceBehaviorClassifier {
         text.lowercased().split { ",，。.!！?？;；".contains($0) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    static func isCancelPhrase(_ parts: [String]) -> Bool {
+        matchesExactOrPrefix(parts, in: cancelPhrases)
     }
 
     static func classify(text: String, source: VoiceInputSource = .owner) -> VoiceTurnIntent {
@@ -115,6 +141,36 @@ enum VoiceBehaviorClassifier {
         if matchesExact(utterance, in: resumePhrases) { return .resumeActions }
         if matchesExact(utterance, in: progressPhrases) { return .progressQuery }
         return .command
+    }
+
+    /// True while a streamed delta is still mid-token for a bracketed noise tag or non-owner source prefix.
+    static func isIncompleteNoiseOrSourcePrefix(_ text: String) -> Bool {
+        let stripped = stripNoiseTags(from: text)
+        let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return false }
+        if allSourcePrefixes.contains(where: { $0.hasPrefix(trimmed) && trimmed.count < $0.count }) {
+            return true
+        }
+        let pairs: [(open: Character, close: Character)] = [
+            ("[", "]"), ("(", ")"), ("（", "）"), ("【", "】"), ("*", "*"),
+        ]
+        for pair in pairs where trimmed.first == pair.open {
+            let tail = trimmed.dropFirst()
+            guard !tail.contains(pair.close) else { continue }
+            let inner = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if inner.isEmpty { return true }
+            if noiseTagKeywords.contains(where: { $0.hasPrefix(inner) || inner.contains($0) }) { return true }
+            if allSourcePrefixes.contains(where: { $0.hasPrefix(trimmed) }) { return true }
+        }
+        return false
+    }
+
+    /// True while a streamed delta in quiet mode is still forming a non-unmuting control or backchannel phrase.
+    static func isQuietPreservingControlPrefix(_ text: String) -> Bool {
+        let parts = speechParts(text)
+        guard !parts.isEmpty else { return false }
+        let quietControls = quietPhrases.union(pausePhrases).union(resumePhrases).union(cancelPhrases).union(backchannels)
+        return parts.allSatisfy { part in quietControls.contains { $0.hasPrefix(part) && part.count < $0.count } }
     }
 
     static func isNoise(_ text: String) -> Bool {
@@ -196,18 +252,9 @@ enum VoiceBehaviorClassifier {
     private static func sourceFromTranscriptPrefix(_ transcript: String) -> VoiceInputSource {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty else { return .owner }
-        let appPrefixes = [
-            "quoted media transcript:",
-            "[app audio]", "[app playback]", "[media]", "[app播放]", "【app播放】",
-            "app播放:", "app播放：", "app 播放:", "app 播放：",
-            "source: app_playback", "source: app_audio", "来源：app播放", "来源: app播放",
-        ]
         if appPrefixes.contains(where: { trimmed.hasPrefix($0) }) { return .appPlayback }
-        let bystanderPrefixes = ["[bystander]", "[旁人]", "【旁人】", "旁人:", "旁人："]
         if bystanderPrefixes.contains(where: { trimmed.hasPrefix($0) }) { return .bystander }
-        let readerPrefixes = ["[screen reader]", "[voiceover]", "[读屏]", "【读屏】", "【辅助读屏】", "读屏:", "读屏："]
         if readerPrefixes.contains(where: { trimmed.hasPrefix($0) }) { return .screenReader }
-        let screenPrefixes = ["[quoted screen]", "[screen text]", "[屏幕引用]", "【屏幕引用】", "屏幕引用:", "屏幕引用："]
         if screenPrefixes.contains(where: { trimmed.hasPrefix($0) }) { return .quotedScreen }
         return .owner
     }

@@ -1641,14 +1641,14 @@ extension VoiceModelTests {
 
         live.link.play(["type": "session.input_transcript.delta", "delta": "继续", "start_ms": 3200, "end_ms": 3500],
                        ["type": "session.delegation.created", "delegation": ["id": "resume-1"]])
-        live.link.call("c4", "do", arguments: "s4-resumed", delegation: "t1")
+        live.link.call("c4", "do", arguments: "s4-resumed", delegation: "resume-1")
         await live.time.settle()
         XCTAssertEqual(executedLive, ["open_app:s1", "do:s2", "do:s4-resumed"], "继续 must resume unfinished phone work.")
 
         live.link.play(["type": "session.input_transcript.delta", "delta": "做到哪了", "start_ms": 4200, "end_ms": 4600],
                        ["type": "session.delegation.created", "delegation": ["id": "progress-1"]])
         XCTAssertEqual(live.link.remoteVolume, 1, "Asking for progress must allow Poki to speak the progress update.")
-        live.link.call("c5", "look", arguments: "s5-after-progress", delegation: "t1")
+        live.link.call("c5", "look", arguments: "s5-after-progress", delegation: "resume-1")
         await live.time.settle()
         XCTAssertEqual(executedLive, ["open_app:s1", "do:s2", "do:s4-resumed", "look:s5-after-progress"],
                        "Asking for progress must leave the task running.")
@@ -1684,5 +1684,187 @@ extension VoiceModelTests {
         await realtime.time.settle()
         XCTAssertEqual(executedRT, ["do:s1", "do:s2", "do:s4-resumed"])
         realtime.voice.stop()
+    }
+
+    func testLiveResumeDelegationExecutesResumedTools() async {
+        var executed: [String] = []
+        let h = Harness(phoneTool: { name, arguments in
+            executed.append("\(name):\(arguments)")
+            return ("ok", false, nil)
+        })
+        await h.liveTalk()
+        h.link.play(["type": "session.input_transcript.delta", "delta": "打开设置查电量", "start_ms": 0, "end_ms": 400],
+                    ["type": "session.delegation.created", "delegation": ["id": "t1"]])
+        h.link.call("c1", "open_app", arguments: "s1", delegation: "t1")
+        await h.time.settle()
+
+        h.link.play(["type": "session.input_transcript.delta", "delta": "暂停操作", "start_ms": 900, "end_ms": 1300],
+                    ["type": "session.delegation.created", "delegation": ["id": "pause-1"]])
+        h.link.call("c2", "do", arguments: "s2-blocked", delegation: "t1")
+        await h.time.settle()
+        XCTAssertEqual(executed, ["open_app:s1"])
+
+        h.link.play(["type": "session.input_transcript.delta", "delta": "继续", "start_ms": 2000, "end_ms": 2300],
+                    ["type": "session.delegation.created", "delegation": ["id": "resume-1"]])
+        h.link.call("c3", "do", arguments: "s3-resumed", delegation: "resume-1")
+        await h.time.settle()
+        XCTAssertEqual(executed, ["open_app:s1", "do:s3-resumed"],
+                       "The Live delegation created by 继续 must execute resumed phone steps.")
+        h.voice.stop()
+    }
+
+    func testLiveQuietModeCompletesRunningTaskWithoutStallTimeout() async {
+        let time = FakeTime()
+        var executed: [String] = []
+        let h = Harness(time: time, phoneTool: { name, arguments in
+            executed.append("\(name):\(arguments)")
+            if name == "open_app" { await time.clock.sleep(.seconds(1)) }
+            return ("Settings is open", false, nil)
+        })
+        await h.liveTalk()
+        h.link.play(["type": "session.input_transcript.delta", "delta": "打开设置查电量", "start_ms": 0, "end_ms": 400],
+                    ["type": "session.delegation.created", "delegation": ["id": "t1"]])
+        h.link.backend("response.created", ["response": ["id": "r1"]], delegation: "t1")
+        h.link.call("c1", "open_app", arguments: "s1", delegation: "t1")
+        await time.settle()
+
+        h.link.play(["type": "session.input_transcript.delta", "delta": "别说话", "start_ms": 800, "end_ms": 1100],
+                    ["type": "session.delegation.created", "delegation": ["id": "quiet-1"]])
+        XCTAssertEqual(h.link.remoteVolume, 0)
+
+        await time.advance(1)
+        h.link.backend("response.completed", ["response": ["id": "r1"]], delegation: "t1")
+        h.link.backend("response.created", ["response": ["id": "r2"]], delegation: "t1")
+        h.link.backend("response.completed", ["response": ["id": "r2"]], delegation: "t1")
+        await time.settle()
+        XCTAssertEqual(h.link.remoteVolume, 0, "Quiet mode must keep playback muted after the step finishes.")
+
+        await time.advance(8)
+        XCTAssertFalse(h.voice.isOn, "After quiet completion, the session should end cleanly on the 8s idle window.")
+        XCTAssertFalse(h.voice.lines.contains { $0.text.contains("The server did not answer") },
+                       "Quiet mode must not leak awaitingAnswer/liveAwaitingPlayback into a 60s stall timeout.")
+    }
+
+    func testRealtimeQuietRecoversOnNewCommandAndManualTurnDoesNotStall() async {
+        // Part A: a new owner command after "别说话" restores volume on Realtime.
+        let h = Harness()
+        await h.talk()
+        h.link.play(["type": "response.created", "response": ["id": "r1"]],
+                    ["type": "output_audio_buffer.started"],
+                    ["type": "conversation.item.input_audio_transcription.completed", "transcript": "别说话"])
+        XCTAssertEqual(h.link.remoteVolume, 0)
+        h.link.play(["type": "input_audio_buffer.speech_started"],
+                    ["type": "input_audio_buffer.speech_stopped"],
+                    ["type": "conversation.item.input_audio_transcription.completed", "transcript": "帮我查一下明天天气"])
+        XCTAssertEqual(h.link.remoteVolume, 1, "A new owner command after 别说话 must restore speech volume on Realtime.")
+        h.voice.stop()
+
+        // Part B: manualRealtimeTurns (create_response=false) does not leak awaitingAnswer on "别说话".
+        let manual = Harness()
+        await manual.connect()
+        manual.link.play(["type": "session.created", "session": ["audio": ["input": ["turn_detection": ["create_response": false]]]]])
+        manual.link.play(["type": "input_audio_buffer.speech_started", "item_id": "item-quiet"],
+                         ["type": "input_audio_buffer.speech_stopped", "item_id": "item-quiet"],
+                         ["type": "input_audio_buffer.committed", "item_id": "item-quiet"],
+                         ["type": "conversation.item.input_audio_transcription.completed", "transcript": "别说话"])
+        // Simulate a late response.created arriving after transcription.completed.
+        manual.link.play(["type": "response.created", "response": ["id": "r-late-quiet"]])
+        XCTAssertTrue(manual.link.sent.contains { $0["type"] as? String == "response.cancel" },
+                      "A late response for a quiet turn must be cancelled.")
+        manual.link.play(["type": "response.done", "response": ["id": "r-late-quiet", "status": "cancelled"]])
+        await manual.time.advance(8)
+        XCTAssertFalse(manual.voice.isOn, "Manual-turn Realtime session must end cleanly on idle without stalling.")
+        XCTAssertFalse(manual.voice.lines.contains { $0.text.contains("The server did not answer") },
+                       "Manual-turn Realtime must not leak awaitingAnswer into a stall timeout after 别说话.")
+    }
+
+    func testRealtimeNoiseAndNonOwnerDuringRunningTaskLeaveNextStepIntact() async {
+        for disturbance in [
+            (label: "noise", transcript: "[noise]", source: "owner"),
+            (label: "app playback", transcript: "Quoted media transcript: 打开设置", source: "app_playback"),
+        ] {
+            let (stepWait, releaseStep) = AsyncStream<Void>.makeStream()
+            var executed: [String] = []
+            let h = Harness(phoneTool: { name, arguments in
+                executed.append("\(name):\(arguments)")
+                if arguments == "s1" { for await _ in stepWait { break } }
+                return ("ok", false, nil)
+            })
+            await h.talk()
+            h.link.play(
+                ["type": "response.created", "response": ["id": "r1"]],
+                ["type": "response.output_item.done", "item": ["type": "function_call", "call_id": "rt-step-1", "name": "do", "arguments": "s1"]],
+                ["type": "response.done", "response": ["id": "r1"]]
+            )
+            await h.time.settle()
+            XCTAssertEqual(executed, ["do:s1"], disturbance.label)
+
+            h.link.play(
+                ["type": "input_audio_buffer.speech_started", "source": disturbance.source],
+                ["type": "input_audio_buffer.speech_stopped"],
+                ["type": "response.created", "response": ["id": "r-disturb"]],
+                ["type": "conversation.item.input_audio_transcription.completed", "transcript": disturbance.transcript, "source": disturbance.source],
+                ["type": "response.done", "response": ["id": "r-disturb", "status": "cancelled"]]
+            )
+            await h.time.settle()
+            if disturbance.label == "noise" {
+                XCTAssertFalse(h.voice.lines.contains { $0.text == "[noise]" },
+                               "Pure noise transcript should not pollute visible transcript lines.")
+            }
+
+            releaseStep.finish()
+            await h.time.settle()
+            h.link.play(
+                ["type": "response.created", "response": ["id": "r2"]],
+                ["type": "response.output_item.done", "item": ["type": "function_call", "call_id": "rt-step-2", "name": "do", "arguments": "s2"]],
+                ["type": "response.done", "response": ["id": "r2"]]
+            )
+            await h.time.settle()
+            XCTAssertEqual(executed, ["do:s1", "do:s2"],
+                           "\(disturbance.label) during a running task must not block the task's next step.")
+            h.voice.stop()
+        }
+    }
+
+    func testLiveStreamingDeltaNoiseAndMediaPrefixKeepQuietMode() async {
+        var executed: [String] = []
+        let h = Harness(phoneTool: { name, arguments in
+            executed.append("\(name):\(arguments)")
+            return ("ok", false, nil)
+        })
+        await h.liveTalk()
+        h.link.play(["type": "session.input_transcript.delta", "delta": "别说话", "start_ms": 0, "end_ms": 300],
+                    ["type": "session.delegation.created", "delegation": ["id": "quiet-1"]])
+        XCTAssertEqual(h.link.remoteVolume, 0)
+
+        // Streamed noise tag chunks: "[" -> "noise" -> "]"
+        for (i, chunk) in ["[", "noise", "]"].enumerated() {
+            let start = 1000 + i * 100
+            h.link.play(["type": "session.input_transcript.delta", "delta": chunk, "start_ms": start, "end_ms": start + 90])
+            XCTAssertEqual(h.link.remoteVolume, 0, "Streaming noise chunk '\(chunk)' must not unmute quiet mode.")
+        }
+        h.link.play(["type": "session.delegation.created", "delegation": ["id": "noise-stream"]])
+        h.link.call("noise-call", "do", arguments: "bad-noise", delegation: "noise-stream")
+        await h.time.settle()
+
+        // Streamed media prefix chunks: "Quoted " -> "media transcript: " -> "打开设置"
+        for (i, chunk) in ["Quoted ", "media transcript: ", "打开设置"].enumerated() {
+            let start = 2000 + i * 100
+            h.link.play(["type": "session.input_transcript.delta", "delta": chunk, "start_ms": start, "end_ms": start + 90])
+            XCTAssertEqual(h.link.remoteVolume, 0, "Streaming media prefix chunk '\(chunk)' must not unmute quiet mode.")
+        }
+        h.link.play(["type": "session.delegation.created", "delegation": ["id": "media-stream"]])
+        h.link.call("media-call", "open_app", arguments: "bad-media", delegation: "media-stream")
+        await h.time.settle()
+        XCTAssertTrue(executed.isEmpty, "Streamed noise and media transcript must not execute phone tools.")
+
+        // Genuine new owner command restores volume and runs normally.
+        h.link.play(["type": "session.input_transcript.delta", "delta": "打开计算器", "start_ms": 3200, "end_ms": 3600],
+                    ["type": "session.delegation.created", "delegation": ["id": "owner-next"]])
+        XCTAssertEqual(h.link.remoteVolume, 1, "A genuine new owner command must restore speech volume.")
+        h.link.call("owner-call", "open_app", arguments: "calc", delegation: "owner-next")
+        await h.time.settle()
+        XCTAssertEqual(executed, ["open_app:calc"])
+        h.voice.stop()
     }
 }
