@@ -474,3 +474,22 @@ Times are from the fixture's own log (scene willEnterForeground → handler → 
 - Batch in one turn: plain button and push button both fired (about 0.3 s per press, 0.9 s for three presses). The push navigated, so the third press
   (a table row) landed on the next screen. Presses that change the screen need a fresh frame. One batched turn: 1.6 s on screen.
 - Previous app's state (Settings with a search in progress): search text "wi" and the keyboard were both still there after the turn.
+
+### appResize, extended external display, airPlay/pip reasons (reading, 27.3 DDI and simulator runtime)
+
+- **appResize:** dtappserviced (27.3 DDI, build 27C5035i) registers `com.apple.coredevice.feature.resizableappmanagement` and
+  `…streamresizabilitystate` as local Mach services and implements them over SpringBoard's `SBSAppResizingService`
+  (`moveFrontmostAppsToDisplay:preferredSize:resizingCornerRadius:delegate:`, `isResizingPossible`, `SBSAppResizingAssertion`). But the RemoteXPC
+  `com.apple.coredevice.appservice` advertises a static `Features` list in its launchd plist, and neither feature is on it. That's why
+  devicectl answered "does not offer the on-device service". The list is static, so an active display session can't change it.
+  appResize also moves only the frontmost apps.
+- **Extended external display in SpringBoard:** `SBExternalDisplayService` (client: set mirroringEnabled, display arrangement, display mode;
+  connection entitlement-checked), `SBExtendedDisplayController`, `SBExternalDisplayApplicationSceneSpecification`, `isExtendedDisplayCapable`,
+  `displaySupportsExtendedDisplayMode`, an external-display cover sheet, wallpaper and education pill. Gates found: a hardware
+  requirement mask (`SBExternalDisplaySettings.extendedDisplayHardwareRequirementMask`) and, for wireless displays,
+  `allowWirelessDisplaysForExtendedDisplayMode` / `allowWirelessExtendedDisplay` ("Allow Wireless Displays"). Both are in
+  `SBExternalDisplaySettings`, a prototype-settings class with `fakeStorageForWirelessDisplaySupport`, `fakeStorageForUnderpoweredDeviceSupport` and
+  `killSpringBoardOutlet`. That's an internal debug settings pane, not a user setting or a developer-mode option.
+  "[State.WaitingForScenes] --> moving to .invalid because airplay mirroring": with AirPlay mirroring active the external-display scene state machine goes invalid.
+- **airPlay (9) / pip (12):** not fully traced. The SpringBoard strings tie PiP to `SBPIPController` and `SBPIPInterruptionAssertion`/`SBPIPStashAssertion` (the app's
+  PiP content scene), and AirPlay to mirroring state. Neither names a mechanism that keeps an ordinary app's main scene foreground behind another app.
