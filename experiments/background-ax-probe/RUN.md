@@ -83,3 +83,19 @@ Raw lines: `device-run-generality.txt`.
 | c) scrolling | My guessed action numbers did not scroll: 2018 returned ok with no change; 2019, 2020, 2021 and 2008 returned `kAXErrorFailure`. The correct scroll action ids still need finding. |
 
 Notes stayed `runningForeground` (4) and Settings `runningBackground` (3) throughout.
+
+## Round 3 on the phone, 2026-11-22 04:30-04:33 ET
+
+Raw lines (third-party labels redacted): `device-run-round3.txt`. Action ids taken from XCUIAutomation 27.3,
+not guessed: `+[XCUIAccessibilityAction scrollToVisibleAction]` = 2003, `incrementActionForPlatform:` = 2004,
+`decrementActionForPlatform:` = 2005. 2006/2007 as page down/up were a hypothesis.
+
+| Test | Result |
+| - | - |
+| H1 scroll, background Settings | 2006, 2007 and 2003 all returned ok=true, but the tree's first and last labels did not change. **No scrolling observed.** The tree may already hold the whole list (Settings' first list), so this does not separate "scroll ignored" from "nothing to scroll". Open. |
+| H2 two-level navigation | General opened (nav bar "General", back button and About cell present at +2, +10, +30 s, so the first push completed). The About cell (type button) from a **fresh** read after 30 s returned ok=true, but the tree still showed General at +2 and +10 s. Hypothesis (a), a stale element, is ruled out. Open between (b) the second push not completing and (c) the cell needing another action. |
+| H3 attach to a background-launched app | Calculator killed, then launched from the Mac with `devicectl device process launch --no-activate`. It never came to the front (state 2, then 3 once the assertion took). The test attached by bundle id without launching it: assertion granted, read 39-40 elements, **press 5 -> 5, press 5 -> 55**. **Poki does not need to flash the target forward.** |
+| H4a LookUp (third-party) | Background read with Settings in front: 72 elements (word list, tab bar). The tab-switch press was not attempted: my filter found no button children in the tab bar. |
+| H4b Notion (third-party, web-view heavy) | Background read with Settings in front: **354 elements, including the owner's page titles**. No tab bar found. No press. |
+
+The probe runner was uninstalled after the run.

@@ -111,6 +111,122 @@ final class DeviceBackgroundAXTests: XCTestCase {
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.lifetime = .keepAlways; add(shot)
     }
 
+    // ---- H: second generality round (action ids from XCUIAutomation: 2003 scroll-to-visible,
+    // 2004 increment, 2005 decrement; 2006/2007 page down/up are a hypothesis to test).
+    func allLabels(_ s: XCUIElementSnapshot) -> [String] { var o: [String] = []; func w(_ e: XCUIElementSnapshot) { if !e.label.isEmpty { o.append(e.label) }; e.children.forEach(w) }; w(s); return o }
+    func first(_ s: XCUIElementSnapshot, _ where_: (XCUIElementSnapshot) -> Bool) -> XCUIElementSnapshot? {
+        if where_(s) { return s }
+        for c in s.children { if let h = first(c, where_) { return h } }; return nil
+    }
+    func bgSettings(_ tag: String) -> Int32 {
+        let notes = XCUIApplication(bundleIdentifier: "com.apple.mobilenotes")
+        settings.launch()
+        let pid = (settings.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[\(tag)] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        notes.activate(); _ = notes.wait(for: .runningForeground, timeout: 10)
+        return pid
+    }
+
+    func testH1_scroll() {
+        _ = bgSettings("H1")
+        guard let snap = try? settings.snapshot(), let list = first(snap, { [.table, .collectionView, .scrollView].contains($0.elementType) }) else { say("[H1] no list"); return }
+        say("[H1] before: last=\(allLabels(snap).suffix(4))")
+        for a in [2006, 2007, 2006, 2006] {
+            var err: NSString?
+            let ok = PBHelper.pressSnapshot(list, action: a, error: &err)
+            usleep(900_000)
+            let l = (try? settings.snapshot()).map(allLabels) ?? []
+            say("[H1] action \(a) on list ok=\(ok) err=\(err ?? "nil") first=\(l.prefix(3)) last=\(l.suffix(4)) | \(frontName())")
+        }
+        // scroll-to-visible on the last cell currently in the tree
+        if let s2 = try? settings.snapshot() {
+            var cells: [XCUIElementSnapshot] = []
+            func w(_ e: XCUIElementSnapshot) { if e.elementType == .cell { cells.append(e) }; e.children.forEach(w) }; w(s2)
+            if let last = cells.last {
+                var err: NSString?
+                let ok = PBHelper.pressSnapshot(last, action: 2003, error: &err)
+                usleep(900_000)
+                let l = (try? settings.snapshot()).map(allLabels) ?? []
+                say("[H1] scrollToVisible(2003) on '\(last.label)' ok=\(ok) err=\(err ?? "nil") last=\(l.suffix(4))")
+            }
+        }
+    }
+
+    func testH2_navigationTwoLevels() {
+        _ = bgSettings("H2")
+        func cell(_ s: XCUIElementSnapshot, _ label: String) -> XCUIElementSnapshot? { first(s) { ($0.elementType == .cell || $0.elementType == .button) && $0.label == label } }
+        guard let s0 = try? settings.snapshot(), let general = cell(s0, "General") else { say("[H2] General not found"); return }
+        var err: NSString?
+        say("[H2] press General ok=\(PBHelper.pressSnapshot(general, action: 2010, error: &err)) err=\(err ?? "nil")")
+        for w: UInt32 in [2, 10, 30] {
+            sleep(w == 2 ? 2 : (w == 10 ? 8 : 20))
+            guard let s = try? settings.snapshot() else { continue }
+            let nav = first(s) { $0.elementType == .navigationBar }
+            let back = first(s) { $0.elementType == .button && $0.label == "Settings" }
+            say("[H2] +\(w)s navbar=\(nav?.identifier ?? "nil")/\(nav?.label ?? "") back=\(back != nil) aboutCell=\(cell(s, "About") != nil) labels=\(allLabels(s).prefix(8))")
+        }
+        guard let s1 = try? settings.snapshot(), let about = cell(s1, "About") else { say("[H2] About cell not found in fresh read"); return }
+        say("[H2] About element type=\(about.elementType.rawValue) frame=\(about.frame)")
+        say("[H2] press About (fresh) ok=\(PBHelper.pressSnapshot(about, action: 2010, error: &err)) err=\(err ?? "nil")")
+        for w: UInt32 in [2, 10] {
+            sleep(w == 2 ? 2 : 8)
+            let s = try? settings.snapshot()
+            say("[H2] after About +\(w)s labels=\(s.map { allLabels($0).prefix(10) } ?? [])")
+        }
+        // back button
+        if let s = try? settings.snapshot(), let back = first(s, { $0.elementType == .button && ($0.label == "General" || $0.label == "Settings") }) {
+            say("[H2] press back '\(back.label)' ok=\(PBHelper.pressSnapshot(back, action: 2010, error: &err)) err=\(err ?? "nil")")
+            sleep(2)
+            say("[H2] after back labels=\((try? settings.snapshot()).map { allLabels($0).prefix(8) } ?? [])")
+        }
+    }
+
+    // H3: target launched in the background from the Mac (devicectl --no-activate) before this test;
+    // the test attaches by bundle id without launching or activating it.
+    func testH3_attachToBackgroundLaunchedApp() {
+        say("[H3] before attach: \(frontName())")
+        let pid = (target.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[H3] calculator pid=\(pid) state=\(target.state.rawValue)")
+        say("[H3] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        for m: UInt32 in [1, 10] {
+            sleep(m)
+            guard let snap = try? target.snapshot() else { say("[H3] +\(m)s snapshot failed | \(frontName())"); continue }
+            var line = "+\(m)s elements=\(countPublic(snap)) display=\(calcDisplay(snap))"
+            if let k = publicKey(snap, "5") {
+                var err: NSString?
+                let ok = PBHelper.pressSnapshot(k, action: 2010, error: &err)
+                usleep(600_000)
+                line += " press 5 ok=\(ok) display_after=\((try? target.snapshot()).map(calcDisplay) ?? "nil")"
+            }
+            say("[H3] \(line) | \(frontName())")
+        }
+    }
+
+    // H4: third-party apps (read, plus one harmless tab switch), Settings in front.
+    func thirdParty(_ bundle: String, _ tag: String) {
+        let app = XCUIApplication(bundleIdentifier: bundle)
+        app.launch()
+        let pid = (app.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[\(tag)] \(bundle) assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10)
+        sleep(2)
+        guard let snap = try? app.snapshot() else { say("[\(tag)] background snapshot failed | state=\(app.state.rawValue)"); return }
+        say("[\(tag)] background read: elements=\(countPublic(snap)) labels=\(allLabels(snap).prefix(12)) state=\(app.state.rawValue) settings=\(settings.state.rawValue)")
+        if let bar = first(snap, { $0.elementType == .tabBar }) {
+            let tabs = bar.children.filter { $0.elementType == .button }
+            if tabs.count > 1 {
+                var err: NSString?
+                let ok = PBHelper.pressSnapshot(tabs[1], action: 2010, error: &err)
+                sleep(2)
+                let after = (try? app.snapshot()).map { allLabels($0).prefix(12) } ?? []
+                say("[\(tag)] press tab '\(tabs[1].label)' ok=\(ok) err=\(err ?? "nil") -> \(after) | settings=\(settings.state.rawValue)")
+                _ = PBHelper.pressSnapshot(tabs[0], action: 2010, error: nil)
+            } else { say("[\(tag)] tab bar with \(tabs.count) buttons") }
+        } else { say("[\(tag)] no tab bar") }
+    }
+    func testH4a_lookUp() { thirdParty("in.muditbhargava.LookUp", "H4a") }
+    func testH4b_notion() { thirdParty("notion.id", "H4b") }
+
     // G: generality, each its own test. Target Settings in the background, Notes in front.
     func testGa_navigationInBackgroundSettings() {
         let notes = XCUIApplication(bundleIdentifier: "com.apple.mobilenotes")
