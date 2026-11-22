@@ -45,7 +45,7 @@ final class SimFixtureTests: XCTestCase {
     }
 
     func mapActions() {
-        for id in (2001...2040) where id != 2025 {  // 2025 crashes the app (UIAccessibility _accessibilityAnnouncementComplete: nil dictionary)
+        for id in (2001...2069) where id != 2025 {  // 2025 crashes the app (UIAccessibility _accessibilityAnnouncementComplete: nil dictionary)
             guard fixture.state == .runningBackground || fixture.state == .runningForeground else { say("MAP | fixture not running before \(id) (state \(fixture.state.rawValue))"); start(background: background); continue }
             let before = lastEvent()
             let r = act(find(snap()) { $0.identifier == "probeTarget" }, id)
@@ -208,17 +208,61 @@ final class SimFixtureTests: XCTestCase {
     func testPressForTrace() {
         background = false
         fixture.activate()
-        sleep(20)  // time for lldb to attach
+        sleep(60)  // time for lldb to attach
         func byLabel(_ l: String, _ types: [XCUIElement.ElementType]) -> XCUIElementSnapshot? { find(snap()) { $0.label == l && types.contains($0.elementType) } }
         say("TRACE press UIButton: \(act(byLabel("Plain button", [.button]), 2010).prefix(80))")
         sleep(2)
         say("TRACE press ProbeTarget: \(act(find(snap()) { $0.identifier == "probeTarget" }, 2010).prefix(80))")
         sleep(2)
         say("TRACE press UISwitch: \(act(byLabel("Switch", [.switch]), 2010).prefix(80))")
-        sleep(5)
+        sleep(3)
+        say("TRACE AXElement press UIButton: \(byLabel("Plain button", [.button]).map { PBHelper.axElementRoute("press", onSnapshot: $0) } ?? "nf")")
+        sleep(8)
     }
 
     func testBackground() { start(background: true); controls() }
     func testBackgroundMap() { start(background: true); mapActions() }
+    // Q: focus route on bare controls. 2044 = set native focus (mapped), 2036 = secondary activate.
+    func focusRoute(_ bg: Bool) {
+        start(background: bg)
+        func byLabel(_ l: String, _ types: [XCUIElement.ElementType]) -> XCUIElementSnapshot? { find(snap()) { $0.label == l && types.contains($0.elementType) } }
+        let targets: [(String, () -> XCUIElementSnapshot?)] = [("UIButton", { byLabel("Plain button", [.button]) }), ("UISwitch", { byLabel("Switch", [.switch]) }), ("Tab 'Second'", { byLabel("Second", [.button]) })]
+        for (name, locate) in targets {
+            for (id, value) in [(2044, nil), (2010, nil), (2036, nil)] as [(Int, AnyObject?)] {
+                let before = lastEvent(); var err: NSString?
+                let ok = locate().map { PBHelper.pressSnapshot($0, action: id, value: value, error: &err) } ?? false
+                usleep(700_000)
+                say("Q | \(name) | \(id) | ok=\(ok) \((err ?? "") as String) | handler: \(lastEvent() == before ? "none" : lastEvent())".prefix(220).description)
+            }
+            for id in [Int]() {
+                for v in [NSNumber(value: 0), NSNumber(value: 1), "activate" as NSString, "select" as NSString] as [AnyObject] {
+                    guard fixture.state == .runningForeground || fixture.state == .runningBackground else { say("Q | fixture died"); start(background: bg); break }
+                    let before = lastEvent(); var err: NSString?
+                    let ok = locate().map { PBHelper.pressSnapshot($0, action: id, value: v, error: &err) } ?? false
+                    usleep(500_000)
+                    let after = lastEvent()
+                    if ok || after != before { say("Q | \(name) | \(id) value=\(v) | ok=\(ok) \((err ?? "") as String) | handler: \(after == before ? "none" : after)".prefix(220).description) }
+                }
+            }
+        }
+        say("Q | done")
+    }
+    func testQ_focusForeground() { focusRoute(false) }
+    func testQ_focusBackground() { focusRoute(true) }
+
+    func testForegroundMap() { start(background: false); mapActions() }
+    func testForegroundMapHigh() { start(background: false); mapRange(Array(4000...4060) + Array(5000...5040) + Array(2070...2120)) }
+    func mapRange(_ ids: [Int]) {
+        for id in ids {
+            if !(fixture.state == .runningForeground || fixture.state == .runningBackground) { say("MAP | fixture died before \(id)"); start(background: background) }
+            let before = lastEvent()
+            let r = act(find(snap()) { $0.identifier == "probeTarget" }, id)
+            usleep(300_000)
+            let alive = fixture.state == .runningForeground || fixture.state == .runningBackground
+            let after = alive ? lastEvent() : "fixture died (state \(fixture.state.rawValue))"
+            if after != before || !r.contains("kAXErrorFailure") { say("MAP | \(id) | \(r.prefix(140)) | \(after == before ? "no entry point" : after)") }
+        }
+        say("MAP | range done")
+    }
     func testForeground() { start(background: false); controls() }
 }

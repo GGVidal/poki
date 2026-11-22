@@ -200,6 +200,20 @@
     return [out componentsJoinedByString:@", "];
 }
 
++ (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(id)value error:(NSString **)error {
+    id ax = [self ax];
+    id element = nil;
+    @try { element = [snapshot valueForKey:@"accessibilityElement"]; } @catch (__unused NSException *x) {}
+    SEL s = NSSelectorFromString(@"performAction:onElement:value:error:");
+    if (!element) { if (error) *error = @"no element"; return NO; }
+    id actionObject = ((id (*)(id, SEL, NSInteger))objc_msgSend)([NSClassFromString(@"XCUIAccessibilityAction") alloc], NSSelectorFromString(@"initWithAXAction:"), action);
+    NSError *err = nil; BOOL ok = NO;
+    @try { ok = ((BOOL (*)(id, SEL, id, id, id, NSError **))objc_msgSend)(ax, s, actionObject, element, value, &err); }
+    @catch (NSException *x) { if (error) *error = [NSString stringWithFormat:@"exception %@", x.reason]; return NO; }
+    if (error) *error = err ? err.localizedDescription : @"none";
+    return ok;
+}
+
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString **)error {
     id ax = [self ax];
     id element = nil;

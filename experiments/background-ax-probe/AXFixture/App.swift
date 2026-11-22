@@ -82,6 +82,12 @@ final class ProbeTarget: UILabel {
     override func accessibilityZoomIn(at point: CGPoint) -> Bool { Fix.log("ax.zoomIn"); return true }
     override func accessibilityZoomOut(at point: CGPoint) -> Bool { Fix.log("ax.zoomOut"); return true }
     override func accessibilityElementDidBecomeFocused() { Fix.log("ax.didBecomeFocused") }
+    // Private entry points found in the app-side dispatcher; logged so action ids can be mapped to them.
+    @objc(_accessibilitySetNativeFocus) func pk_setNativeFocus() -> Bool { Fix.log("ax._accessibilitySetNativeFocus"); return true }
+    @objc(_accessibilityDispatchKeyboardAction:) func pk_dispatchKeyboard(_ v: Any?) -> Bool { Fix.log("ax._accessibilityDispatchKeyboardAction: \(String(describing: v))"); return true }
+    @objc(_accessibilityPerformUserTestingAction:) func pk_userTesting(_ v: Any?) -> Any? { Fix.log("ax._accessibilityPerformUserTestingAction: \(String(describing: v))"); return nil }
+    @objc(_accessibilitySecondaryActivate) func pk_secondary() -> Bool { Fix.log("ax._accessibilitySecondaryActivate"); return true }
+    @objc(_accessibilitySetFocusOnElement:) func pk_setFocusOn(_ v: Any?) { Fix.log("ax._accessibilitySetFocusOnElement: \(String(describing: v))") }
 }
 
 class LoggingController: UIViewController {

@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)handTypeNames;
 + (NSString *)postTapAt:(CGPoint)p contextId:(unsigned)ctx pid:(int)pid displayId:(unsigned)display down:(int)down up:(int)up;
 + (unsigned)contextIdOfSnapshot:(id)snapshot;
++ (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(nullable id)value error:(NSString * _Nullable * _Nullable)error;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;
 @end
 NS_ASSUME_NONNULL_END
