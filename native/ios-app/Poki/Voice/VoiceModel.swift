@@ -746,6 +746,7 @@ final class VoiceModel {
             // Ended while connecting: stop() already put everything back.
             guard number == session, liveCloseTimeout == nil else { return }
             transcript = nil
+            appAudio = nil
             link?.close()
             link = nil
             holdingMicrophone = false

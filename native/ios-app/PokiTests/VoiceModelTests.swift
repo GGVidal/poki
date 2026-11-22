@@ -788,6 +788,25 @@ final class VoiceModelTests: XCTestCase {
         }
     }
 
+    func testConnectFailureReleasesAppAudioContext() async {
+        URLProtocol.registerClass(BridgeTroubleStub.self)
+        defer { URLProtocol.unregisterClass(BridgeTroubleStub.self) }
+        weak var retainedContextToken: NSObject?
+        let h = Harness(recentAppAudio: {
+            let token = NSObject()
+            retainedContextToken = token
+            return .transcript("打开微信", stillCapturing: { token.hash != 0 })
+        })
+        _ = h.voice.setBridge(BridgeTroubleStub.slow)
+        await h.voice.start()
+        await h.time.settle()
+        XCTAssertNil(retainedContextToken, "connect failure must clear appAudio instead of retaining the media context")
+        if case .lost = h.voice.phase {} else {
+            XCTFail("expected .lost after connect failure, got \(h.voice.phase)")
+        }
+        h.voice.stop()
+    }
+
     /// Said once, answered once: the conversation waits 8 s for the person to go on, then ends and lets
     /// go of the microphone, so iOS's microphone dot goes off instead of Poki listening on.
     func testTheConversationEndsWhenNobodySpeaksForEightSecondsAfterTheAnswer() async {
