@@ -29,8 +29,12 @@ enum SensesContext {
             "additionalProperties": false,
         ])
 
-    /// Whether the agent is told about the tool: Screen History is on and the owner lets Poki ask it.
-    @MainActor static var offered: Bool { SensesUse.shared.asking }
+    /// Whether the agent is given the tool and told about it: Screen History is on and the owner lets
+    /// Poki ask it (SensesUse.asking, read from the saved settings so a request being prepared off the
+    /// main actor sees the same).
+    nonisolated static var offered: Bool {
+        HistoryCapture.isEnabled && (UserDefaults.standard.object(forKey: "senses.agentAsks") as? Bool ?? true)
+    }
 
     static let brief = "The owner lets you ask about them from this iPhone's Screen History: personal_context {question, hours}. It knows what they recently did or saw on the iPhone and the habits learned from it (their usual apps, what they do at what time of day, their interests). Use it when the request points at something they did or saw, or when knowing their habit would change what you do (which app to use, what they usually mean), and you cannot go on without it. Do not guess these from memory instead. The answer is private to this task: use it for the task and do not repeat more of it than the reply needs."
 
@@ -114,14 +118,10 @@ enum SensesContext {
         return .summary(answer, share: verdict.share, reason: verdict.reason)
     }
 
-    /// Tests of the query itself turn the check off; nothing else does.
-    @MainActor static var checksOutside = true
-
     /// The same check for an outside agent's screen_history query (the owner, 2026-11-20): the answer
     /// is raw screen text, so the model on this iPhone reads it and says SHARE or ASK, and anything
     /// private by the pills' rule, Ask All, or no model on this iPhone puts it in front of the owner.
     @MainActor static func checkOutside(_ answer: String, arguments: String) async -> ScreenHistoryVerdict {
-        if !checksOutside { return .share }
         if HomeShortcuts.isPrivate(answer) { return .ask(reason: "the screen text may hold something private") }
         if ApprovalLevel.saved == .everything { return .ask(reason: "") }
         guard BacktapeWriter.available else { return .ask(reason: "no model on this iPhone can check it") }
