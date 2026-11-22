@@ -1465,7 +1465,15 @@ final class ChatModel {
         case "card":
             // A finished search with its result card (Taobao's list), for the card's look.
             let json = #"{"app":"com.taobao.taobao4iphone","kind":"\#(Taobao.kind)","recommended":"a","primary":{"label":"查看","say":"打开 {title}"},"items":[{"id":"a","title":"象印保温杯 480ml","price":"¥199","sold":"3000+人付款"},{"id":"b","title":"膳魔师保温杯 500ml","price":"¥229","sold":"1万+人付款"},{"id":"c","title":"虎牌保温杯 360ml","price":"¥169","sold":"800+人付款"}]}"#
-            var entriesNow = [ChatEntry(.time(start)), ChatEntry(.you("找一款保温杯", delivered: true)), onIt, steps(Sample.momSteps, done: 4, then: nil)]
+            // Its own finished task: Taobao's steps, title and app, not the Mom scene's WhatsApp ones.
+            let taobaoSteps = ["打开淘宝", "搜索“保温杯”", "按销量查看结果", "整理前三款"]
+            var search = ChatEntry(.plan(taobaoSteps.map { PlanStep($0, state: .done) }))
+            search.title = "找保温杯"
+            search.at = Date().addingTimeInterval(-58)
+            search.ended = Date()
+            search.app = Taobao.app
+            search.total = taobaoSteps.count
+            var entriesNow = [ChatEntry(.time(start)), ChatEntry(.you("找一款保温杯", delivered: true)), onIt, search]
             if let card = try? JSONDecoder().decode(ResultCard.self, from: Data(json.utf8)), card.problem == nil { entriesNow.append(ChatEntry(.card(card))) }
             entries = entriesNow
         #endif
