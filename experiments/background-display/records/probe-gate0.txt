@@ -1,0 +1,15 @@
+coredevice_identifier=147F2F12-B5DE-5CF9-AA3B-7CF5295476B5
+constants: displayModeKey=CoreDeviceVideoDisplayMode virtualExternal=VirtualExternalDisplay secondaryVirtual=SecondaryVirtualDisplay byDisplayID=DisplayByID displayIDKey=VideoStreamForDisplayID
+feature bits: virtualExternalDisplayOutput=64 mediaStreamVirtualExternalVideo=64
+digitizer target mainScreen rawValue=0
+digitizer target display1 rawValue=1
+digitizer target display2 rawValue=2
+digitizer target display3 rawValue=3
+usage_assertion=ok
+support.device=972 [Primary video display mirrored output stream, System audio output stream, Virtual external video output stream, Video output stream by display ID, Display information, Screenshot capture (Raw Value: 972)]
+support.client=140 [Primary video display mirrored output stream, System audio output stream, Display information (Raw Value: 140)]
+support.common=140 [Primary video display mirrored output stream, System audio output stream, Display information (Raw Value: 140)]
+deviceCanReceive(virtualExternalDisplayOutput)=false
+canSend(virtualExternalDisplayOutput)=true
+deviceCanReceive(mediaStreamVirtualExternalVideo)=false
+canSend(mediaStreamVirtualExternalVideo)=true

@@ -1,0 +1,80 @@
+// swift-interface-format-version: 1.0
+// swift-module-flags: -target arm64-apple-macos27.0 -enable-library-evolution -swift-version 5 -module-name CoreDeviceMediaStreamSupport
+//
+// Hand-written subset of Apple's private CoreDeviceMediaStreamSupport module
+// (/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/
+// CoreDeviceMediaStreamSupport.framework, version 699.2). Declarations match the
+// demangled export list; check-symbols.sh re-checks them against the installed binary.
+import CoreDevice
+import CoreGraphics
+import Foundation
+import QuartzCore
+import Swift
+import _Concurrency
+
+public enum MediaStreamDirection {
+  case send
+  case receive
+}
+
+public protocol MediaStreamConfiguration {
+  var direction: CoreDeviceMediaStreamSupport.MediaStreamDirection { get }
+}
+
+public struct VideoStreamSendConfiguration {
+  public var resolution: CoreGraphics.CGSize { get }
+}
+
+public struct VideoStreamReceiveConfiguration {
+  public var resolution: CoreGraphics.CGSize { get }
+}
+
+// Values are only made through the static factories below.
+public enum VideoStreamConfiguration {
+  case send(CoreDeviceMediaStreamSupport.VideoStreamSendConfiguration)
+  case receive(CoreDeviceMediaStreamSupport.VideoStreamReceiveConfiguration)
+  public static func receiveMirroredPrimary(layer: QuartzCore.CALayer, timeout: Swift.UInt) -> CoreDeviceMediaStreamSupport.VideoStreamConfiguration
+  public static func receiveVirtualExternal(layer: QuartzCore.CALayer, resolution: CoreGraphics.CGSize, timeout: Swift.UInt) -> CoreDeviceMediaStreamSupport.VideoStreamConfiguration
+  public static func receiveVirtualSecondary(layer: QuartzCore.CALayer, resolution: CoreGraphics.CGSize, timeout: Swift.UInt) -> CoreDeviceMediaStreamSupport.VideoStreamConfiguration
+  public static func receiveMirroredDisplayByIdentifier(_ identifier: Swift.UInt32, layer: QuartzCore.CALayer, timeout: Swift.UInt) -> CoreDeviceMediaStreamSupport.VideoStreamConfiguration
+  public var direction: CoreDeviceMediaStreamSupport.MediaStreamDirection { get }
+}
+
+public struct VideoStreamAttributes {
+  public var orientation: CoreDevice.DeviceOrientation { get }
+  public var scaleFactor: Swift.Float { get }
+  public var contentsRect: CoreGraphics.CGRect { get }
+  public var ratio: CoreGraphics.CGSize { get }
+}
+
+public enum VideoStreamEvent {
+  case remoteVideoAttributesChanged(CoreDeviceMediaStreamSupport.VideoStreamAttributes)
+  case receivedFirstFrame
+  case receivedLastDecodedFrame(Foundation.Data)
+}
+
+public protocol MediaStreamProtocol : _Concurrency.Actor {
+  associatedtype Configuration
+  associatedtype Event
+  var configuration: Self.Configuration { get }
+  func activate() async throws -> Swift.AsyncThrowingStream<Self.Event, any Swift.Error>
+  func invalidate() async
+}
+
+public protocol VideoStream : CoreDeviceMediaStreamSupport.MediaStreamProtocol {
+  func requestLastDecodedFrame() async
+}
+
+public actor MediaStreamSession {
+  public init(clientSessionID: Foundation.UUID)
+  final public var clientSessionID: Foundation.UUID { get }
+  final public func makeVideoStream(withConfiguration configuration: CoreDeviceMediaStreamSupport.VideoStreamConfiguration, fromRemoteDevice device: CoreDevice.RemoteDevice) async throws -> any CoreDeviceMediaStreamSupport.VideoStream
+  @_semantics("defaultActor") nonisolated final public var unownedExecutor: _Concurrency.UnownedSerialExecutor { get }
+}
+
+public struct MediaStreamSupport {
+  public init(device: CoreDevice.RemoteDevice)
+  public var supportInfo: CoreDevice.DeviceMediaStream.SupportInfoResponse { get async throws }
+  public func deviceCanReceive(_ features: CoreDevice.MediaStreamSupportedFeatures) async throws -> Swift.Bool
+  public func canSend(_ features: CoreDevice.MediaStreamSupportedFeatures) async throws -> Swift.Bool
+}
