@@ -409,6 +409,27 @@ final class SimFixtureTests: XCTestCase {
     }
     func testY_appLevelForeground() { appLevelRoute(false, args: true) }
     func testY_appLevelBackground() { appLevelRoute(true, args: true) }
+    // AA: switch key commands (_fkaSwitchOn/Off -> _keyboardActivate). Arrow keys via 2034 with no focus,
+    // after 5308 (AX focus) and after 2044 (native focus).
+    func switchKeyRoute(_ bg: Bool, args: Bool) {
+        launchArgs = args ? ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"] : []
+        start(background: bg); sleep(2)
+        let fb = bg ? frontSummary() : "-"
+        for prep in ["none", "5308", "2044"] {
+            guard let sw = find(snap(), { $0.elementType == .switch }) else { say("AA | no switch"); return }
+            let p = prep == "none" ? "-" : act(sw, Int(prep)!, prep == "5308" ? NSNumber(value: true) : nil)
+            usleep(600_000)
+            for k in ["UIKeyInputRightArrow", "UIKeyInputLeftArrow", " "] {
+                let before = lastEvent(); let r = sendKey(k); usleep(900_000)
+                say("AA | args=\(args) | prep \(prep) \(p.prefix(12)) | key \(k == " " ? "Space" : k) \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+            }
+        }
+        if bg { say("AA | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
+    }
+    func testAA_switchKeysForeground() { switchKeyRoute(false, args: true) }
+    func testAA_switchKeysBackground() { switchKeyRoute(true, args: true) }
+    func testAA_switchKeysBackgroundNoArg() { switchKeyRoute(true, args: false) }
+    func testZ_dumpActions() { start(background: false); _ = snap(); sleep(14) }
     func testX_hardwareSpaceForeground() {
         launchArgs = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
         start(background: false); sleep(3)

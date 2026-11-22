@@ -227,3 +227,8 @@ segmented control, text field set-value), scrolling, and escape (in the foregrou
   5307 `_accessibilityDidFocusOnApplication`, 5308 `_accessibilitySetFocusOnElement:` (bool),
   5312 `_accessibilityClearLastFocusedChild`; `_accessibilityHandleFullKeyboardAccessAction:value:` handles
   5310/5311/5313 (scene key-window, reset native focus, update native focus). None activates.
+- **Switch via its own key commands:** `UISwitchAccessibility accessibilityActivate` returns NO by design, but
+  `_accessibilityKeyCommands` publishes arrow-key commands whose actions `_fkaSwitchOn/_fkaSwitchOff` call
+  `_keyboardActivate` (in-process toggle). Foreground, launch argument + FKA: 2044 native focus on the switch, then
+  Right arrow via 2034 → handler "switch true", no touch. Left arrow did not toggle it back. Without native focus
+  (none, or 5308 AX focus) nothing fires. Background: 2044 fails (no focus system), so nothing fires.

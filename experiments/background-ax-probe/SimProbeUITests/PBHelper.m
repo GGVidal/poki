@@ -210,7 +210,7 @@
     ((void (*)(id, SEL, id))objc_msgSend)(info, NSSelectorFromString(@"setModifiedInput:"), input);
     ((void (*)(id, SEL, BOOL))objc_msgSend)(info, NSSelectorFromString(@"setKeyDown:"), down);
     // HID keyboard usages (page 7) so UIKit can treat it as a physical key: Space 0x2C, Return 0x28, Tab 0x2B, k 0x0E, arrows 0x4F-0x52.
-    NSDictionary *usage = @{@" ": @0x2C, @"\r": @0x28, @"\t": @0x2B, @"k": @0x0E, @"RIGHT": @0x4F, @"LEFT": @0x50, @"DOWN": @0x51, @"UP": @0x52};
+    NSDictionary *usage = @{@" ": @0x2C, @"\r": @0x28, @"\t": @0x2B, @"k": @0x0E, @"UIKeyInputRightArrow": @0x4F, @"UIKeyInputLeftArrow": @0x50, @"UIKeyInputDownArrow": @0x51, @"UIKeyInputUpArrow": @0x52};
     NSNumber *code = usage[input];
     if (code) { @try { [info setValue:code forKey:@"keyCode"]; [info setValue:@7 forKey:@"usagePage"]; } @catch (NSException *e) { NSLog(@"SIMPROBE keyCode KVC failed %@", e); } }
     ((void (*)(id, SEL, id))objc_msgSend)(rep, NSSelectorFromString(@"setKeyInfo:"), info);

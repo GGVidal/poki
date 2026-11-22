@@ -14,6 +14,19 @@ enum Fix {
         if let v = i as? UIView { return String(describing: type(of: v)) + " " + (v.accessibilityLabel ?? "") }
         return String(describing: type(of: i))
     }
+    static var dumped = 0
+    static func dumpActions(_ root: UIView) {
+        var q: [UIView] = [root]
+        while !q.isEmpty {
+            let v = q.removeFirst(); q.append(contentsOf: v.subviews)
+            let n = String(describing: type(of: v))
+            guard v is UIControl || v is UITableViewCell || n.contains("TabButton") || n.contains("TabBar") else { continue }
+            let sel = NSSelectorFromString("_accessibilityUserTestingActions")
+            let ut = v.responds(to: sel) ? String(describing: v.perform(sel)?.takeUnretainedValue()) : "n/a"
+            let ca = (v.accessibilityCustomActions ?? []).map { $0.name }
+            NSLog("FIXLOG actions %@ label=%@ ut=%@ ca=%@", n, v.accessibilityLabel ?? "", ut, ca.description)
+        }
+    }
     static func focus(_ t: String) { NSLog("FIXLOG focusNow %@", t); focusLabel?.text = t; focusLabel?.accessibilityValue = t }
     static let t0 = Date()
     static func log(_ event: String) {
@@ -67,6 +80,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
             if let p = priv, p.responds(to: NSSelectorFromString("_isEnabled")) { en = String(describing: p.perform(NSSelectorFromString("_isEnabled")) != nil) }
             let item = (pub ?? (priv as? UIFocusSystem))?.focusedItem
             let fkaFn = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXSFullKeyboardAccessEnabled").map { unsafeBitCast($0, to: (@convention(c) () -> Bool).self) }
+            if Fix.dumped < 2, Date().timeIntervalSince(Fix.t0) > 8 { Fix.dumped += 1; Fix.dumpActions(w) }
             Fix.focus(item.map { Fix.short($0) } ?? "none")
             NSLog("FIXLOG focus fka=%@ pub=%@ priv=%@ enabled=%@ item=%@", fkaFn.map { $0() ? "1" : "0" } ?? "?", pub == nil ? "nil" : "yes", priv == nil ? "nil" : String(describing: type(of: priv!)), en, item.map { String(describing: $0).prefix(80).description } ?? "none")
         }
