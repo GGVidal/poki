@@ -289,6 +289,23 @@ final class Daemon: @unchecked Sendable {
     } catch { return "error \(errorText(error))" }
   }
 
+  func swipe(_ a: (Double, Double), _ b: (Double, Double), target: DigitizerTarget, edge: DigitizerEdge, steps: Int = 12) async -> String {
+    do {
+      let dig = try await ensureDigitizer()
+      try dig.send(pointOne: DigitizerPoint(x: a.0, y: a.1), pointTwo: nil, eventType: .start, edge: edge, target: target)
+      dig.sendBarrier()
+      for i in 1...steps {
+        let t = Double(i) / Double(steps)
+        try await Task.sleep(nanoseconds: 16_000_000)
+        try dig.send(pointOne: DigitizerPoint(x: a.0 + (b.0 - a.0) * t, y: a.1 + (b.1 - a.1) * t), pointTwo: nil, eventType: .position, edge: edge, target: target)
+        dig.sendBarrier()
+      }
+      try dig.send(pointOne: DigitizerPoint(x: b.0, y: b.1), pointTwo: nil, eventType: .end, edge: edge, target: target)
+      dig.sendBarrier()
+      return "ok swipe \(a)->\(b) target=\(target) raw=\(target.rawValue) edge=\(edge)"
+    } catch { return "error \(errorText(error))" }
+  }
+
   func status() -> String {
     var d: [String: Any] = [
       "pid": getpid(), "mode": mode, "requested": "\(Int(size.width))x\(Int(size.height))",
@@ -396,6 +413,10 @@ func handle(_ line: String, _ d: Daemon) async -> String {
   case "tap":
     guard p.count >= 4, let x = Double(p[1]), let y = Double(p[2]) else { return "error usage: tap x y target" }
     return await d.tap(x: x, y: y, target: Device.target(p[3]))
+  case "swipe":
+    guard p.count >= 7, let x1 = Double(p[1]), let y1 = Double(p[2]), let x2 = Double(p[3]), let y2 = Double(p[4]) else { return "error usage: swipe x1 y1 x2 y2 target edge" }
+    let edge: DigitizerEdge = ["none": .none, "top": .top, "bottom": .bottom, "left": .left, "right": .right][p[6]] ?? .none
+    return await d.swipe((x1, y1), (x2, y2), target: Device.target(p[5]), edge: edge)
   case "stop":
     await d.stop()
     return "ok stopped \(d.sessionID.uuidString)"
@@ -467,9 +488,14 @@ struct Main {
       let abs = (path as NSString).isAbsolutePath ? path : FileManager.default.currentDirectoryPath + "/" + path
       client("capture \(abs)", stateDir: stateDir)
     case "act":
-      // act tap <x> <y> [--target display1]
-      guard args.positional.count >= 3, args.positional[0] == "tap" else { fail("usage: act tap <x> <y> [--target main|display1|N]") }
-      client("tap \(args.positional[1]) \(args.positional[2]) \(args.flags["target"] ?? "display1")", stateDir: stateDir)
+      // act tap <x> <y> [--target display2]   |   act swipe <x1> <y1> <x2> <y2> [--target display2] [--edge bottom]
+      let p = args.positional
+      let target = args.flags["target"] ?? "display2"
+      if p.count >= 3, p[0] == "tap" {
+        client("tap \(p[1]) \(p[2]) \(target)", stateDir: stateDir)
+      } else if p.count >= 5, p[0] == "swipe" {
+        client("swipe \(p[1]) \(p[2]) \(p[3]) \(p[4]) \(target) \(args.flags["edge"] ?? "none")", stateDir: stateDir)
+      } else { fail("usage: act tap x y | act swipe x1 y1 x2 y2 [--target main|display1|N] [--edge bottom]") }
     case "status":
       client("status", stateDir: stateDir)
     case "stop":
