@@ -330,3 +330,57 @@ XCTest daemon, in the background with Settings in front:
   Action and attribute blocks (`AccessibilityActionBlockStorageKey`, `AccessibilityAttributeBlockStorageKey`) are filled by in-app code.
   The base `_accessibilityUserTestingActions` is empty. `_accessibilityKeyCommands` is fixed per class (NSObject base: adjustable and
   directional-focus arrows).
+
+## Coverage table (simulator 27.3, fixture `-coverage` mode, 2026-11-22 ET)
+
+Every control logs its handler. "BG" = fixture in background with testmanagerd's assertion, Settings in front; Settings stayed
+unchanged after every group (front check). Actions: 2010 activate, 2036 secondary activate, 2004 increment, 2054 Return key
+(after setting the value with `XC_kAXXCAttributeValue`), "key Return" = 2034 key event, "FKA" = 5305 + 5310 + 2044 focus, then an arrow key via 2034.
+Launched with `-FullKeyboardAccessUsesSimulatedKeyboardForAutomation YES`, FKA on in the simulator.
+
+| control | read | FG | BG |
+|---|---|---|---|
+| UIButton, Configuration + primaryAction | ok | no (2010/2036/FKA Space) | no |
+| UIButton, addAction(UIAction) | ok | no | no |
+| UIButton, target-action | ok | no | no |
+| UISwitch | ok | FKA Right arrow | no (in-process touch, no context) |
+| UIStepper | ok | FKA Right arrow (2004 accepted, no change) | no |
+| UIPageControl | ok | 2004 | **2004** |
+| UIDatePicker (compact) | ok | no | no |
+| UIPickerView | ok | 2004 | **2004** |
+| UISearchBar Return | ok | set value + 2054 | no (2054 fails in BG) |
+| UITextField Return (primaryAction) | ok | set value + 2054 | no |
+| UIButton with menu (open) | ok | no | no |
+| UIMenu item (menu opened by tap) | ok | no | no |
+| Context menu via 2059 | ok | crashes the fixture | crashes the fixture |
+| UIBarButtonItem (primaryAction) | ok | 2010 | **2010** |
+| Bar button item on pushed VC (target-action) | ok | 2010 | **2010** |
+| Navigation back button | ok | no (2010/2036/2013) | no |
+| Push button (plain UIButton) | ok | no | no |
+| UITab bar button (iOS 18 UITab) | ok | no | no |
+| UIAlertController alert button | ok | 2010 | **2010** |
+| UIAlertController action-sheet row | ok | 2010 | **2010** |
+| UICollectionViewListCell select | ok | no | no |
+| UICollectionViewListCell detail accessory | not found | - | - |
+| UITableViewCell (content configuration) | ok | no | no |
+| SwiftUI Button | ok | 2010 | **2010** |
+| SwiftUI Toggle | ok | 2010 | **2010** |
+| SwiftUI Stepper | ok | 2004 | **2004** |
+| SwiftUI Slider | ok | 2004 | **2004** |
+| SwiftUI segmented Picker | ok | 2010 | **2010** |
+| SwiftUI menu Picker / Menu (open) | ok | 2010 opens a menu; label then unreadable | same |
+| SwiftUI Menu item | not found after open | - | - |
+| SwiftUI TextField onSubmit | ok | no (2054 and key Return) | no |
+| SwiftUI NavigationLink row | ok | 2010 | **2010** |
+| SwiftUI TabView tab (inside UIKit) | ok | not run in FG (hidden by menu) | no |
+| SwiftUI sheet button | ok | 2010 | **2010** |
+| SwiftUI alert button | ok | 2010 | **2010** |
+| WKWebView link | ok | 2010 | no |
+| WKWebView button / checkbox / submit | ok | 2010 | not found in BG (web content AX tree gone) |
+| WKWebView text input | ok | no (2054 fails, key Return no submit) | not found |
+
+Background summary: SwiftUI controls (Button, Toggle, Stepper, Slider, segmented Picker, NavigationLink, sheet and alert
+buttons), UIKit alerts and action sheets, bar button items (primaryAction or target-action), page control and picker wheels
+work in the background through 2010/2004, with nothing reaching the front app. Not in the background: plain UIButtons in every
+form, UISwitch/UIStepper, list and table cells, tab bar buttons, back button, menus, Return-key submission, date picker, and
+WKWebView content.

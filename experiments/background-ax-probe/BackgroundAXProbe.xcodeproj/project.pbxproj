@@ -8,9 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		033418B34EF194ECA589EF21 /* BackgroundAXActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A6B8A34D8759B18C298211 /* BackgroundAXActionTests.swift */; };
+		0F4AA7CFDCA664C134262B69 /* CoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18CD3DFFDC0720AB2FD72698 /* CoverageTests.swift */; };
 		1EA59BB8092E557142035EED /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9856DC405581A81535EA993E /* App.swift */; };
 		81E84D0FC592323DF6ECD9EE /* SimFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2DAF539945E4181414B2F7 /* SimFixtureTests.swift */; };
 		821B313BF4473ABB31F590AB /* PBHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = 5B06304F4A0F1A9A71F9596D /* PBHelper.m */; };
+		9A889A19B567B45E4DCAB5EB /* Coverage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B483867E343AEF8EC6596BFB /* Coverage.swift */; };
 		A6206BA26C0F20F0C878BB11 /* DeviceBackgroundAXTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */; };
 		A8843ED1C9674C7A75C831E3 /* PBHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = D87E94B76CD36BE71021D4BD /* PBHelper.m */; };
 		AE532E1990B3A0FCAB5617E6 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D19CD33B9AC08A2EEFC206F /* App.swift */; };
@@ -34,6 +36,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		18CD3DFFDC0720AB2FD72698 /* CoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverageTests.swift; sourceTree = "<group>"; };
 		1A2DAF539945E4181414B2F7 /* SimFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimFixtureTests.swift; sourceTree = "<group>"; };
 		2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceBackgroundAXTests.swift; sourceTree = "<group>"; };
 		2D19CD33B9AC08A2EEFC206F /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
@@ -45,6 +48,7 @@
 		A0CFCFFD705212972C932A2C /* PBHelper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PBHelper.h; sourceTree = "<group>"; };
 		A6234C74F7E1B4CB4A2A75B9 /* ProbeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A70B868EFC3BDA6D7610ED84 /* Bridging.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Bridging.h; sourceTree = "<group>"; };
+		B483867E343AEF8EC6596BFB /* Coverage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Coverage.swift; sourceTree = "<group>"; };
 		CB74AEB688F429A99D2F7078 /* Bridging.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Bridging.h; sourceTree = "<group>"; };
 		D87E94B76CD36BE71021D4BD /* PBHelper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PBHelper.m; sourceTree = "<group>"; };
 		D9049B9B19EBD9E0AC7779DB /* Fixture.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Fixture.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -65,6 +69,7 @@
 			isa = PBXGroup;
 			children = (
 				A70B868EFC3BDA6D7610ED84 /* Bridging.h */,
+				18CD3DFFDC0720AB2FD72698 /* CoverageTests.swift */,
 				A0CFCFFD705212972C932A2C /* PBHelper.h */,
 				5B06304F4A0F1A9A71F9596D /* PBHelper.m */,
 				1A2DAF539945E4181414B2F7 /* SimFixtureTests.swift */,
@@ -76,6 +81,7 @@
 			isa = PBXGroup;
 			children = (
 				2D19CD33B9AC08A2EEFC206F /* App.swift */,
+				B483867E343AEF8EC6596BFB /* Coverage.swift */,
 			);
 			path = AXFixture;
 			sourceTree = "<group>";
@@ -271,6 +277,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AE532E1990B3A0FCAB5617E6 /* App.swift in Sources */,
+				9A889A19B567B45E4DCAB5EB /* Coverage.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -295,6 +302,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0F4AA7CFDCA664C134262B69 /* CoverageTests.swift in Sources */,
 				821B313BF4473ABB31F590AB /* PBHelper.m in Sources */,
 				81E84D0FC592323DF6ECD9EE /* SimFixtureTests.swift in Sources */,
 			);

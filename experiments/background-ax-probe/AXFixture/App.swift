@@ -142,7 +142,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
         let second = SecondController(); second.tabBarItem = UITabBarItem(title: "Second", image: UIImage(systemName: "2.circle"), tag: 1)
         let swiftUI = UIHostingController(rootView: SwiftUIScreens()); swiftUI.tabBarItem = UITabBarItem(title: "SwiftUI", image: UIImage(systemName: "swift"), tag: 2)
         tabs.viewControllers = [nav, second, swiftUI]
-        w.rootViewController = tabs
+        w.rootViewController = ProcessInfo.processInfo.arguments.contains("-coverage") ? Coverage.makeRoot(window: w) : tabs
         w.makeKeyAndVisible()
         window = w
     }
