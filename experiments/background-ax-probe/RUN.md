@@ -202,3 +202,28 @@ segmented control, text field set-value), scrolling, and escape (in the foregrou
 - **Ids mapped by overriding those selectors in the fixture's own element:** 2036 = `_accessibilitySecondaryActivate`, 2044 = `_accessibilitySetNativeFocus`, 2042 = XCTest's `kAXBeginMonitoringIdleRunLoopAction` (killed the fixture). 2045-2120, 4000-4060, 5000-5040 with no value: no entry point on our element.
 - **Focus route on the bare controls:** 2044 (set native focus), 2010 and 2036 on the plain button, switch and tab: kAXErrorFailure in foreground and background. 4021 and 4023 with a string value: kAXErrorCannotComplete, then the fixture died. A Full Keyboard Access default was set in the simulator for one repeat (key name unverified, removed afterwards): no change.
 - Not yet found: the action id and value type for `_accessibilityDispatchKeyboardAction:` and `_accessibilityPerformUserTestingAction:`. The dispatcher's jump table has not been decoded.
+
+## Round: key events and the focus system (simulator 27.3, our fixture only), 2026-11-22 ET
+
+- **Key delivery works in the background.** Action 2034 with an NSData `AXEventRepresentation` key event
+  (type 4500/4501, `keyInfo` input and HID usage) on the application element goes to
+  `-[UIApplicationAccessibility _accessibilityDispatchKeyboardAction:]`, which builds a `UIPhysicalKeyboardEvent`
+  in-process and hands it to `UIKeyboardImpl handleKeyCommand:` / `handleKeyUIEvent:`. The fixture's
+  `UIKeyCommand("k")` fired in foreground and background, via the XCTest daemon and via a direct AXElement.
+- **Focus system gate on iPhone** (read from UIKitCore): `_UIFocusBaseBehaviorForTraitCollection` picks the FKA
+  behavior when `_AXSFullKeyboardAccessEnabled()`. The FKA behavior requires a hardware keyboard unless the app's own
+  preference `FullKeyboardAccessUsesSimulatedKeyboardForAutomation` is YES (`CFPreferencesGetAppBooleanValue`, so a
+  launch argument `-FullKeyboardAccessUsesSimulatedKeyboardForAutomation YES` sets it).
+  With FKA on and the argument: live focus system, and 2044 moves native focus onto the switch, the table cell and
+  the tab button (foreground). FKA off + argument: no focus system. Background: no focus system either way
+  (`_UIFocusSystemSceneComponent _updateFocusSystemState` disables it when the scene is not active).
+- **Activation of the focused item:** Space/Return via 2034 (with HID codes) select nothing; 2034 bypasses the focus
+  engine. A real hardware Space (XCTest `typeKey`, foreground) reaches the fixture only as `pressesBegan`.
+  The FKA daemon's Space command ("PerformDefaultAction", `-[FKAActionManager performDefaultAction]`, read
+  statically from `FullKeyboardAccess.app`) is `[[self currentElement] press]`, the AXElement press: AX activate,
+  otherwise a synthesized touch at the element's screen point. 2010, 2036 and 2011 on the application element with
+  focus set: kAXErrorFailure.
+- FKA's own in-app ops found in the dispatcher: 5305 `_accessibilitySetFocusEnabledInApplication:` (bool),
+  5307 `_accessibilityDidFocusOnApplication`, 5308 `_accessibilitySetFocusOnElement:` (bool),
+  5312 `_accessibilityClearLastFocusedChild`; `_accessibilityHandleFullKeyboardAccessAction:value:` handles
+  5310/5311/5313 (scene key-window, reset native focus, update native focus). None activates.

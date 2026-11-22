@@ -8,6 +8,13 @@ import UIKit
 enum Fix {
     static var count = 0
     static weak var label: UILabel?
+    static weak var focusLabel: UILabel?
+    static func short(_ i: UIFocusItem) -> String {
+        if let b = i as? UIButton { return "UIButton " + (b.currentTitle ?? "?") }
+        if let v = i as? UIView { return String(describing: type(of: v)) + " " + (v.accessibilityLabel ?? "") }
+        return String(describing: type(of: i))
+    }
+    static func focus(_ t: String) { NSLog("FIXLOG focusNow %@", t); focusLabel?.text = t; focusLabel?.accessibilityValue = t }
     static let t0 = Date()
     static func log(_ event: String) {
         count += 1
@@ -52,7 +59,18 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
         let ctx = (w.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
         let layerContext = (w.layer.value(forKey: "context") as AnyObject?).map { "\($0)" } ?? "nil"
         NSLog("FIXLOG window %@ contextId=%u layer.context=%@ activation=%d hidden=%d", tag, ctx, layerContext, w.windowScene?.activationState.rawValue ?? -9, w.isHidden ? 1 : 0)
-        if windowTimer == nil { windowTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.logWindow("tick") } }
+        do {
+            let pub = UIFocusSystem.focusSystem(for: w)
+            var priv: AnyObject? = nil
+            if let sc = w.windowScene, sc.responds(to: NSSelectorFromString("_accessibilityFocusSystem")) { priv = sc.perform(NSSelectorFromString("_accessibilityFocusSystem"))?.takeUnretainedValue() }
+            var en = "?"
+            if let p = priv, p.responds(to: NSSelectorFromString("_isEnabled")) { en = String(describing: p.perform(NSSelectorFromString("_isEnabled")) != nil) }
+            let item = (pub ?? (priv as? UIFocusSystem))?.focusedItem
+            let fkaFn = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXSFullKeyboardAccessEnabled").map { unsafeBitCast($0, to: (@convention(c) () -> Bool).self) }
+            Fix.focus(item.map { Fix.short($0) } ?? "none")
+            NSLog("FIXLOG focus fka=%@ pub=%@ priv=%@ enabled=%@ item=%@", fkaFn.map { $0() ? "1" : "0" } ?? "?", pub == nil ? "nil" : "yes", priv == nil ? "nil" : String(describing: type(of: priv!)), en, item.map { String(describing: $0).prefix(80).description } ?? "none")
+        }
+        if windowTimer == nil { windowTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.logWindow("tick") } }
     }
     func sceneWillEnterForeground(_ scene: UIScene) { Fix.log("scene.willEnterForeground") }
 }
@@ -104,6 +122,7 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
         title = "Controls"; view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Bar", style: .plain, target: self, action: #selector(bar))
         let label = UILabel(); label.accessibilityIdentifier = "lastEvent"; label.text = "0 start"; Fix.label = label
+        let focusLabel = UILabel(); focusLabel.accessibilityIdentifier = "focusNow"; focusLabel.text = "none"; Fix.focusLabel = focusLabel; focusLabel.font = .systemFont(ofSize: 9)
         let button = UIButton(type: .system); button.setTitle("Plain button", for: .normal); button.addTarget(self, action: #selector(plain), for: .primaryActionTriggered)
         let push = UIButton(type: .system); push.setTitle("Push level 2", for: .normal); push.addTarget(self, action: #selector(pushNext), for: .primaryActionTriggered)
         let sw = UISwitch(); sw.accessibilityLabel = "Switch"; sw.addTarget(self, action: #selector(switched(_:)), for: .valueChanged)
@@ -114,7 +133,7 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
         let sheet = UIButton(type: .system); sheet.setTitle("Show sheet", for: .normal); sheet.addTarget(self, action: #selector(showSheet), for: .primaryActionTriggered)
         let probe = ProbeTarget()
         let table = UITableView(); table.dataSource = self; table.delegate = self; table.accessibilityIdentifier = "bigTable"; table.delegate = self
-        let stack = UIStackView(arrangedSubviews: [label, probe, button, push, sw, seg, slider, field, alert, sheet])
+        let stack = UIStackView(arrangedSubviews: [label, focusLabel, probe, button, push, sw, seg, slider, field, alert, sheet])
         stack.axis = .vertical; stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false; table.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack); view.addSubview(table)
@@ -128,7 +147,7 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
     @objc func keyK() { Fix.log("keyCommand k") }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) { Fix.log("pressesBegan \(presses.first?.key?.characters ?? "?")"); super.pressesBegan(presses, with: event) }
     @objc func bar() { Fix.log("barButton -> push level 2"); navigationController?.pushViewController(LevelTwoController(), animated: true) }
-    @objc func plain() { Fix.log("button") }
+    @objc func plain() { Fix.log("button"); NSLog("FIXLOG stack %@", Thread.callStackSymbols.prefix(40).joined(separator: " | ")) }
     @objc func pushNext() { Fix.log("push.requested"); navigationController?.pushViewController(LevelTwoController(), animated: true) }
     @objc func switched(_ s: UISwitch) { Fix.log("switch \(s.isOn)") }
     @objc func segmented(_ s: UISegmentedControl) { Fix.log("segment \(s.selectedSegmentIndex)") }

@@ -25,8 +25,10 @@ final class SimFixtureTests: XCTestCase {
         return ok ? "ok" : "fail(\((err ?? "") as String).prefix(60))"
     }
 
+    var launchArgs: [String] = []
     func start(background bg: Bool) {
         background = bg
+        fixture.launchArguments = launchArgs
         fixture.launch()
         let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
         if bg {
@@ -271,6 +273,165 @@ final class SimFixtureTests: XCTestCase {
             }
         }
     }
+    func sendKey(_ k: String) -> String {
+        guard let app = snap() else { return "no app" }
+        var rs: [String] = []
+        for down in [true, false] { var e: NSString?; rs.append(PBHelper.pressSnapshot(app, action: 2034, value: PBHelper.keyEvent(k, down: down, asData: true), error: &e) ? "ok" : "fail"); usleep(120_000) }
+        return rs.joined(separator: "/")
+    }
+    // S: focus by keyboard (Tab) or by 2044, then Space / Return, on bare controls.
+    func keyFocusRoute(_ bg: Bool) {
+        start(background: bg)
+        let fb = bg ? frontSummary() : "-"
+        for step in ["\t", "\t", "\t", " ", "\r", "\t", " ", "\t", " ", "\t", " ", "\t", " "] {
+            let before = lastEvent()
+            let r = sendKey(step)
+            usleep(800_000)
+            say("S | key \(step == "\t" ? "Tab" : step == " " ? "Space" : "Return") | \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+        for (name, label, type) in [("UIButton", "Plain button", XCUIElement.ElementType.button), ("UISwitch", "Switch", .switch), ("Tab 'Second'", "Second", .button)] {
+            guard let e = find(snap(), { $0.label == label && $0.elementType == type }) else { continue }
+            var err: NSString?; let f = PBHelper.pressSnapshot(e, action: 2044, value: nil, error: &err)
+            let before = lastEvent(); let r = sendKey(" "); usleep(800_000)
+            say("S | \(name) | 2044 focus ok=\(f) then Space \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+        if bg { say("S | front before: \(fb) | after: \(frontSummary())") }
+    }
+    // U: the FKA daemon's own ops. 5305 setFocusEnabledInApplication:(bool) on the app,
+    // 5307 didFocusOnApplication, 5308 setFocusOnElement:(bool) on a control, then Space/Return via 2034.
+    func act(_ e: Any, _ id: Int, _ v: Any?) -> String { var err: NSString?; return PBHelper.pressSnapshot(e, action: id, value: v, error: &err) ? "ok" : "fail(\(err ?? ""))" }
+    func fkaRoute(_ bg: Bool) {
+        start(background: bg)
+        let fb = bg ? frontSummary() : "-"
+        guard let app = snap() else { say("U | no app"); return }
+        say("U | 5305 YES \(act(app, 5305, NSNumber(value: true))) | 5307 \(act(app, 5307, nil))")
+        usleep(1_000_000)
+        let targets: [(String, (XCUIElementSnapshot) -> Bool)] = [
+            ("UIButton plain", { $0.label == "Plain button" && $0.elementType == .button }),
+            ("UISwitch", { $0.elementType == .switch }),
+            ("table cell", { $0.elementType == .cell }),
+            ("tab Second", { $0.label == "Second" && $0.elementType == .button }),
+        ]
+        for (name, pred) in targets {
+            for key in [" ", "\r"] {
+                guard let e = find(snap(), pred) else { say("U | \(name) | not found"); break }
+                let f = act(e, 5308, NSNumber(value: true)); usleep(600_000)
+                let before = lastEvent(); let r = sendKey(key); usleep(900_000)
+                say("U | \(name) | 5308 \(f), \(key == " " ? "Space" : "Return") \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+                if lastEvent() != before { break }
+            }
+        }
+        if bg { say("U | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
+    }
+    // V: launch argument FullKeyboardAccessUsesSimulatedKeyboardForAutomation YES gives the app a focus
+    // system with no hardware keyboard. Then focus (5308 or Tab) and Space/Return via 2034.
+    func focusPressRoute(_ bg: Bool) {
+        launchArgs = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        start(background: bg)
+        let fb = bg ? frontSummary() : "-"
+        guard let app = snap() else { say("V | no app"); return }
+        say("V | 5305 YES \(act(app, 5305, NSNumber(value: true)))")
+        usleep(800_000)
+        let targets: [(String, (XCUIElementSnapshot) -> Bool)] = [
+            ("UIButton plain", { $0.label == "Plain button" && $0.elementType == .button }),
+            ("UISwitch", { $0.elementType == .switch }),
+            ("table cell", { $0.elementType == .cell }),
+            ("tab Second", { $0.label == "Second" && $0.elementType == .button }),
+        ]
+        for (name, pred) in targets {
+            for key in [" ", "\r"] {
+                guard let e = find(snap(), pred) else { say("V | \(name) | not found"); break }
+                let f = act(e, 5308, NSNumber(value: true)); usleep(700_000)
+                let before = lastEvent(); let r = sendKey(key); usleep(1_000_000)
+                let after = lastEvent()
+                say("V | \(name) | 5308 \(f), \(key == " " ? "Space" : "Return") \(r) | handler: \(after == before ? "none" : after)")
+                if after != before { break }
+            }
+        }
+        for i in 1...6 {
+            let r1 = sendKey("\t"); usleep(600_000)
+            let before = lastEvent(); let r2 = sendKey(" "); usleep(900_000)
+            say("V | Tab x\(i) \(r1) then Space \(r2) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+        if bg { say("V | front before: \(fb.prefix(70)) | after: \(frontSummary().prefix(70))") }
+    }
+    func focusNow() -> String { (find(snap()) { $0.identifier == "focusNow" }?.value as? String) ?? "?" }
+    // W: with the launch argument, native focus (2044) or FKA focus (5308) on each control, read focus, then
+    // Space via 2034, then 2010 activate while natively focused.
+    func nativeFocusRoute(_ bg: Bool) {
+        launchArgs = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        start(background: bg)
+        let fb = bg ? frontSummary() : "-"
+        sleep(3)
+        say("W | initial focus: \(focusNow())")
+        let targets: [(String, (XCUIElementSnapshot) -> Bool)] = [
+            ("UIButton plain", { $0.label == "Plain button" && $0.elementType == .button }),
+            ("UISwitch", { $0.elementType == .switch }),
+            ("table cell", { $0.elementType == .cell }),
+            ("tab Second", { $0.label == "Second" && $0.elementType == .button }),
+        ]
+        for (name, pred) in targets {
+            guard let e = find(snap(), pred) else { say("W | \(name) | not found"); continue }
+            let f = act(e, 2044, nil); sleep(3)
+            let fnow = focusNow()
+            var before = lastEvent(); let r = sendKey(" "); usleep(1_000_000)
+            var h = lastEvent() == before ? "none" : lastEvent()
+            say("W | \(name) | 2044 \(f) -> focus '\(fnow)' | Space \(r) | handler: \(h)")
+            if h == "none", let e2 = find(snap(), pred) {
+                before = lastEvent(); let a = act(e2, 2010, nil); usleep(1_000_000)
+                h = lastEvent() == before ? "none" : lastEvent()
+                say("W | \(name) | then 2010 \(a) | handler: \(h)")
+            }
+        }
+        if bg { say("W | front before: \(fb.prefix(70)) | after: \(frontSummary().prefix(70))") }
+    }
+    // X: reference. Real HID Space from XCTest (foreground only), to read the activation stack.
+    // Y: with native focus on a control, app-level actions: 2010, 2036, 2011 on the application element.
+    func appLevelRoute(_ bg: Bool, args: Bool) {
+        launchArgs = args ? ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"] : []
+        start(background: bg); sleep(2)
+        let fb = bg ? frontSummary() : "-"
+        let targets: [(String, (XCUIElementSnapshot) -> Bool)] = [
+            ("UISwitch", { $0.elementType == .switch }),
+            ("table cell", { $0.elementType == .cell }),
+            ("tab Second", { $0.label == "Second" && $0.elementType == .button }),
+        ]
+        for (name, pred) in targets {
+            guard let e = find(snap(), pred) else { continue }
+            let f = act(e, 2044, nil); sleep(2)
+            for id in [2010, 2036, 2011] {
+                guard let app = snap() else { break }
+                let before = lastEvent(); let r = act(app, id, nil); usleep(900_000)
+                say("Y | args=\(args) | \(name) focus \(f) '\(focusNow())' | app \(id) \(r.prefix(30)) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+            }
+        }
+        if bg { say("Y | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
+    }
+    func testY_appLevelForeground() { appLevelRoute(false, args: true) }
+    func testY_appLevelBackground() { appLevelRoute(true, args: true) }
+    func testX_hardwareSpaceForeground() {
+        launchArgs = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        start(background: false); sleep(3)
+        say("X | focus: \(focusNow())")
+        for k in [" ", "\r"] {
+            let before = lastEvent(); fixture.typeKey(k, modifierFlags: []); sleep(1)
+            say("X | typeKey \(k == " " ? "Space" : "Return") | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+    }
+    func testW_nativeFocusForeground() { nativeFocusRoute(false) }
+    func testW_nativeFocusBackground() { nativeFocusRoute(true) }
+
+    func testV_focusPressForeground() { focusPressRoute(false) }
+    func testV_focusPressBackground() { focusPressRoute(true) }
+
+    func testU_fkaForeground() { fkaRoute(false) }
+    func testU_fkaBackground() { fkaRoute(true) }
+
+    func testT_fkaOn() { say("T | " + PBHelper.setFullKeyboardAccess(true)) }
+    func testT_fkaOff() { say("T | " + PBHelper.setFullKeyboardAccess(false)) }
+    func testS_keyFocusForeground() { keyFocusRoute(false) }
+    func testS_keyFocusBackground() { keyFocusRoute(true) }
+
     func testR_keyForeground() { keyRoute(false) }
     func testR_keyBackground() { keyRoute(true) }
 

@@ -18,5 +18,6 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)directAction:(NSInteger)action value:(nullable id)value onSnapshot:(id)snapshot;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(nullable id)value error:(NSString * _Nullable * _Nullable)error;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;
++ (NSString *)setFullKeyboardAccess:(BOOL)on;
 @end
 NS_ASSUME_NONNULL_END
