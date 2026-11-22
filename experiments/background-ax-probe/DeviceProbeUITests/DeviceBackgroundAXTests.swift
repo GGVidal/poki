@@ -111,6 +111,64 @@ final class DeviceBackgroundAXTests: XCTestCase {
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.lifetime = .keepAlways; add(shot)
     }
 
+    // ---- J: action names from XCTest itself, then escape and tab candidates chosen by name.
+    func actionNames() -> [(Int, String)] { (2000...2070).map { ($0, PBHelper.describeAction($0)) } }
+    func testJ0_actionNames() { say("[J0] AXRuntime constants: \(PBHelper.axRuntimeConstants())") }
+
+    func testJ1_backByEscape() {
+        _ = bgSettings("J1")
+        func cell(_ s: XCUIElementSnapshot, _ label: String) -> XCUIElementSnapshot? { first(s) { ($0.elementType == .cell || $0.elementType == .button) && $0.label == label } }
+        guard let s0 = try? settings.snapshot(), let g = cell(s0, "General") else { say("[J1] no General"); return }
+        say("[J1] press General \(press(g))"); sleep(3)
+        let candidates = (2011...2040).map { ($0, "AXAction \($0)") }  // no names exposed on 27.3: measured sweep, logged one by one
+        say("[J1] candidates: \(candidates)")
+        for (n, d) in candidates {
+            guard let s = try? settings.snapshot() else { continue }
+            if nav(s) != "General" { break }
+            let targets: [(String, XCUIElementSnapshot?)] = [("app", s), ("navbar", first(s) { $0.elementType == .navigationBar }), ("back", first(s) { $0.elementType == .button && $0.label == "Settings" })]
+            for (tname, t) in targets {
+                guard let t else { continue }
+                var err: NSString?
+                let ok = PBHelper.pressSnapshot(t, action: n, error: &err)
+                sleep(2)
+                let now = (try? settings.snapshot()).map(nav) ?? "nil"
+                say("[J1] action \(n) (\(d)) on \(tname): ok=\(ok) nav=\(now)")
+                if now != "General" { return }
+            }
+        }
+    }
+
+    func testJ2_tabCandidates() {
+        let app = XCUIApplication(bundleIdentifier: "in.muditbhargava.LookUp")
+        app.launch()
+        let pid = (app.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[J2] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10)
+        func selected(_ s: XCUIElementSnapshot) -> String { var o: [String] = []; func w(_ e: XCUIElementSnapshot) { if e.elementType == .button && e.isSelected { o.append(e.label) }; e.children.forEach(w) }; w(s); return o.joined(separator: ",") }
+        guard let s = try? app.snapshot(), let bar = first(s, { $0.elementType == .tabBar || $0.label == "Tab Bar" }) else { say("[J2] no tab bar"); return }
+        say("[J2] tab bar type=\(bar.elementType.rawValue) selected=\(selected(s))")
+        let collect = first(bar) { $0.elementType == .button && $0.label == "Collect" }
+        let names = ([2010] + Array(2011...2040)).map { ($0, "AXAction \($0)") }
+        say("[J2] candidates: \(names)")
+        for (n, d) in names {
+            for (tname, t) in [("Collect button", collect), ("tab bar", bar as XCUIElementSnapshot?)] {
+                guard let t else { continue }
+                var err: NSString?
+                let ok = PBHelper.pressSnapshot(t, action: n, error: &err)
+                sleep(1)
+                let sel = (try? app.snapshot()).map(selected) ?? "nil"
+                say("[J2] action \(n) (\(d)) on \(tname): ok=\(ok) selected=\(sel)")
+                if sel.contains("Collect") { return }
+            }
+        }
+        for (n, d) in [(2004, "increment"), (2005, "decrement")] {
+            var err: NSString?
+            let ok = PBHelper.pressSnapshot(bar, action: n, error: &err)
+            sleep(1)
+            say("[J2] \(d) on tab bar ok=\(ok) selected=\((try? app.snapshot()).map(selected) ?? "nil")")
+        }
+    }
+
     // ---- I: navigation mechanism and scrolling, round 4
     func nav(_ s: XCUIElementSnapshot) -> String { first(s) { $0.elementType == .navigationBar }?.identifier ?? "nil" }
     func press(_ e: XCUIElementSnapshot) -> String { var err: NSString?; let ok = PBHelper.pressSnapshot(e, action: 2010, error: &err); return "ok=\(ok) err=\(err ?? "nil")" }

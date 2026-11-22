@@ -1,6 +1,7 @@
 #import "PBHelper.h"
 #import <XCTest/XCTest.h>
 #import <objc/message.h>
+#import <dlfcn.h>
 
 @implementation PBHelper
 
@@ -101,6 +102,31 @@
     @catch (NSException *x) { if (error) *error = [NSString stringWithFormat:@"exception %@: %@", x.name, x.reason]; return NO; }
     if (error) *error = err ? err.description : @"none";
     return ok;
+}
+
+// Read action constants straight out of the phone's own AXRuntime by symbol name.
++ (NSString *)axRuntimeConstants {
+    void *h = dlopen("/System/Library/PrivateFrameworks/AXRuntime.framework/AXRuntime", RTLD_NOW);
+    if (!h) return [NSString stringWithFormat:@"dlopen failed: %s", dlerror()];
+    NSArray *names = @[@"kAXPressAction", @"kAXEscapeAction", @"kAXActivateAction", @"kAXShowMenuAction", @"kAXShowAlternateUIAction",
+        @"kAXScrollToVisibleAction", @"kAXIncrementAction", @"kAXDecrementAction", @"kAXScrollDownPageAction", @"kAXScrollUpPageAction",
+        @"kAXScrollLeftPageAction", @"kAXScrollRightPageAction", @"kAXScrollDownByPageAction", @"kAXScrollUpByPageAction",
+        @"kAXScrollLeftByPageAction", @"kAXScrollRightByPageAction", @"kAXMagicTapAction", @"kAXZoomInAction", @"kAXZoomOutAction",
+        @"kAXDismissAction", @"kAXSelectAction", @"kAXPickAction", @"kAXCancelAction", @"kAXDefaultAction", @"kAXBackAction",
+        @"kAXPerformEscapeAction", @"kAXAccessibilityEscapeAction", @"kAXCustomAction", @"kAXActivateCustomAction",
+        @"kAXScrollToTopAction", @"kAXScrollToBottomAction", @"kAXLongPressAction", @"kAXDoubleTapAction", @"kAXTwoFingerDoubleTapAction",
+        @"kAXBeginMonitoringIdleRunLoopAction", @"kAXDetectAnimationsNonActiveAction", @"kAXIncrementAction_iOS", @"kAXDecrementAction_iOS"];
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *n in names) {
+        void *p = dlsym(h, n.UTF8String);
+        if (p) [out addObject:[NSString stringWithFormat:@"%@=%d", n, *(int *)p]];
+    }
+    return [out componentsJoinedByString:@" "];
+}
+
++ (NSString *)describeAction:(NSInteger)action {
+    id a = ((id (*)(id, SEL, NSInteger))objc_msgSend)([NSClassFromString(@"XCUIAccessibilityAction") alloc], NSSelectorFromString(@"initWithAXAction:"), action);
+    return [a description] ?: @"nil";
 }
 
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString **)error {

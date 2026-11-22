@@ -110,3 +110,11 @@ The probe runner was uninstalled after the run.
 | LookUp tab switch | Tab items found under the tab bar (buttons with image children). AXPress failed with `kAXErrorFailure` on both an image and a tab button. Open. |
 
 The probe runner was uninstalled after the run.
+
+## Round 5 on the phone, 2026-11-22 04:41-04:47 ET: back and tab actions
+
+- XCTest's `XCUIAccessibilityAction` descriptions on 27.3 carry no names (`AXAction:2000` ... `AXAction:2069`), and the phone's AXRuntime exports none of the likely `kAX...Action` symbols by name (dlsym found none). So no action name could be read from the binaries on this phone.
+- A measured sweep of actions 2011-2040 on the background Settings General page (app element, navigation bar, "Settings" back button): ok=true for 2013-2016, 2018, 2022 and 2024, but **none popped back to the root** (nav bar stayed "General"). **Action 2025 on the app element crashed Settings** (crash log Preferences-2026-11-22-044517.ips).
+- The same sweep on LookUp's "Collect" tab button and its tab bar: 2010 (press) failed, and nothing changed the selected tab. **Action 2025 crashed LookUp** (LookUp-2026-11-22-044659.ips). Increment/decrement on the tab bar: no change.
+- Both apps relaunch normally. No data was created or changed. The probe runner was uninstalled.
+- Conclusion: back buttons and tab bar buttons in a background app are not operable by AX action on 27.3 with the actions found. **Do not sweep unknown action numbers again: 2025 crashes apps.**
