@@ -33,3 +33,30 @@ Result: the background assertion works on the phone (Calculator stays running in
 suspended, and Settings keeps the foreground). But a running, non-frontmost app's accessibility
 server does not answer snapshot requests (timeouts with the assertion; "server not found" once
 suspended without it). Read and act by accessibility on a background app: **fail** on iOS 27.3.
+
+## Second round on the phone, 2026-11-22 03:59-04:13 ET: it works
+
+Questioning the first round: its helper never read Calculator in the foreground either. Run C showed the
+helper's own snapshot (`XCAccessibilityElement elementWithProcessIdentifier:` + `requestSnapshotForElement:...`)
+times out even with Calculator frontmost, so the 03:44 "fail" was a probe bug, not iOS. Raw lines:
+`device-run-results-2.txt`.
+
+- **D (04:04):** the helper's call took 65 s and failed with `XCTFuture Code=1000 "Timed out while fetching snapshot from testmanagerd.."`, foreground and background alike. XCTest's public `XCUIApplication(bundleIdentifier:).snapshot()` of the same Calculator returned **44 elements in 82-91 ms, also in the background** (Calculator state 3, Settings 4).
+- **E (04:06):** the public snapshot is live in the background at +1/+5/+30/+120 s (44 elements, 55-154 ms). Keys are element type 20 (`.key`), not buttons.
+- First press attempt crashed in `-[XCAXClient_iOS performAction:onElement:value:error:]` (`objc_retain` of 0x7da = 2010): the action argument is an object. Type encoding `B48@0:8@"XCUIAccessibilityAction"16@"XCAccessibilityElement"24@32^@40`. Fixed with `[[XCUIAccessibilityAction alloc] initWithAXAction:2010]`.
+- **E (04:10-04:12), with Settings frontmost the whole time** (state 4 at every mark, the end screenshot shows Settings, the status bar shows "◀ Calculator"):
+
+| Mark | Calculator state | Snapshot | Action (by element) | Display read in the background |
+| - | - | - | - | - |
+| +1 s | 3 running background | 44 elements, 55 ms | AXPress "7" ok=true | 1 -> **7** |
+| +5 s | 3 | 44, 64 ms | AXPress "8" ok=true | 7 -> **78** |
+| +30 s | 3 | 44, 85 ms | AXPress "9" ok=true | 78 -> **789** |
+| +120 s | 3 | 44, 90 ms | AXPress "4" ok=true | 789 -> **7,894** |
+| verification (foreground, one-off) | 4 | | | **7,894** |
+
+**Result: an unchanged, original Calculator, kept running in the background by testmanagerd's background
+assertion, was read and operated by accessibility element (no touch, no coordinates, no screen) while
+Settings stayed in front.** Mechanism: `_XCT_requestBackgroundAssertionForPID:reply:` +
+`XCUIApplication(bundleIdentifier:).snapshot()` + `-[XCAXClient_iOS performAction:(XCUIAccessibilityAction)onElement:value:error:]`.
+Still to test: concurrency with the owner using the handset, text entry, apps other than Calculator,
+and how long the assertion lasts.

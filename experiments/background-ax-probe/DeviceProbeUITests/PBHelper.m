@@ -36,6 +36,10 @@
 }
 
 + (id)snapshotForPID:(int)pid timeout:(NSTimeInterval)seconds status:(NSString **)status {
+    return [self snapshotForPID:pid depth:40 timeout:seconds status:status];
+}
+
++ (id)snapshotForPID:(int)pid depth:(NSInteger)depth timeout:(NSTimeInterval)seconds status:(NSString **)status {
     id ax = [self ax];
     Class elCls = NSClassFromString(@"XCAccessibilityElement");
     SEL e = NSSelectorFromString(@"elementWithProcessIdentifier:");
@@ -45,7 +49,7 @@
     NSMutableDictionary *params = [NSMutableDictionary dictionary];
     SEL d = NSSelectorFromString(@"defaultParameters");
     if ([ax respondsToSelector:d]) { id def = ((id (*)(id, SEL))objc_msgSend)(ax, d); if ([def isKindOfClass:NSDictionary.class]) [params addEntriesFromDictionary:def]; }
-    params[@"maxDepth"] = @40; params[@"maxChildren"] = @400; params[@"maxArrayCount"] = @400; params[@"traverseFromParentsToChildren"] = @YES;
+    params[@"maxDepth"] = @(depth); params[@"maxChildren"] = @400; params[@"maxArrayCount"] = @400; params[@"traverseFromParentsToChildren"] = @YES;
     NSArray *attributes = [self attributes];
     __block id result = nil; __block NSString *why = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
@@ -68,6 +72,23 @@
     return root ?: result;
 }
 
+// Same request, made synchronously on the calling (main) thread, like Poki's own reads.
++ (id)snapshotOnCallerForPID:(int)pid status:(NSString **)status {
+    id ax = [self ax];
+    Class elCls = NSClassFromString(@"XCAccessibilityElement");
+    id element = ((id (*)(id, SEL, int))objc_msgSend)(elCls, NSSelectorFromString(@"elementWithProcessIdentifier:"), pid);
+    NSMutableDictionary *params = [NSMutableDictionary dictionary];
+    SEL d = NSSelectorFromString(@"defaultParameters");
+    if ([ax respondsToSelector:d]) { id def = ((id (*)(id, SEL))objc_msgSend)(ax, d); if ([def isKindOfClass:NSDictionary.class]) [params addEntriesFromDictionary:def]; }
+    NSError *err = nil; id result = nil;
+    @try { result = ((id (*)(id, SEL, id, id, id, NSError **))objc_msgSend)(ax, NSSelectorFromString(@"requestSnapshotForElement:attributes:parameters:error:"), element, [self attributes], params, &err); }
+    @catch (NSException *x) { if (status) *status = [NSString stringWithFormat:@"exception %@", x.reason]; return nil; }
+    if (!result) { if (status) *status = [NSString stringWithFormat:@"error: %@", err]; return nil; }
+    id root = nil; @try { root = [result valueForKey:@"_rootElementSnapshot"]; } @catch (__unused NSException *x) {}
+    if (status) *status = @"ok";
+    return root ?: result;
+}
+
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString **)error {
     id ax = [self ax];
     id element = nil;
@@ -75,7 +96,9 @@
     SEL s = NSSelectorFromString(@"performAction:onElement:value:error:");
     if (!element || ![ax respondsToSelector:s]) { if (error) *error = @"no element or selector"; return NO; }
     NSError *err = nil; BOOL ok = NO;
-    @try { ok = ((BOOL (*)(id, SEL, NSInteger, id, id, NSError **))objc_msgSend)(ax, s, action, element, nil, &err); }
+    // The first argument is an XCUIAccessibilityAction (encoding B48@0:8@"XCUIAccessibilityAction"16@"XCAccessibilityElement"24@32^@40).
+    id actionObject = ((id (*)(id, SEL, NSInteger))objc_msgSend)([NSClassFromString(@"XCUIAccessibilityAction") alloc], NSSelectorFromString(@"initWithAXAction:"), action);
+    @try { ok = ((BOOL (*)(id, SEL, id, id, id, NSError **))objc_msgSend)(ax, s, actionObject, element, nil, &err); }
     @catch (NSException *x) { if (error) *error = [NSString stringWithFormat:@"exception %@: %@", x.name, x.reason]; return NO; }
     if (error) *error = err ? err.description : @"none";
     return ok;

@@ -5,6 +5,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface PBHelper : NSObject
 + (nullable NSNumber *)requestBackgroundAssertionForPID:(int)pid;
 + (nullable id)snapshotForPID:(int)pid timeout:(NSTimeInterval)seconds status:(NSString * _Nullable * _Nullable)status;
++ (nullable id)snapshotForPID:(int)pid depth:(NSInteger)depth timeout:(NSTimeInterval)seconds status:(NSString * _Nullable * _Nullable)status;
++ (nullable id)snapshotOnCallerForPID:(int)pid status:(NSString * _Nullable * _Nullable)status;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;
 @end
 NS_ASSUME_NONNULL_END
