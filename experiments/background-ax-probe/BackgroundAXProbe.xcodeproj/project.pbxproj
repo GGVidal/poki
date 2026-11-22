@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		033418B34EF194ECA589EF21 /* BackgroundAXActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A6B8A34D8759B18C298211 /* BackgroundAXActionTests.swift */; };
 		1EA59BB8092E557142035EED /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9856DC405581A81535EA993E /* App.swift */; };
+		A6206BA26C0F20F0C878BB11 /* DeviceBackgroundAXTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -22,6 +23,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceBackgroundAXTests.swift; sourceTree = "<group>"; };
+		5E7152BB4BF70EC4A8535A68 /* DeviceProbeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DeviceProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		91A6B8A34D8759B18C298211 /* BackgroundAXActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundAXActionTests.swift; sourceTree = "<group>"; };
 		9856DC405581A81535EA993E /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		A6234C74F7E1B4CB4A2A75B9 /* ProbeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -40,6 +43,7 @@
 		6AFAFFA1BC7DF8C3A6C50AAE /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				5E7152BB4BF70EC4A8535A68 /* DeviceProbeUITests.xctest */,
 				D9049B9B19EBD9E0AC7779DB /* Fixture.app */,
 				A6234C74F7E1B4CB4A2A75B9 /* ProbeUITests.xctest */,
 			);
@@ -57,15 +61,41 @@
 		C3656CA30C1049A011A3FB88 = {
 			isa = PBXGroup;
 			children = (
+				EF12F7D1104D0CCAE21FBE51 /* DeviceProbeUITests */,
 				A545DCA31213CDAF0A03851D /* FixtureSources */,
 				2CA46A50AF467CDFAB5270EB /* ProbeUITests */,
 				6AFAFFA1BC7DF8C3A6C50AAE /* Products */,
 			);
 			sourceTree = "<group>";
 		};
+		EF12F7D1104D0CCAE21FBE51 /* DeviceProbeUITests */ = {
+			isa = PBXGroup;
+			children = (
+				2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */,
+			);
+			path = DeviceProbeUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		3A5CC8029621708F9E3839C5 /* DeviceProbeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 80C88888284BBB8A830770DE /* Build configuration list for PBXNativeTarget "DeviceProbeUITests" */;
+			buildPhases = (
+				79B6BA1211D4956E8CA85E50 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = DeviceProbeUITests;
+			packageProductDependencies = (
+			);
+			productName = DeviceProbeUITests;
+			productReference = 5E7152BB4BF70EC4A8535A68 /* DeviceProbeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		3F93E3F16A8AE147AF0EF10F /* Fixture */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5F0202A323B30BD9C63715B3 /* Build configuration list for PBXNativeTarget "Fixture" */;
@@ -110,6 +140,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					3A5CC8029621708F9E3839C5 = {
+						DevelopmentTeam = Q64ZL36CJN;
+						ProvisioningStyle = Automatic;
+					};
 					7349EBF3F65F7A079CF08500 = {
 						TestTargetID = 3F93E3F16A8AE147AF0EF10F;
 					};
@@ -131,6 +165,7 @@
 			targets = (
 				3F93E3F16A8AE147AF0EF10F /* Fixture */,
 				7349EBF3F65F7A079CF08500 /* ProbeUITests */,
+				3A5CC8029621708F9E3839C5 /* DeviceProbeUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -141,6 +176,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				033418B34EF194ECA589EF21 /* BackgroundAXActionTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79B6BA1211D4956E8CA85E50 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A6206BA26C0F20F0C878BB11 /* DeviceBackgroundAXTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -216,6 +259,25 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		127C8E9E31715B1E993F29CD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = Q64ZL36CJN;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -362,6 +424,25 @@
 			};
 			name = Release;
 		};
+		FBCEBE10A63C5EF7FDB116F3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = Q64ZL36CJN;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -370,6 +451,15 @@
 			buildConfigurations = (
 				16788211AC00671B5DC6F39E /* Debug */,
 				7AD2D76B94A7B9D679AA0CCA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		80C88888284BBB8A830770DE /* Build configuration list for PBXNativeTarget "DeviceProbeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FBCEBE10A63C5EF7FDB116F3 /* Debug */,
+				127C8E9E31715B1E993F29CD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
