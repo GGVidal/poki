@@ -122,6 +122,11 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
             stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16), stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             table.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: 6), table.leadingAnchor.constraint(equalTo: view.leadingAnchor), table.trailingAnchor.constraint(equalTo: view.trailingAnchor), table.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)])
     }
+    override var canBecomeFirstResponder: Bool { true }
+    override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); becomeFirstResponder() }
+    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "k", modifierFlags: [], action: #selector(keyK))] }
+    @objc func keyK() { Fix.log("keyCommand k") }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) { Fix.log("pressesBegan \(presses.first?.key?.characters ?? "?")"); super.pressesBegan(presses, with: event) }
     @objc func bar() { Fix.log("barButton -> push level 2"); navigationController?.pushViewController(LevelTwoController(), animated: true) }
     @objc func plain() { Fix.log("button") }
     @objc func pushNext() { Fix.log("push.requested"); navigationController?.pushViewController(LevelTwoController(), animated: true) }

@@ -200,6 +200,32 @@
     return [out componentsJoinedByString:@", "];
 }
 
+// Key event value for _accessibilityDispatchKeyboardAction: (type 4500 down / 4501 up, keyInfo.unmodifiedInput).
++ (id)keyEvent:(NSString *)input down:(BOOL)down asData:(BOOL)asData {
+    [self loadAXU];
+    id rep = ((id (*)(id, SEL, unsigned))objc_msgSend)(NSClassFromString(@"AXEventRepresentation"), NSSelectorFromString(@"keyRepresentationWithType:"), down ? 4500 : 4501);
+    id info = [NSClassFromString(@"AXEventKeyInfoRepresentation") new];
+    ((void (*)(id, SEL, id))objc_msgSend)(info, NSSelectorFromString(@"setUnmodifiedInput:"), input);
+    ((void (*)(id, SEL, id))objc_msgSend)(info, NSSelectorFromString(@"setModifiedInput:"), input);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(info, NSSelectorFromString(@"setKeyDown:"), down);
+    ((void (*)(id, SEL, id))objc_msgSend)(rep, NSSelectorFromString(@"setKeyInfo:"), info);
+    if (!asData) return rep;
+    SEL d = NSSelectorFromString(@"dataRepresentation");
+    if ([rep respondsToSelector:d]) return ((id (*)(id, SEL))objc_msgSend)(rep, d);
+    return [NSKeyedArchiver archivedDataWithRootObject:rep requiringSecureCoding:YES error:nil];
+}
+
+// Perform an action straight through AccessibilityUtilities' AXElement (runner process -> app), not testmanagerd.
++ (NSString *)directAction:(NSInteger)action value:(id)value onSnapshot:(id)snapshot {
+    [self loadAXU];
+    id xcel = nil; @try { xcel = [snapshot valueForKey:@"accessibilityElement"]; } @catch (__unused NSException *x) {}
+    id axui = xcel ? ((id (*)(id, SEL))objc_msgSend)(xcel, NSSelectorFromString(@"AXUIElement")) : nil;
+    id el = axui ? ((id (*)(id, SEL, id))objc_msgSend)(NSClassFromString(@"AXElement"), NSSelectorFromString(@"elementWithAXUIElement:"), axui) : nil;
+    if (!el) return @"no AXElement";
+    @try { BOOL ok = ((BOOL (*)(id, SEL, int, id))objc_msgSend)(el, NSSelectorFromString(@"performAction:withValue:"), (int)action, value); return ok ? @"ok" : @"NO"; }
+    @catch (NSException *x) { return [NSString stringWithFormat:@"exception %@", x.reason]; }
+}
+
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(id)value error:(NSString **)error {
     id ax = [self ax];
     id element = nil;

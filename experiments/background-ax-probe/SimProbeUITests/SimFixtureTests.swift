@@ -250,6 +250,30 @@ final class SimFixtureTests: XCTestCase {
     func testQ_focusForeground() { focusRoute(false) }
     func testQ_focusBackground() { focusRoute(true) }
 
+    // R: in-app key delivery. Send "k" down/up to the application element; the fixture logs its UIKeyCommand.
+    func keyRoute(_ bg: Bool) {
+        start(background: bg)
+        guard let app = snap() else { say("R no app snapshot"); return }
+        for id in [2034] {  // from the dispatcher's jump table: 2034 -> NSData -> representationWithData: -> _accessibilityDispatchKeyboardAction:
+            for (route, asData) in [("XCTest daemon, data", true), ("direct AXElement, data", true)] {
+                guard fixture.state == .runningForeground || fixture.state == .runningBackground else { say("R | fixture died"); start(background: bg); continue }
+                let before = lastEvent()
+                var rs: [String] = []
+                for down in [true, false] {
+                    let v = PBHelper.keyEvent("k", down: down, asData: asData)
+                    if route.hasPrefix("direct") { rs.append(PBHelper.directAction(id, value: v, onSnapshot: snap() ?? app)) }
+                    else { var e: NSString?; rs.append(PBHelper.pressSnapshot(snap() ?? app, action: id, value: v, error: &e) ? "ok" : "fail \((e ?? "") as String)".prefix(60).description) }
+                    usleep(150_000)
+                }
+                usleep(600_000)
+                let alive = fixture.state == .runningForeground || fixture.state == .runningBackground
+                say("R | \(id) | \(route) | \(rs.joined(separator: ", ")) | handler: \(!alive ? "fixture died" : (lastEvent() == before ? "none" : lastEvent()))")
+            }
+        }
+    }
+    func testR_keyForeground() { keyRoute(false) }
+    func testR_keyBackground() { keyRoute(true) }
+
     func testForegroundMap() { start(background: false); mapActions() }
     func testForegroundMapHigh() { start(background: false); mapRange(Array(4000...4060) + Array(5000...5040) + Array(2070...2120)) }
     func mapRange(_ ids: [Int]) {
