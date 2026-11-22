@@ -10,6 +10,7 @@
 		033418B34EF194ECA589EF21 /* BackgroundAXActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A6B8A34D8759B18C298211 /* BackgroundAXActionTests.swift */; };
 		1EA59BB8092E557142035EED /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9856DC405581A81535EA993E /* App.swift */; };
 		A6206BA26C0F20F0C878BB11 /* DeviceBackgroundAXTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */; };
+		A8843ED1C9674C7A75C831E3 /* PBHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = D87E94B76CD36BE71021D4BD /* PBHelper.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -25,9 +26,12 @@
 /* Begin PBXFileReference section */
 		2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceBackgroundAXTests.swift; sourceTree = "<group>"; };
 		5E7152BB4BF70EC4A8535A68 /* DeviceProbeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DeviceProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		83455FAF43619CCEFBBF2EFB /* PBHelper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PBHelper.h; sourceTree = "<group>"; };
 		91A6B8A34D8759B18C298211 /* BackgroundAXActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundAXActionTests.swift; sourceTree = "<group>"; };
 		9856DC405581A81535EA993E /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		A6234C74F7E1B4CB4A2A75B9 /* ProbeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CB74AEB688F429A99D2F7078 /* Bridging.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Bridging.h; sourceTree = "<group>"; };
+		D87E94B76CD36BE71021D4BD /* PBHelper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PBHelper.m; sourceTree = "<group>"; };
 		D9049B9B19EBD9E0AC7779DB /* Fixture.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Fixture.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -71,7 +75,10 @@
 		EF12F7D1104D0CCAE21FBE51 /* DeviceProbeUITests */ = {
 			isa = PBXGroup;
 			children = (
+				CB74AEB688F429A99D2F7078 /* Bridging.h */,
 				2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */,
+				83455FAF43619CCEFBBF2EFB /* PBHelper.h */,
+				D87E94B76CD36BE71021D4BD /* PBHelper.m */,
 			);
 			path = DeviceProbeUITests;
 			sourceTree = "<group>";
@@ -184,6 +191,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A6206BA26C0F20F0C878BB11 /* DeviceBackgroundAXTests.swift in Sources */,
+				A8843ED1C9674C7A75C831E3 /* PBHelper.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -276,6 +284,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
 				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = DeviceProbeUITests/Bridging.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -438,6 +447,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
 				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = DeviceProbeUITests/Bridging.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
