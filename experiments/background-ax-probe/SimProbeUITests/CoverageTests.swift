@@ -255,3 +255,71 @@ extension SimFixtureTests {
         }
     }
 }
+
+extension SimFixtureTests {
+    func ms(_ a: Date, _ b: Date) -> Int { Int(b.timeIntervalSince(a) * 1000) }
+    func frameOf(_ pred: (XCUIElementSnapshot) -> Bool) -> CGRect? { find(snap(), pred)?.frame }
+    // One turn: target to front, tap each point once the scene reports foreground, back to Settings.
+    func fastTurn(_ points: [(String, CGPoint)], earlyPoll: Bool) -> String {
+        let t0 = Date()
+        fixture.activate(); let a = "activate()"
+        let t1 = Date()
+        if earlyPoll { for _ in 0..<100 { if fixture.state == .runningForeground { break }; usleep(10_000) } }
+        let t2 = Date()
+        var legs: [String] = []
+        for (name, p) in points { let s = Date(); let r = PBHelper.synthTap(at: p, timeout: 5); legs.append("\(name) \(r) \(ms(s, Date())) ms") }
+        let t3 = Date()
+        settings.activate(); let b = "activate()"
+        let t4 = Date()
+        return "activate \(ms(t0, t1)) ms (\(a.prefix(12))) | wait fg \(ms(t1, t2)) ms | taps [\(legs.joined(separator: "; "))] \(ms(t2, t3)) ms | back \(ms(t3, t4)) ms (\(b.prefix(12))) | on screen ≈ \(ms(t1, t4)) ms | total \(ms(t0, t4)) ms"
+    }
+    func fastRun(reduceMotion: Bool, earlyPoll: Bool) {
+        background = true
+        say("FR | \(PBHelper.setReduceMotion(reduceMotion))")
+        fixture.launchArguments = []; fixture.launch(); sleep(2)
+        guard let bf = frameOf({ $0.label == "Plain button" && $0.elementType == .button }) else { say("FR | no button"); return }
+        let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10); sleep(2)
+        _ = PBHelper.requestBackgroundAssertion(forPID: pid)
+        for i in 1...5 {
+            let before = lastEvent()
+            let r = fastTurn([("button", CGPoint(x: bf.midX, y: bf.midY))], earlyPoll: earlyPoll)
+            usleep(600_000)
+            say("FR | rm=\(reduceMotion) early=\(earlyPoll) run \(i) | \(r) | handler (BG snapshot): \(lastEvent() == before ? "none" : lastEvent()) | front: \(String(frontSummary().prefix(30)))")
+            sleep(2)
+        }
+    }
+    func testFR_plain() { fastRun(reduceMotion: false, earlyPoll: false) }
+    func testFR_early() { fastRun(reduceMotion: false, earlyPoll: true) }
+    func testFR_reduceMotionEarly() { fastRun(reduceMotion: true, earlyPoll: true); _ = PBHelper.setReduceMotion(false) }
+}
+
+extension SimFixtureTests {
+    func settingsState() -> String {
+        guard let s = try? settings.snapshot() else { return "unreadable" }
+        let field = find(s) { $0.elementType == .searchField }
+        let kb = find(s) { $0.elementType == .keyboard } != nil
+        let firstCell = find(s) { $0.elementType == .cell }?.label ?? "-"
+        return "search='\((field?.value as? String) ?? "")' keyboard=\(kb) firstCell='\(firstCell.prefix(20))' cellY=\(Int(find(s) { $0.elementType == .cell }?.frame.minY ?? -1))"
+    }
+    func testFB_batchAndState() {
+        background = true
+        _ = PBHelper.setReduceMotion(false)
+        fixture.launchArguments = []; fixture.launch(); sleep(2)
+        let s = snap()
+        guard let b1 = find(s, { $0.label == "Plain button" && $0.elementType == .button })?.frame,
+              let b2 = find(s, { $0.label == "Push level 2" && $0.elementType == .button })?.frame,
+              let row = find(s, { $0.elementType == .cell })?.frame else { say("FB | frames missing"); return }
+        let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        // Settings: scroll a bit, start a search with the keyboard up and text typed
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10); sleep(1)
+        settings.swipeUp(); sleep(1); settings.swipeDown(); sleep(1)
+        let sf = settings.searchFields.firstMatch; if sf.waitForExistence(timeout: 3) { sf.tap(); sf.typeText("wi"); sleep(1) }
+        _ = PBHelper.requestBackgroundAssertion(forPID: pid)
+        say("FB | Settings before: \(settingsState())")
+        let r = fastTurn([("plain button", CGPoint(x: b1.midX, y: b1.midY)), ("push button", CGPoint(x: b2.midX, y: b2.midY)), ("table row", CGPoint(x: row.midX, y: row.midY))], earlyPoll: true)
+        sleep(1)
+        say("FB | batch turn | \(r)")
+        say("FB | Settings after: \(settingsState())")
+    }
+}

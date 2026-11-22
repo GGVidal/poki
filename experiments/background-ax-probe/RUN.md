@@ -453,3 +453,21 @@ an outside way into `_keyboardActivate`, which only the switch's FKA key command
 - Round trip (fixture in background → `activate()` → `XCUIElement.tap()` on the plain button → `Settings.activate()`), 3 runs:
   to front 74–104 ms (call return; the switch animation continues), tap until handler 4.3–6.3 s (XCTest's element query and idle waits),
   back to Settings 0.28–1.2 s; total 4.7–7.1 s. The owner sees the fixture come to the front for the whole tap leg.
+
+### Fast round trip (simulator 27.3, fixture), 2026-11-22 ET
+
+Path: element frame from the background snapshot → `fixture.activate()` → tap synthesized at that point with
+`-[XCSynthesizedEventRecord synthesizeWithError:]` (XCTest's authorized path; calling the daemon's `_XCT_synthesizeEvent:` directly from the runner was refused:
+"Not authorized for performing UI testing actions", XCTDaemonErrorDomain 41) → `settings.activate()`. No element query, no idle wait.
+Times are from the fixture's own log (scene willEnterForeground → handler → didEnterBackground):
+
+| variant | run | until handler | target on screen |
+|---|---|---|---|
+| plain | 1–5 | 5.7 s, 2.8 s, missed, 0.56 s, 3.1 s | 5.9, 4.4, 2.1, 2.4, 4.7 s |
+| Reduce Motion | 1–5 | missed, 5.0 s, 2.8 s, 2.3 s, 1.7 s | 1.6, 5.1, 3.5, 3.5, 3.2 s |
+
+- The synthesized tap itself takes about 0.3 s. Most of the variance comes from `activate()` returning at varying times. A miss happens when the tap lands before the
+  target accepts touches. Reduce Motion doesn't shorten the turn.
+- Batch in one turn: plain button and push button both fired (about 0.3 s per press, 0.9 s for three presses). The push navigated, so the third press
+  (a table row) landed on the next screen. Presses that change the screen need a fresh frame. One batched turn: 1.6 s on screen.
+- Previous app's state (Settings with a search in progress): search text "wi" and the keyboard were both still there after the turn.

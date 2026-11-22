@@ -273,4 +273,32 @@
     @try { [info setValue:@(value) forKey:key]; } @catch (NSException *e) { NSLog(@"SIMPROBE modifier KVC failed %@", e); }
     return ((id (*)(id, SEL))objc_msgSend)(rep, NSSelectorFromString(@"dataRepresentation"));
 }
++ (id)daemonProxy {
+    id session = ((id (*)(id, SEL))objc_msgSend)(NSClassFromString(@"XCTRunnerDaemonSession"), NSSelectorFromString(@"sharedSession"));
+    return ((id (*)(id, SEL))objc_msgSend)(session, NSSelectorFromString(@"daemonProxy"));
+}
++ (NSString *)daemonActivate:(NSString *)bundleID timeout:(NSTimeInterval)t {
+    id proxy = [self daemonProxy]; if (!proxy) return @"no proxy";
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0); __block NSString *res = @"timeout";
+    void (^done)(id, id) = ^(id a, id b) { res = [NSString stringWithFormat:@"done %@ %@", a ?: @"-", b ?: @"-"]; dispatch_semaphore_signal(sem); };
+    ((void (*)(id, SEL, id, id, id, id))objc_msgSend)(proxy, NSSelectorFromString(@"_XCT_launchApplicationWithBundleID:arguments:environment:completion:"), bundleID, @[], @{}, done);
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)));
+    return res;
+}
++ (NSString *)synthTapAt:(CGPoint)p timeout:(NSTimeInterval)t {
+    id rec = ((id (*)(id, SEL, id, long long))objc_msgSend)([NSClassFromString(@"XCSynthesizedEventRecord") alloc], NSSelectorFromString(@"initWithName:interfaceOrientation:"), @"fast tap", 1);
+    id path = ((id (*)(id, SEL, CGPoint, double))objc_msgSend)([NSClassFromString(@"XCPointerEventPath") alloc], NSSelectorFromString(@"initForTouchAtPoint:offset:"), p, 0.0);
+    ((void (*)(id, SEL, double))objc_msgSend)(path, NSSelectorFromString(@"liftUpAtOffset:"), 0.05);
+    ((void (*)(id, SEL, id))objc_msgSend)(rec, NSSelectorFromString(@"addPointerEventPath:"), path);
+    NSError *err = nil;
+    BOOL ok = ((BOOL (*)(id, SEL, NSError **))objc_msgSend)(rec, NSSelectorFromString(@"synthesizeWithError:"), &err);
+    return ok ? @"ok" : [NSString stringWithFormat:@"error %@", err.localizedDescription];
+}
++ (NSString *)setReduceMotion:(BOOL)on {
+    void *h = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW);
+    void (*set)(BOOL) = dlsym(h ?: RTLD_DEFAULT, "_AXSSetReduceMotionEnabled");
+    BOOL (*get)(void) = dlsym(h ?: RTLD_DEFAULT, "_AXSReduceMotionEnabled");
+    if (!set || !get) return @"missing";
+    set(on); usleep(300000); return [NSString stringWithFormat:@"reduceMotion=%d", get()];
+}
 @end

@@ -20,5 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action value:(nullable id)value error:(NSString * _Nullable * _Nullable)error;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;
 + (NSString *)setFullKeyboardAccess:(BOOL)on;
++ (NSString *)daemonActivate:(NSString *)bundleID timeout:(NSTimeInterval)t;
++ (NSString *)synthTapAt:(CGPoint)p timeout:(NSTimeInterval)t;
++ (NSString *)setReduceMotion:(BOOL)on;
 @end
 NS_ASSUME_NONNULL_END
