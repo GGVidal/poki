@@ -149,6 +149,61 @@ final class SimFixtureTests: XCTestCase {
         tryAll("Tab 'Second'", { byLabel("Second", [.button]) })
     }
 
+    // P: explicit-context touch. Context id is captured while the fixture is in front.
+    func testP_contextAddressedTap() {
+        background = false
+        say("P hand types: \(PBHelper.handTypeNames())")
+        fixture.launch()
+        let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        guard let button = find(snap(), { $0.label == "Plain button" && $0.elementType == .button }) else { say("P no button"); return }
+        let ctx = PBHelper.contextId(ofSnapshot: button)
+        let center = CGPoint(x: button.frame.midX, y: button.frame.midY)
+        say("P fixture pid=\(pid) button center=\(center) contextId(fg)=\(ctx)")
+        say("P assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        background = true
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10)
+        let bgCtx = find(snap(), { $0.label == "Plain button" && $0.elementType == .button }).map { PBHelper.contextId(ofSnapshot: $0) } ?? 0
+        say("P contextId(bg, via AXElement)=\(bgCtx)")
+        // hand type pairs to try are printed above; the defaults below are replaced after reading them.
+        for (down, up) in [(1, 6), (1, 2)] {
+            for (label, c) in [("explicit context", ctx), ("no context", UInt32(0))] {
+                let before = lastEvent(); let fb = frontSummary()
+                let r = PBHelper.postTap(at: center, contextId: c, pid: pid, displayId: 1, down: Int32(down), up: Int32(up))
+                sleep(2)
+                say("P | types \(down)/\(up) | \(label) ctx=\(c) | \(r) | handler: \(lastEvent() == before ? "none" : lastEvent()) | front before: \(fb) | after: \(frontSummary())")
+            }
+        }
+    }
+
+    // L: the assistive-client route (AXElement press / simulateTap), fixture foreground then background.
+    func frontSummary() -> String {
+        guard let s = try? settings.snapshot() else { return "settings read failed" }
+        var n = 0, labels: [String] = []
+        func w(_ e: XCUIElementSnapshot) { n += 1; if labels.count < 4, !e.label.isEmpty { labels.append(e.label) }; e.children.forEach(w) }
+        w(s); return "settings elements=\(n) nav=\(find(s) { $0.elementType == .navigationBar }?.identifier ?? "nil") first=\(labels)"
+    }
+    func routeTest(_ bg: Bool) {
+        start(background: bg)
+        func byLabel(_ l: String, _ types: [XCUIElement.ElementType]) -> XCUIElementSnapshot? { find(snap()) { $0.label == l && types.contains($0.elementType) } }
+        let targets: [(String, () -> XCUIElementSnapshot?)] = [
+            ("UIButton", { byLabel("Plain button", [.button]) }), ("UISwitch", { byLabel("Switch", [.switch]) }),
+            ("Table cell", { self.find(self.snap()) { $0.elementType == .cell && $0.label.hasPrefix("Row ") } }), ("Tab 'Second'", { byLabel("Second", [.button]) })]
+        for (name, locate) in targets {
+            for route in ["press", "tap"] {
+                let before = lastEvent(); let fb = bg ? frontSummary() : "-"
+                let shot1 = XCUIScreen.main.screenshot().pngRepresentation.count
+                let r = locate().map { PBHelper.axElementRoute(route, onSnapshot: $0) } ?? "not found"
+                sleep(2)
+                let after = lastEvent(); let fa = bg ? frontSummary() : "-"
+                let shot2 = XCUIScreen.main.screenshot().pngRepresentation.count
+                say("L | \(name) | \(route) | \(r) | handler: \(after == before ? "none" : after) | front before: \(fb) | after: \(fa) | screen bytes \(shot1)->\(shot2) | fixture=\(fixture.state.rawValue)")
+                if name == "Tab 'Second'" && after != before, let back = byLabel("Controls", [.button]) { _ = PBHelper.axElementRoute("tap", onSnapshot: back); sleep(2) }
+            }
+        }
+    }
+    func testL_foreground() { routeTest(false) }
+    func testL_background() { routeTest(true) }
+
     // For the lldb trace: attach to an already running fixture (no launch), press three elements.
     func testPressForTrace() {
         background = false

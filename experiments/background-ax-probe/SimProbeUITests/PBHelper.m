@@ -129,6 +129,77 @@
     return [a description] ?: @"nil";
 }
 
+// AccessibilityUtilities' assistive-client element (the layer VoiceOver uses).
++ (NSString *)axElementRoute:(NSString *)route onSnapshot:(id)snapshot {
+    static void *h; if (!h) h = dlopen("/System/Library/PrivateFrameworks/AccessibilityUtilities.framework/AccessibilityUtilities", RTLD_NOW);
+    if (!h) return [NSString stringWithFormat:@"dlopen failed %s", dlerror()];
+    id xcel = nil; @try { xcel = [snapshot valueForKey:@"accessibilityElement"]; } @catch (__unused NSException *x) {}
+    if (!xcel) return @"no accessibilityElement";
+    id axui = ((id (*)(id, SEL))objc_msgSend)(xcel, NSSelectorFromString(@"AXUIElement"));
+    if (!axui) return @"no AXUIElement";
+    Class AXElement = NSClassFromString(@"AXElement");
+    id el = ((id (*)(id, SEL, id))objc_msgSend)(AXElement, NSSelectorFromString(@"elementWithAXUIElement:"), axui);
+    if (!el) return @"no AXElement";
+    unsigned ctx = 0, disp = 0;
+    @try {
+        ctx = ((unsigned (*)(id, SEL))objc_msgSend)(el, NSSelectorFromString(@"windowContextId"));
+        disp = ((unsigned (*)(id, SEL))objc_msgSend)(el, NSSelectorFromString(@"windowDisplayId"));
+    } @catch (__unused NSException *x) {}
+    NSString *result = @"?";
+    @try {
+        if ([route isEqualToString:@"press"]) {
+            BOOL ok = ((BOOL (*)(id, SEL))objc_msgSend)(el, NSSelectorFromString(@"press"));
+            result = ok ? @"press returned YES" : @"press returned NO";
+        } else if ([route isEqualToString:@"tap"]) {
+            ((void (*)(id, SEL, unsigned long))objc_msgSend)(el, NSSelectorFromString(@"simulateTapWithFingerIndex:"), 0);
+            result = @"simulateTap sent";
+        }
+    } @catch (NSException *x) { result = [NSString stringWithFormat:@"exception %@: %@", x.name, x.reason]; }
+    return [NSString stringWithFormat:@"%@ | windowContextId=%u displayId=%u", result, ctx, disp];
+}
+
++ (void)loadAXU { static void *h; if (!h) h = dlopen("/System/Library/PrivateFrameworks/AccessibilityUtilities.framework/AccessibilityUtilities", RTLD_NOW); }
+
+// Names of hand event types straight from the system's own debug describer.
++ (NSString *)handTypeNames {
+    [self loadAXU];
+    NSString *(*desc)(unsigned) = dlsym(RTLD_DEFAULT, "_AXDebugDescriptionForAXHandEventType");
+    if (!desc) desc = dlsym(RTLD_DEFAULT, "AXDebugDescriptionForAXHandEventType");
+    if (!desc) return @"describer not found";
+    NSMutableArray *o = [NSMutableArray array];
+    for (unsigned i = 0; i < 24; i++) { NSString *d = desc(i); if (d.length) [o addObject:[NSString stringWithFormat:@"%u=%@", i, d]]; }
+    return [o componentsJoinedByString:@" "];
+}
+
++ (unsigned)contextIdOfSnapshot:(id)snapshot {
+    [self loadAXU];
+    id xcel = nil; @try { xcel = [snapshot valueForKey:@"accessibilityElement"]; } @catch (__unused NSException *x) {}
+    id axui = xcel ? ((id (*)(id, SEL))objc_msgSend)(xcel, NSSelectorFromString(@"AXUIElement")) : nil;
+    id el = axui ? ((id (*)(id, SEL, id))objc_msgSend)(NSClassFromString(@"AXElement"), NSSelectorFromString(@"elementWithAXUIElement:"), axui) : nil;
+    return el ? ((unsigned (*)(id, SEL))objc_msgSend)(el, NSSelectorFromString(@"windowContextId")) : 0;
+}
+
+// A touch down + up built as AXEventRepresentation with an explicit context id, pid and display id,
+// posted through AXBackBoardServer.
++ (NSString *)postTapAt:(CGPoint)p contextId:(unsigned)ctx pid:(int)pid displayId:(unsigned)display down:(int)down up:(int)up {
+    [self loadAXU];
+    Class Rep = NSClassFromString(@"AXEventRepresentation");
+    id server = ((id (*)(id, SEL))objc_msgSend)(NSClassFromString(@"AXBackBoardServer"), NSSelectorFromString(@"server"));
+    if (!Rep || !server) return @"classes missing";
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSNumber *type in @[@(down), @(up)]) {
+        id rep = ((id (*)(id, SEL, unsigned, CGPoint))objc_msgSend)(Rep, NSSelectorFromString(@"touchRepresentationWithHandType:location:"), type.unsignedIntValue, p);
+        if (!rep) { [out addObject:@"nil rep"]; continue; }
+        if (ctx) ((void (*)(id, SEL, unsigned))objc_msgSend)(rep, NSSelectorFromString(@"setContextId:"), ctx);
+        if (pid > 0) ((void (*)(id, SEL, int))objc_msgSend)(rep, NSSelectorFromString(@"setPid:"), pid);
+        if (display) ((void (*)(id, SEL, unsigned))objc_msgSend)(rep, NSSelectorFromString(@"setDisplayId:"), display);
+        @try { ((void (*)(id, SEL, id, BOOL))objc_msgSend)(server, NSSelectorFromString(@"postEvent:systemEvent:"), rep, NO); [out addObject:[NSString stringWithFormat:@"posted type %@", type]]; }
+        @catch (NSException *x) { [out addObject:[NSString stringWithFormat:@"exception %@", x.reason]]; }
+        usleep(80000);
+    }
+    return [out componentsJoinedByString:@", "];
+}
+
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString **)error {
     id ax = [self ax];
     id element = nil;

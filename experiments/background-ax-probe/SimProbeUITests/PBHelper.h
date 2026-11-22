@@ -10,6 +10,10 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)setAttribute:(NSString *)name value:(id)value onSnapshot:(id)snapshot error:(NSString * _Nullable * _Nullable)error;
 + (NSString *)axRuntimeConstants;
 + (NSString *)describeAction:(NSInteger)action;
++ (NSString *)axElementRoute:(NSString *)route onSnapshot:(id)snapshot;
++ (NSString *)handTypeNames;
++ (NSString *)postTapAt:(CGPoint)p contextId:(unsigned)ctx pid:(int)pid displayId:(unsigned)display down:(int)down up:(int)up;
++ (unsigned)contextIdOfSnapshot:(id)snapshot;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;
 @end
 NS_ASSUME_NONNULL_END

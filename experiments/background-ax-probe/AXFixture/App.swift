@@ -43,7 +43,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
         window = w
     }
     func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) { Fix.log("tab.didSelect \(viewController.tabBarItem.title ?? "")") }
-    func sceneDidEnterBackground(_ scene: UIScene) { Fix.log("scene.didEnterBackground") }
+    func sceneDidEnterBackground(_ scene: UIScene) { Fix.log("scene.didEnterBackground"); logWindow("didEnterBackground") }
+    func sceneDidBecomeActive(_ scene: UIScene) { logWindow("didBecomeActive") }
+    func sceneWillResignActive(_ scene: UIScene) { logWindow("willResignActive") }
+    var windowTimer: Timer?
+    func logWindow(_ tag: String) {
+        guard let w = window else { return }
+        let ctx = (w.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
+        let layerContext = (w.layer.value(forKey: "context") as AnyObject?).map { "\($0)" } ?? "nil"
+        NSLog("FIXLOG window %@ contextId=%u layer.context=%@ activation=%d hidden=%d", tag, ctx, layerContext, w.windowScene?.activationState.rawValue ?? -9, w.isHidden ? 1 : 0)
+        if windowTimer == nil { windowTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.logWindow("tick") } }
+    }
     func sceneWillEnterForeground(_ scene: UIScene) { Fix.log("scene.willEnterForeground") }
 }
 

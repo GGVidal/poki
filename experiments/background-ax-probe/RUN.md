@@ -165,3 +165,32 @@ those classes handle activation themselves. Separately, a UIKit push inside a ba
 
 lldb attach to the fixture worked, but breakpoints in the simulator's shared cache did not resolve within
 the time limit, so the exact failing check is not yet traced.
+
+## Tap-only controls: why they cannot be operated in the background (simulator, our fixture), 11:00-12:10 ET
+
+Correction to the earlier reading: plain UIButton, UISwitch, UITableViewCell and tab bar buttons fail the
+accessibility press (2010) **in the foreground as well** (kAXErrorFailure, no handler). UIKit does not
+implement activation for these classes. Assistive clients (VoiceOver, Switch Control) operate them with a
+real touch.
+
+| Route (fixture's plain button, switch, tab) | Foreground | Background (Settings in front) |
+| - | - | - |
+| XCTest AX press 2010 | fail, no handler | fail, no handler |
+| Value / selected / focused setters, focus then press, ids 2001-2040 except 2025 | no handler | no handler |
+| `-[AXElement press]` (AccessibilityUtilities, VoiceOver's layer) | **handler fired** (button, switch, tab) | returned YES, **no handler, and the tap landed on Settings** (root list -> Apple Account sign-in sheet) |
+| `-[AXElement simulateTapWithFingerIndex:]` | handler fired | no handler |
+| `AXEventRepresentation` touch (hand types from the system describer: 1 Touched, 2 Moved, 6 Lifted) with the fixture's foreground context id set, posted via `-[AXBackBoardServer postEvent:systemEvent:]` | | **no handler, Settings unchanged** (event dropped) |
+
+Why, from the fixture's own log of its window:
+- in front: `contextId=3593599260 layer.context=<CAContext ...> activation=0`
+- after `sceneDidEnterBackground`: next tick `contextId=0 layer.context=nil activation=2`
+
+**The backgrounded app's window has no render context at all.** There is nothing a touch could be addressed
+to. A touch either falls back to the screen position (and hits the front app) or is dropped.
+
+**Hard rule for Poki: never use `AXElement press` or `simulateTap` on a background target. They become screen
+touches on whatever app is in front.**
+
+Tap-only UIKit controls in a background app are therefore not operable by any route found. Background
+operation covers elements that implement accessibility activation themselves, value-type controls (slider,
+segmented control, text field set-value), scrolling, and escape (in the foreground).
