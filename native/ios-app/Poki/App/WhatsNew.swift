@@ -109,60 +109,127 @@ enum WhatsNewCatalog {
             ),
         ]
     )
+
+    /// Returns the release notes only when they match the running app's actual version.
+    nonisolated static func release(
+        for installedVersion: String = WhatsNew.installedVersion,
+        catalog: WhatsNewRelease = current
+    ) -> WhatsNewRelease? {
+        let normalized = installedVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, normalized == catalog.version else { return nil }
+        return catalog
+    }
+}
+
+/// Coordinates deferred post-launch presentation of What's New so temporary blockers
+/// postpone presentation instead of dropping it for the session.
+struct WhatsNewLaunchGate: Equatable {
+    private(set) var scheduled = false
+    private(set) var presented = false
+
+    struct Context: Equatable {
+        var firstFrameDisplayed: Bool
+        var curtainUp: Bool
+        var sceneActive: Bool
+        var welcoming: Bool
+        var detailsOpen: Bool
+        var installMessageActive: Bool
+        var pairingUnderWay: Bool
+        var whatsNewOpen: Bool
+    }
+
+    mutating func beginSchedulingIfReady(context: Context, isDue: () -> Bool) -> Bool {
+        guard !scheduled, !presented, canPresentNow(context: context), isDue() else { return false }
+        scheduled = true
+        return true
+    }
+
+    mutating func commitIfStillReady(context: Context, isDue: () -> Bool) -> Bool {
+        guard scheduled, !presented else { return false }
+        scheduled = false
+        guard canPresentNow(context: context), isDue() else { return false }
+        presented = true
+        return true
+    }
+
+    private func canPresentNow(context: Context) -> Bool {
+        context.firstFrameDisplayed
+            && !context.curtainUp
+            && context.sceneActive
+            && !context.welcoming
+            && !context.detailsOpen
+            && !context.installMessageActive
+            && !context.pairingUnderWay
+            && !context.whatsNewOpen
+    }
 }
 
 /// Decides whether What's New should appear once after an update, and never on a fresh install.
 enum WhatsNew {
     static let seenVersionKey = "pokiWhatsNewSeenVersion"
 
-    /// Call at launch right after `FirstRun.decide(...)`.
-    /// Fresh installs record the current version as seen so they never get What's New on install.
+    nonisolated static var installedVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Call at launch right after `FirstRun.decide(...)`, passing the prior `FirstRun.key` value
+    /// read before `FirstRun.decide(...)` ran.
+    /// Only a true fresh install (no restored/existing seen version, no prior FirstRun record, and
+    /// no earlier-version traces) marks the installed version as seen so fresh installs skip What's New.
     nonisolated static func decide(
-        currentVersion: String = WhatsNewCatalog.current.version,
+        installedVersion: String = WhatsNew.installedVersion,
+        priorFirstRun: String? = nil,
         defaults: UserDefaults = .standard,
         sessionsFolder: URL = SessionStore.defaultFolder
     ) {
-        guard !currentVersion.isEmpty else { return }
-        let firstRun = defaults.string(forKey: FirstRun.key)
+        let normalized = installedVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        guard defaults.string(forKey: seenVersionKey) == nil else { return }
+        guard priorFirstRun == nil else { return }
         let isFreshInstall: Bool
-        if let firstRun {
+        if let firstRun = defaults.string(forKey: FirstRun.key) {
             isFreshInstall = firstRun == FirstRun.Record.due.rawValue
         } else {
             isFreshInstall = !EarlierVersion.leftTraces(defaults: defaults, sessionsFolder: sessionsFolder)
         }
         if isFreshInstall {
-            defaults.set(currentVersion, forKey: seenVersionKey)
+            defaults.set(normalized, forKey: seenVersionKey)
         }
     }
 
     /// Pure decision based on persisted state (used by `isDueAtLaunch` and unit tests).
     nonisolated static func shouldPresent(
-        currentVersion: String = WhatsNewCatalog.current.version,
+        installedVersion: String = WhatsNew.installedVersion,
+        catalog: WhatsNewRelease = WhatsNewCatalog.current,
         defaults: UserDefaults = .standard
     ) -> Bool {
-        guard !currentVersion.isEmpty else { return false }
+        guard let release = WhatsNewCatalog.release(for: installedVersion, catalog: catalog) else { return false }
         if defaults.string(forKey: FirstRun.key) == FirstRun.Record.due.rawValue { return false }
-        return defaults.string(forKey: seenVersionKey) != currentVersion
+        return defaults.string(forKey: seenVersionKey) != release.version
     }
 
     /// Launch-time gate that respects scripted `-poki…` launches and XCTest runs.
     static func isDueAtLaunch(
-        currentVersion: String = WhatsNewCatalog.current.version,
+        installedVersion: String = WhatsNew.installedVersion,
+        catalog: WhatsNewRelease = WhatsNewCatalog.current,
         defaults: UserDefaults = .standard
     ) -> Bool {
         let arguments = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         if arguments["pokiScreen"] as? String == "whatsNew" { return true }
         if ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil { return false }
         if arguments.keys.contains(where: { $0.hasPrefix("poki") }) { return false }
-        return shouldPresent(currentVersion: currentVersion, defaults: defaults)
+        return shouldPresent(installedVersion: installedVersion, catalog: catalog, defaults: defaults)
     }
 
     nonisolated static func markSeen(
-        version: String = WhatsNewCatalog.current.version,
+        version: String = WhatsNew.installedVersion,
+        catalog: WhatsNewRelease = WhatsNewCatalog.current,
         defaults: UserDefaults = .standard
     ) {
-        guard !version.isEmpty else { return }
-        defaults.set(version, forKey: seenVersionKey)
+        guard let release = WhatsNewCatalog.release(for: version, catalog: catalog) else { return }
+        defaults.set(release.version, forKey: seenVersionKey)
+        if defaults === UserDefaults.standard { SettingsVault.save() }
     }
 }
 

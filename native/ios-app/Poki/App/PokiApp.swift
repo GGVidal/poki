@@ -34,9 +34,10 @@ struct PokiApp: App {
         FieldDictation.keepButtonForUpgrade()
         // Whether this phone gets the first run: not when an earlier version was used here. Read before
         // anything this version writes, like the line above.
+        let priorFirstRun = UserDefaults.standard.string(forKey: FirstRun.key)
         FirstRun.decide()
-        // Record the current version as seen on a fresh install so What's New only shows after updates.
-        WhatsNew.decide()
+        // Record the installed version as seen only on a true fresh install so What's New shows after updates.
+        WhatsNew.decide(priorFirstRun: priorFirstRun)
         // Page titles in Geist, the website's typeface (prominent text only).
         if let large = Prominent.uiFont(.largeTitle, .bold), let inline = Prominent.uiFont(.headline, .semibold) {
             UINavigationBar.appearance().largeTitleTextAttributes = [.font: large]
@@ -123,7 +124,7 @@ struct RootView: View {
     @State private var welcomeLink: SetupStep?
     /// The post-update What's New card, presented after Home has appeared.
     @State private var whatsNewOpen = false
-    @State private var whatsNewCheckedThisLaunch = false
+    @State private var whatsNewGate = WhatsNewLaunchGate()
     @Environment(\.dynamicTypeSize) private var typeSize
     @AppStorage(AppInterfaceSize.defaultsKey) private var interfaceSize = AppInterfaceSize.system
     @AppStorage(Appearance.key) private var appearance = Appearance.automatic.rawValue
@@ -291,7 +292,7 @@ struct RootView: View {
             isPresented: Binding(get: { whatsNewOpen && !showsSidebar }, set: { whatsNewOpen = $0 }),
             onDismiss: { WhatsNew.markSeen() }
         ) {
-            WhatsNewView {
+            WhatsNewView(release: WhatsNewCatalog.release() ?? WhatsNewCatalog.current) {
                 WhatsNew.markSeen()
                 whatsNewOpen = false
             }
@@ -300,7 +301,7 @@ struct RootView: View {
             isPresented: Binding(get: { whatsNewOpen && showsSidebar }, set: { whatsNewOpen = $0 }),
             onDismiss: { WhatsNew.markSeen() }
         ) {
-            WhatsNewView {
+            WhatsNewView(release: WhatsNewCatalog.release() ?? WhatsNewCatalog.current) {
                 WhatsNew.markSeen()
                 whatsNewOpen = false
             }
@@ -312,6 +313,15 @@ struct RootView: View {
         }
         .onChange(of: firstFrameDisplayed) { _, displayed in
             if displayed { scheduleWhatsNewIfDue() }
+        }
+        .onChange(of: welcoming) { _, isWelcoming in
+            if !isWelcoming { scheduleWhatsNewIfDue() }
+        }
+        .onChange(of: detailsOpen) { _, isOpen in
+            if !isOpen { scheduleWhatsNewIfDue() }
+        }
+        .onChange(of: model.pairingUnderWay) { _, pairing in
+            if !pairing { scheduleWhatsNewIfDue() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tint.page.ignoresSafeArea())
@@ -592,14 +602,30 @@ struct RootView: View {
         }
     }
 
+    private var whatsNewGateContext: WhatsNewLaunchGate.Context {
+        WhatsNewLaunchGate.Context(
+            firstFrameDisplayed: firstFrameDisplayed,
+            curtainUp: curtain,
+            sceneActive: sceneHasBeenActive && scenePhase == .active,
+            welcoming: welcoming,
+            detailsOpen: detailsOpen,
+            installMessageActive: model.signer.installMessage != nil,
+            pairingUnderWay: model.pairingUnderWay,
+            whatsNewOpen: whatsNewOpen
+        )
+    }
+
     private func scheduleWhatsNewIfDue() {
-        guard !whatsNewCheckedThisLaunch, firstFrameDisplayed, !curtain, sceneHasBeenActive else { return }
-        whatsNewCheckedThisLaunch = true
-        guard !welcoming, !detailsOpen, model.signer.installMessage == nil, !model.pairingUnderWay,
-              WhatsNew.isDueAtLaunch() else { return }
+        guard whatsNewGate.beginSchedulingIfReady(
+            context: whatsNewGateContext,
+            isDue: { WhatsNew.isDueAtLaunch() }
+        ) else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
-            guard !welcoming, !detailsOpen, model.signer.installMessage == nil, !model.pairingUnderWay else { return }
+            guard whatsNewGate.commitIfStillReady(
+                context: whatsNewGateContext,
+                isDue: { WhatsNew.isDueAtLaunch() }
+            ) else { return }
             whatsNewOpen = true
         }
     }

@@ -714,6 +714,9 @@ struct AboutSettingsView: View {
     @ScaledMetric(relativeTo: .body) private var iconSpacing = SettingsRowMetrics.iconSpacing
 
     private var compact: Bool { sizeClass != .regular }
+    private var matchingRelease: WhatsNewRelease? {
+        WhatsNewCatalog.release(for: model.signer.installedVersion)
+    }
 
     var body: some View {
         List {
@@ -745,31 +748,39 @@ struct AboutSettingsView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("about.currentVersion")
 
-                Button { showsWhatsNew = true } label: {
-                    HStack(spacing: 8) {
-                        SettingsRow(title: "What’s New", symbol: "sparkles")
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(Color(.tertiaryLabel))
-                            .accessibilityHidden(true)
+                if matchingRelease != nil {
+                    Button { showsWhatsNew = true } label: {
+                        HStack(spacing: 8) {
+                            SettingsRow(title: "What’s New", symbol: "sparkles")
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Color(.tertiaryLabel))
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(.rect)
                     }
-                    .contentShape(.rect)
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("about.whatsNew")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("about.whatsNew")
             } footer: {
-                Text("Review what’s new in this version anytime.")
+                if matchingRelease != nil {
+                    Text("Review what’s new in this version anytime.")
+                }
             }
         }
         .navigationTitle(AppLocalization.text("About"))
         .navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(isPresented: Binding(get: { showsWhatsNew && compact }, set: { showsWhatsNew = $0 })) {
-            WhatsNewView { showsWhatsNew = false }
+        .fullScreenCover(isPresented: Binding(get: { showsWhatsNew && compact && matchingRelease != nil }, set: { showsWhatsNew = $0 })) {
+            if let release = matchingRelease {
+                WhatsNewView(release: release) { showsWhatsNew = false }
+            }
         }
-        .sheet(isPresented: Binding(get: { showsWhatsNew && !compact }, set: { showsWhatsNew = $0 })) {
-            WhatsNewView { showsWhatsNew = false }
-                .presentationSizing(.page)
-                .presentationDragIndicator(.visible)
+        .sheet(isPresented: Binding(get: { showsWhatsNew && !compact && matchingRelease != nil }, set: { showsWhatsNew = $0 })) {
+            if let release = matchingRelease {
+                WhatsNewView(release: release) { showsWhatsNew = false }
+                    .presentationSizing(.page)
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 }
