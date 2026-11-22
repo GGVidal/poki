@@ -251,7 +251,7 @@ final class InstalledApps {
 
     /// Nothing current could say whether the app is there.
     private static func answer(unknown name: String, offers: [Match], storeFailed: Bool, source: String) -> String {
-        var text = "could not tell whether \"\(name)\" is installed: no current app list holds it and the icons could not settle it (checked \(source)). Do not tell the owner it is missing: go home ({button: \"home\"}), swipe down on the Home Screen to search, type its name and tap it."
+        var text = "could not tell whether \"\(name)\" is installed: no current app list holds it and the icons could not settle it (checked \(source)). Do not tell the owner it is missing: send {button: \"home\"} by itself, then use the returned screen to swipe down on the Home Screen to search, type its name and tap the matching result."
         if storeFailed { text += " The App Store could not be searched either." }
         if !offers.isEmpty { text += " The App Store's matches, for their ids:\n" + offers.map(line).joined(separator: "\n") }
         return text
