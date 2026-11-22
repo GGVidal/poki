@@ -1,3 +1,4 @@
+import PokiCore
 import UIKit
 import XCTest
 @testable import Poki
@@ -181,5 +182,77 @@ final class DynamicAppsTests: XCTestCase {
         _ = InstalledApps()
         XCTAssertNil(AppIconStore.bundleID("Strava"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testLiveCoreLaunchSendsExplicitBundleIDAndDynamicAppsWithoutLSApplicationProxy() async {
+        let savedAppNames = UserDefaults.standard.object(forKey: SpeedOptions.appNamesKey)
+        UserDefaults.standard.set(true, forKey: SpeedOptions.appNamesKey)
+        defer {
+            if let savedAppNames { UserDefaults.standard.set(savedAppNames, forKey: SpeedOptions.appNamesKey) }
+            else { UserDefaults.standard.removeObject(forKey: SpeedOptions.appNamesKey) }
+        }
+
+        let host = AppCoreHost()
+        host.update(runner: .automationReady(revision: 1))
+        let transport = LaunchProbeTransport()
+        let core = LiveCore(host: host, transport: transport)
+
+        let explicit = await core.callTool("do", arguments: #"{"actions":[{"launch":"com.xingin.discover"}]}"#, localTask: "esp-1274")
+        XCTAssertFalse(explicit.isError, explicit.text)
+        let afterExplicit = await transport.activated
+        XCTAssertEqual(afterExplicit, ["com.xingin.discover"])
+
+        let shortKnownID = await core.callTool("do", arguments: #"{"actions":[{"launch":"ctrip.com"}]}"#, localTask: "esp-1274")
+        XCTAssertFalse(shortKnownID.isError, shortKnownID.text)
+        let afterShortID = await transport.activated
+        XCTAssertEqual(afterShortID, ["com.xingin.discover", "ctrip.com"])
+
+        DynamicApps.set([strava])
+        let byDynamicName = await core.callTool("do", arguments: #"{"actions":[{"launch":"Strava"}]}"#, localTask: "esp-1274")
+        XCTAssertFalse(byDynamicName.isError, byDynamicName.text)
+        let afterDynamicName = await transport.activated
+        XCTAssertEqual(afterDynamicName, ["com.xingin.discover", "ctrip.com", "com.strava.stravaride"])
+
+        for unknown in ["Nonesuch", "tutti.ch"] {
+            let refused = await core.callTool("do", arguments: #"{"actions":[{"launch":"\#(unknown)"}]}"#, localTask: "esp-1274")
+            XCTAssertTrue(refused.isError, refused.text)
+            XCTAssertTrue(refused.text.contains("no app named \"\(unknown)\" is known"), refused.text)
+        }
+        let afterRefused = await transport.activated
+        XCTAssertEqual(afterRefused, ["com.xingin.discover", "ctrip.com", "com.strava.stravaride"])
+    }
+}
+
+private actor LaunchProbeTransport: HTTPTransport {
+    private(set) var activated: [String] = []
+    private var foreground = "nz.zheha.poki"
+
+    func send(method: String, url: URL, body: Data?, timeout: Double) async throws -> (status: Int, body: Data) {
+        let path = url.path.replacingOccurrences(of: #"^/session/[^/]+"#, with: "", options: .regularExpression)
+        let value: JSON
+        switch (method, path) {
+        case ("POST", "/session"):
+            value = ["sessionId": "launch-probe"]
+        case ("GET", "/status"):
+            value = ["ready": true]
+        case ("GET", "/wda/locked"):
+            value = false
+        case ("GET", "/wda/screen"):
+            value = ["screenSize": ["width": 390, "height": 844]]
+        case ("GET", "/wda/activeAppInfo"):
+            value = ["bundleId": .string(foreground), "name": .string(foreground)]
+        case ("GET", "/screenshot"):
+            value = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII="
+        case ("GET", "/source"):
+            value = .string(#"<AppiumAUT><XCUIElementTypeApplication name="\#(foreground)" label="\#(foreground)" x="0" y="0" width="390" height="844"><XCUIElementTypeButton name="Explore" label="Explore" x="16" y="100" width="358" height="44" /></XCUIElementTypeApplication></AppiumAUT>"#)
+        case ("POST", "/wda/apps/activate"), ("POST", "/wda/apps/launch"):
+            let bundle = body.flatMap { try? JSON.parse(String(decoding: $0, as: UTF8.self)) }?["bundleId"]?.string ?? ""
+            activated.append(bundle)
+            foreground = bundle
+            value = .null
+        default:
+            value = .null
+        }
+        return (200, JSON.object(["value": value]).data())
     }
 }

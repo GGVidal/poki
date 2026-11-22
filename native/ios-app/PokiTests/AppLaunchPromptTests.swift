@@ -245,6 +245,7 @@ final class AppLaunchPromptTests: XCTestCase {
             XCTAssertFalse(answer.text.contains("NOT installed"), answer.text)
             XCTAssertFalse(answer.text.contains("(not installed)"), answer.text)
             XCTAssertTrue(answer.text.contains("could not tell whether"), answer.text)
+            XCTAssertTrue(answer.text.contains("send {button: \"home\"} by itself"), answer.text)
             XCTAssertTrue(answer.text.contains("swipe down on the Home Screen to search"), answer.text)
         }
     }
