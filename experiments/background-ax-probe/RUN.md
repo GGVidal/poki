@@ -60,3 +60,26 @@ Settings stayed in front.** Mechanism: `_XCT_requestBackgroundAssertionForPID:re
 `XCUIApplication(bundleIdentifier:).snapshot()` + `-[XCAXClient_iOS performAction:(XCUIAccessibilityAction)onElement:value:error:]`.
 Still to test: concurrency with the owner using the handset, text entry, apps other than Calculator,
 and how long the assertion lasts.
+
+## Concurrency with the owner using the phone, 2026-11-22 04:20-04:26 ET
+
+Raw lines: `device-run-concurrency.txt`. The owner used the handset for about 5 minutes (another app at
++11-65 s, Notes around +65-110 s, then Settings from +247 s) while the probe pressed one digit every
+~10 s in the background Calculator by accessibility element and read the display back.
+
+- **28 of 28 presses landed and were verified on the background display** (2 -> 23 -> ... -> 2,345,678,912,
+  cleared by element, then 3 ... and 4 ... -> 45,678,912). Each press plus read-back: 660-880 ms.
+- Calculator stayed `runningBackground` (3) throughout and never came forward. The owner reported
+  nothing odd on the handset: no flicker, no Calculator appearing, no misdirected touches.
+
+## Generality, background Settings with Notes in front, 04:26-04:27 ET
+
+Raw lines: `device-run-generality.txt`.
+
+| Test | Result |
+| - | - |
+| a) navigation | AXPress on the "General" cell in the background Settings **opened General** (the next read lists About, Software Update, iPhone Storage, ...). The "About" press returned ok, but the next read 2 s later still showed General: unresolved (wrong element matched, or the push had not finished). |
+| b) text entry | `setAttribute:value:element:` with attribute `XC_kAXXCAttributeValue` **set the Settings search field to "wifi"**, read back in the background. `AXValue`, `2006` and `AXValueAttribute` gave `kAXErrorIllegalArgument`. |
+| c) scrolling | My guessed action numbers did not scroll: 2018 returned ok with no change; 2019, 2020, 2021 and 2008 returned `kAXErrorFailure`. The correct scroll action ids still need finding. |
+
+Notes stayed `runningForeground` (4) and Settings `runningBackground` (3) throughout.
