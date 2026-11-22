@@ -224,7 +224,7 @@ private struct WatchVoiceTaskView: View {
                             .font(.headline)
                             .multilineTextAlignment(.center)
                         if update.phase == .waitingForUnlock {
-                            Text("Unlock your iPhone to continue, or open Poki if it doesn’t start.")
+                            Text("If it doesn’t continue after unlocking, tap the notification on iPhone or tap Check iPhone here.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)

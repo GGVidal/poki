@@ -49,7 +49,7 @@ enum WatchVoiceNotice {
     static func postUnlockPrompt(for id: UUID) {
         let content = UNMutableNotificationContent()
         content.title = AppLocalization.text(LocalizedStringResource("Unlock iPhone for Watch Task"))
-        content.body = AppLocalization.text(LocalizedStringResource("Poki received your Apple Watch request. Unlock your iPhone, or tap to open Poki and continue."))
+        content.body = AppLocalization.text(LocalizedStringResource("Poki received your Apple Watch request. If it doesn’t continue after unlocking, tap this notification or tap Check iPhone on Apple Watch."))
         content.sound = .default
         content.interruptionLevel = .timeSensitive
         content.threadIdentifier = "watch-voice"

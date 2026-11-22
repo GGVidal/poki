@@ -59,13 +59,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "查看手机状态"
+            "value" : "检查 iPhone"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "查看手機狀態"
+            "value" : "檢查 iPhone"
           }
         }
       }
@@ -359,6 +359,29 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "按住說話"
+          }
+        }
+      }
+    },
+    "If it doesn’t continue after unlocking, tap the notification on iPhone or tap Check iPhone here." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "If it doesn’t continue after unlocking, tap the notification on iPhone or tap Check iPhone here."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解锁后若没有继续，请点手机上的通知，或在这里点检查 iPhone。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解鎖後若沒有繼續，請點手機上的通知，或在這裡點檢查 iPhone。"
           }
         }
       }
@@ -1172,29 +1195,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "請先解鎖 iPhone"
-          }
-        }
-      }
-    },
-    "Unlock your iPhone to continue, or open Poki if it doesn’t start." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Unlock your iPhone to continue, or open Poki if it doesn’t start."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "解锁 iPhone 后将继续；若未自动开始，请打开 Poki。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "解鎖 iPhone 後將繼續；若未自動開始，請打開 Poki。"
           }
         }
       }

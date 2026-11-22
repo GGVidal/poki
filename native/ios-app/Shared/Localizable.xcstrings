@@ -39468,25 +39468,25 @@
         }
       }
     },
-    "Poki received your Apple Watch request. Unlock your iPhone, or tap to open Poki and continue." : {
+    "Poki received your Apple Watch request. If it doesn’t continue after unlocking, tap this notification or tap Check iPhone on Apple Watch." : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki received your Apple Watch request. Unlock your iPhone, or tap to open Poki and continue."
+            "value" : "Poki received your Apple Watch request. If it doesn’t continue after unlocking, tap this notification or tap Check iPhone on Apple Watch."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 已收到来自 Apple Watch 的请求。解锁 iPhone 后将继续，或点此打开 Poki 继续。"
+            "value" : "Poki 已收到手表请求。解锁后若没有继续，请点此通知，或在手表上点检查 iPhone。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 已收到來自 Apple Watch 的請求。解鎖 iPhone 後將繼續，或點此打開 Poki 繼續。"
+            "value" : "Poki 已收到手錶請求。解鎖後若沒有繼續，請點此通知，或在手錶上點檢查 iPhone。"
           }
         }
       }

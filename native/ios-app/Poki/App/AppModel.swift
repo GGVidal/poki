@@ -851,6 +851,7 @@ final class AppModel {
     struct BackgroundWatchLease {
         let startedSession: Bool
         let startedBackground: Bool
+        let startedTunnel: Bool
     }
 
     /// Starts or warms Poki for a Watch background task and returns a lease to release when the task ends.
@@ -860,22 +861,31 @@ final class AppModel {
             let hadBackground = background.isOn
             if !hadBackground { background.start() }
             if runnerPaused { prepareForTask() }
-            return BackgroundWatchLease(startedSession: false, startedBackground: !hadBackground)
+            return BackgroundWatchLease(startedSession: false, startedBackground: !hadBackground, startedTunnel: false)
         }
         guard wantsOn else { return nil }
         await tunnel.refresh()
         await diskImage.ensureChecked()
         guard Self.onSimulator || (pairingPath != nil && diskImage.hasFiles) else { return nil }
-        if !sessionOn, !sessionStarting {
+        let hadTunnel = setup.loopback == .builtIn && tunnel.connected
+        let wasStarting = sessionStarting
+        if !sessionOn, !wasStarting {
             startSession(reconnectLocal: setup.loopback == .builtIn)
         }
         if let startTask = sessionStartTask {
             await Self.waitForSessionStart(startTask, timeout: timeout)
         }
-        guard sessionOn else { return nil }
+        let startedTunnel = setup.loopback == .builtIn
+            && !hadTunnel
+            && !wasStarting
+            && (tunnel.connected || tunnel.busy || tunnel.state == .connecting)
+        guard sessionOn else {
+            if startedTunnel { tunnel.disconnect() }
+            return nil
+        }
         if !background.isOn { background.start() }
         if runnerPaused { prepareForTask() }
-        return BackgroundWatchLease(startedSession: true, startedBackground: true)
+        return BackgroundWatchLease(startedSession: !wasStarting, startedBackground: true, startedTunnel: startedTunnel)
     }
 
     func endBackgroundWatchSession(_ lease: BackgroundWatchLease?) {
@@ -890,7 +900,7 @@ final class AppModel {
             if automationPath == .inProcess { closeInProcess("Watch task ended") }
             core.stop()
             launcher.stop()
-            if setup.loopback == .builtIn { tunnel.disconnect() }
+            if lease.startedTunnel { tunnel.disconnect() }
             idleTimer?.invalidate()
             idleTimer = nil
             runnerPaused = false
