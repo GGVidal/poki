@@ -208,7 +208,15 @@ final class Daemon: @unchecked Sendable {
     let s = try await session.makeVideoStream(withConfiguration: config, fromRemoteDevice: device)
     log("makeVideoStream returned \(type(of: s))")
     stream = s
-    try await activate(s)
+    // activate() starts the phone-side session, then waits on the host decoder. On an
+    // ad-hoc host avconferenced refuses that decoder (LOG.md, Gate 1), so activate()
+    // never returns; the phone-side session and display still exist. Run it detached.
+    Task { [weak self] in
+      do { try await self?.activate(s) } catch {
+        self?.streamEnded = "activate error at \(stamp()): \(errorText(error))"
+        log("activate error: \(errorText(error))")
+      }
+    }
   }
 
   private func activate<S: VideoStream>(_ s: S) async throws {
@@ -315,7 +323,12 @@ func toPNG(_ data: Data) -> (Data, Int, Int) {
 
 // MARK: - Control socket (one line in, one line out)
 
-func socketPath(_ dir: String) -> String { (dir as NSString).appendingPathComponent("ctl.sock") }
+// sun_path holds 104 bytes; scratch paths are longer, so bind and connect relative to the
+// state directory (the process changes into it first).
+func socketPath(_ dir: String) -> String {
+  FileManager.default.changeCurrentDirectoryPath(dir)
+  return "ctl.sock"
+}
 
 func withSockaddr<T>(_ path: String, _ body: (UnsafePointer<sockaddr>, socklen_t) -> T) -> T {
   var addr = sockaddr_un()
