@@ -241,3 +241,16 @@ segmented control, text field set-value), scrolling, and escape (in the foregrou
 - **Focus plus keys, foreground:** with native focus on the cell, a tab button or a plain button, arrows, Return and
   Space via 2034 neither move focus nor select. 2034 runs key commands found from the responder chain of the
   focused item; the switch's own arrow commands are the only stock control commands among our four.
+- **Background focus is possible:** with the launch argument and FKA on, in the background, 5305 (`_accessibilitySetFocusEnabledInApplication:` YES)
+  re-enables the focus system, 5310 with the scene identifier (`sceneID:<bundle>-<uuid>`) makes the window key, and
+  2044 puts native focus on the switch. Settings stayed in front and unchanged.
+- **The switch's command runs in the background, but its effect is a touch:** hooks inside the fixture show the arrow
+  key reaches `-[UISwitchAccessibility _accessibilityKeyCommands]` via `UIApplication _handleKeyUIEvent:` →
+  responder chain, and `_fkaSwitchOn` → `_keyboardActivate` is called in the background. `-[NSObject(AccessibilityActivation)
+  _keyboardActivate]` builds an IOHID digitizer finger event at `accessibilityActivationPoint`, tags it with
+  `_accessibilityGetContextID`, and enqueues it into the app itself (`[UIApp _enqueueHIDEvent:]`), in-process.
+  In the foreground this toggles the switch (Right → on, Left → off). In the background the window's `layer.context` is nil
+  (fixture log, activation state 2), so the touch has no window context and nothing happens.
+- **Common gate:** every activation path found for the four stock controls ends in a touch, either from the
+  system (AXElement press, FKA) or in-process (`_keyboardActivate`). All of them need the window's render context,
+  and iOS removes that context when the scene leaves the foreground.

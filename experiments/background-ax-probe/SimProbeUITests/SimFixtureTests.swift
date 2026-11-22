@@ -470,6 +470,26 @@ final class SimFixtureTests: XCTestCase {
         }
         if bg { say("AD | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))") }
     }
+    // AE: background, force-enable focus with 5305 (FKA daemon op), then 2044 + Right arrow on the switch.
+    func testAE_forceFocusBackground() {
+        launchArgs = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        start(background: true); sleep(2)
+        let fb = frontSummary()
+        say("AE | focus at start '\(focusNow())'")
+        for round in 1...2 {
+            guard let app = snap() else { return }
+            let sid = (find(snap()) { $0.identifier == "sceneId" }?.value as? String) ?? ""
+            say("AE | r\(round) scene '\(sid)' 5305 YES \(act(app, 5305, NSNumber(value: true)).prefix(20)) | 5307 \(act(app, 5307, nil).prefix(20)) | 5310 \(act(app, 5310, sid as NSString).prefix(20))")
+            usleep(1_500_000)
+            say("AE | r\(round) focus after enable '\(focusNow())'")
+            guard let sw = find(snap(), { $0.elementType == .switch }) else { return }
+            let f = act(sw, 2044, nil); usleep(1_500_000)
+            say("AE | r\(round) 2044 \(f.prefix(30)) focus '\(focusNow())'")
+            let before = lastEvent(); let r = sendKey(round == 1 ? "UIKeyInputRightArrow" : "UIKeyInputLeftArrow"); usleep(1_000_000)
+            say("AE | r\(round) arrow \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+        say("AE | front before: \(fb.prefix(60)) | after: \(frontSummary().prefix(60))")
+    }
     func testAD_focusArrowsForeground() { focusArrowRoute(false) }
     func testAC_modifierProbe() {
         launchArgs = []; start(background: false); sleep(2)

@@ -9,6 +9,7 @@ enum Fix {
     static var count = 0
     static weak var label: UILabel?
     static weak var focusLabel: UILabel?
+    static weak var sceneLabel: UILabel?
     static func short(_ i: UIFocusItem) -> String {
         if let b = i as? UIButton { return "UIButton " + (b.currentTitle ?? "?") }
         if let v = i as? UIView { return String(describing: type(of: v)) + " " + (v.accessibilityLabel ?? "") }
@@ -26,6 +27,31 @@ enum Fix {
             let ca = (v.accessibilityCustomActions ?? []).map { $0.name }
             NSLog("FIXLOG actions %@ label=%@ ut=%@ ca=%@", n, v.accessibilityLabel ?? "", ut, ca.description)
         }
+    }
+    static var hooked = false
+    static func hookSwitchKeyCommands() {
+        guard !hooked else { return }
+        let sel = NSSelectorFromString("_accessibilityKeyCommands")
+        guard let m = class_getInstanceMethod(UISwitch.self, sel) else { return }
+        hooked = true
+        typealias F = @convention(c) (AnyObject, Selector) -> AnyObject?
+        let orig = unsafeBitCast(method_getImplementation(m), to: F.self)
+        var n = 0
+        let blk: @convention(block) (AnyObject) -> AnyObject? = { me in
+            n += 1
+            if n <= 3 { NSLog("FIXLOG switchKC call %d state=%d stack %@", n, UIApplication.shared.applicationState.rawValue, Thread.callStackSymbols.prefix(25).map { String($0.split(separator: " ", omittingEmptySubsequences: true).dropFirst(3).joined(separator: " ").prefix(90)) }.joined(separator: " | ")) }
+            return orig(me, sel)
+        }
+        method_setImplementation(m, imp_implementationWithBlock(blk))
+        for name in ["_fkaSwitchOn", "_fkaSwitchOff", "_keyboardActivate"] {
+            let s2 = NSSelectorFromString(name)
+            guard let m2 = class_getInstanceMethod(UISwitch.self, s2) else { NSLog("FIXLOG switchKC no %@", name); continue }
+            typealias V = @convention(c) (AnyObject, Selector) -> Void
+            let o2 = unsafeBitCast(method_getImplementation(m2), to: V.self)
+            let b2: @convention(block) (AnyObject) -> Void = { me in NSLog("FIXLOG switchKC %@ called state=%d", name, UIApplication.shared.applicationState.rawValue); o2(me, s2) }
+            method_setImplementation(m2, imp_implementationWithBlock(b2))
+        }
+        NSLog("FIXLOG switchKC hooked")
     }
     static func focus(_ t: String) { NSLog("FIXLOG focusNow %@", t); focusLabel?.text = t; focusLabel?.accessibilityValue = t }
     static let t0 = Date()
@@ -71,6 +97,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
         guard let w = window else { return }
         let ctx = (w.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
         let layerContext = (w.layer.value(forKey: "context") as AnyObject?).map { "\($0)" } ?? "nil"
+        if let sc = w.windowScene, sc.responds(to: NSSelectorFromString("_FBSScene")), let fbs = sc.value(forKey: "_FBSScene") as? NSObject, let ident = fbs.value(forKey: "identifier") as? String {
+            Fix.sceneLabel?.accessibilityValue = ident; Fix.sceneLabel?.text = "scene"
+            NSLog("FIXLOG scene id=%@ key=%d", ident, w.isKeyWindow ? 1 : 0)
+        }
         NSLog("FIXLOG window %@ contextId=%u layer.context=%@ activation=%d hidden=%d", tag, ctx, layerContext, w.windowScene?.activationState.rawValue ?? -9, w.isHidden ? 1 : 0)
         do {
             let pub = UIFocusSystem.focusSystem(for: w)
@@ -80,6 +110,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
             if let p = priv, p.responds(to: NSSelectorFromString("_isEnabled")) { en = String(describing: p.perform(NSSelectorFromString("_isEnabled")) != nil) }
             let item = (pub ?? (priv as? UIFocusSystem))?.focusedItem
             let fkaFn = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXSFullKeyboardAccessEnabled").map { unsafeBitCast($0, to: (@convention(c) () -> Bool).self) }
+            Fix.hookSwitchKeyCommands()
             if Fix.dumped < 2, Date().timeIntervalSince(Fix.t0) > 8 { Fix.dumped += 1; Fix.dumpActions(w) }
             Fix.focus(item.map { Fix.short($0) } ?? "none")
             NSLog("FIXLOG focus fka=%@ pub=%@ priv=%@ enabled=%@ item=%@", fkaFn.map { $0() ? "1" : "0" } ?? "?", pub == nil ? "nil" : "yes", priv == nil ? "nil" : String(describing: type(of: priv!)), en, item.map { String(describing: $0).prefix(80).description } ?? "none")
@@ -137,6 +168,7 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Bar", style: .plain, target: self, action: #selector(bar))
         let label = UILabel(); label.accessibilityIdentifier = "lastEvent"; label.text = "0 start"; Fix.label = label
         let focusLabel = UILabel(); focusLabel.accessibilityIdentifier = "focusNow"; focusLabel.text = "none"; Fix.focusLabel = focusLabel; focusLabel.font = .systemFont(ofSize: 9)
+        let sceneLabel = UILabel(); sceneLabel.accessibilityIdentifier = "sceneId"; sceneLabel.text = "scene"; Fix.sceneLabel = sceneLabel; sceneLabel.font = .systemFont(ofSize: 9)
         let button = UIButton(type: .system); button.setTitle("Plain button", for: .normal); button.addTarget(self, action: #selector(plain), for: .primaryActionTriggered)
         let push = UIButton(type: .system); push.setTitle("Push level 2", for: .normal); push.addTarget(self, action: #selector(pushNext), for: .primaryActionTriggered)
         let sw = UISwitch(); sw.accessibilityLabel = "Switch"; sw.addTarget(self, action: #selector(switched(_:)), for: .valueChanged)
@@ -147,7 +179,7 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
         let sheet = UIButton(type: .system); sheet.setTitle("Show sheet", for: .normal); sheet.addTarget(self, action: #selector(showSheet), for: .primaryActionTriggered)
         let probe = ProbeTarget()
         let table = UITableView(); table.dataSource = self; table.delegate = self; table.accessibilityIdentifier = "bigTable"; table.delegate = self
-        let stack = UIStackView(arrangedSubviews: [label, focusLabel, probe, button, push, sw, seg, slider, field, alert, sheet])
+        let stack = UIStackView(arrangedSubviews: [label, focusLabel, sceneLabel, probe, button, push, sw, seg, slider, field, alert, sheet])
         stack.axis = .vertical; stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false; table.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack); view.addSubview(table)
