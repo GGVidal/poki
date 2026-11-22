@@ -28,7 +28,7 @@ final class AppModel {
         if on, let relayAddress { core.start(relay: relayAddress) } else { core.stop() }
     }
     let loopback = LoopbackMonitor()
-    let tunnel = LoopbackTunnel()
+    let tunnel: any LocalTunnel
     let background = BackgroundKeeper()
     let diskImage = DiskImageStore()
     /// Poki keeps its own signing: the Apple Account, the next build ready ahead of time, Install.
@@ -344,9 +344,11 @@ final class AppModel {
 
     init(launcher: RunnerLauncher = RustLauncher(), pairer: DevicePairing = RustPairing(),
          automation: InProcessAutomation = PKInProcess.shared(), transport: HTTPTransport? = nil,
+         tunnel: (any LocalTunnel)? = nil,
          systemVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
          requiresDiskImageCheck: Bool? = nil, imageMounted: @escaping () -> Bool = { AppModel.localDDIMounted }) {
         ActivityController.endAll()
+        self.tunnel = tunnel ?? LoopbackTunnel()
         self.imageMounted = imageMounted
         self.activity = ActivityController()
         self.automation = automation
@@ -459,10 +461,10 @@ final class AppModel {
         loopback.onPairingPortSearchEnded = { [weak self] in self?.pairingPortSearchEnded() }
         // A built-in tunnel that fails or drops while Poki is on dials again by itself; the loopback
         // check that follows lets `loopbackChanged` start the runner, as for any other recovery.
-        tunnel.wanted = { [weak self] in self?.sessionOn == true && self?.setup.loopback == .builtIn }
-        tunnel.onReconnected = { [weak self] in self?.loopback.check() }
+        self.tunnel.wanted = { [weak self] in self?.sessionOn == true && self?.setup.loopback == .builtIn }
+        self.tunnel.onReconnected = { [weak self] in self?.loopback.check() }
         // When Poki detects the owner's own VPN it stops: the tunnel says so here, and the problem clears when it is back.
-        tunnel.onAttention = { [weak self] text in
+        self.tunnel.onAttention = { [weak self] text in
             guard let self else { return }
             if let text { problem = text; tunnelAttention = text }
             else if problem == tunnelAttention { problem = nil; tunnelAttention = nil }
@@ -493,7 +495,7 @@ final class AppModel {
         // Installed over the local-VPN build (both use one bundle ID): this build has only external
         // connections, so a saved built-in choice becomes the external one. Otherwise Setup showed the
         // step done while Turn on said this build has no local VPN.
-        if setup.loopback == .builtIn, !tunnel.available {
+        if setup.loopback == .builtIn, !self.tunnel.available {
             setup.loopback = .proxy
             setup.save()
             log.add("loopback", "this build has no built-in connection: the saved choice is now an external one")

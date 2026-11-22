@@ -100,6 +100,38 @@ private final class FakeWatchDeliveryLink: WatchVoiceDeliveryLink {
 }
 
 @MainActor
+private final class FakeTunnel: LocalTunnel {
+    var state: LoopbackTunnel.State
+    var busy = false
+    var available = true
+    var connected: Bool { state == .connected }
+    var wanted: () -> Bool = { false }
+    var onReconnected: (() -> Void)?
+    var onAttention: ((String?) -> Void)?
+    private(set) var refreshCalls = 0
+    private(set) var connectCalls = 0
+    private(set) var disconnectCalls = 0
+
+    init(connected: Bool) {
+        self.state = connected ? .connected : .off
+    }
+
+    func refresh() async {
+        refreshCalls += 1
+    }
+
+    func connect() async throws {
+        connectCalls += 1
+        state = .connected
+    }
+
+    func disconnect() {
+        disconnectCalls += 1
+        state = .off
+    }
+}
+
+@MainActor
 final class WatchVoiceBackgroundTests: XCTestCase {
     private var tempDirectory: URL!
     private var savedDefaults: [String: Any?] = [:]
@@ -157,10 +189,15 @@ final class WatchVoiceBackgroundTests: XCTestCase {
         try ModelKeys.saveCustom(address: "http://127.0.0.1:\(server.port)/v1", model: "poki-mock", typedKey: "")
     }
 
-    private func makeApp(wantsOn: Bool, sessionOn: Bool) -> (AppModel, ChatModel) {
+    private func makeApp(
+        wantsOn: Bool,
+        sessionOn: Bool,
+        loopback: SetupState.Loopback = .proxy,
+        tunnel: (any LocalTunnel)? = nil
+    ) -> (AppModel, ChatModel) {
         UserDefaults.standard.set(wantsOn, forKey: "wantsOn")
-        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing(), automation: FakeAutomation())
-        app.setup.loopback = .proxy
+        let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing(), automation: FakeAutomation(), tunnel: tunnel)
+        app.setup.loopback = loopback
         app.loopback.simulate(.working(ms: 5))
         if sessionOn {
             app.startSession()
@@ -506,12 +543,153 @@ final class WatchVoiceBackgroundTests: XCTestCase {
         let cleanedUp = await waitUntil(timeout: .seconds(2)) { !app2.background.isOn && bg2.activeCount == 0 }
         XCTAssertTrue(cleanedUp)
         XCTAssertFalse(app2.background.isOn)
+    }
 
-        // Verify Watch stops polling once it leaves foreground.
+    func testWaitingForUnlockStopsPollingWhenWatchLeavesForegroundWhileStillWaiting() async throws {
+        let server = try FakeCompletions(replies: finishTaskReplies("Should wait until foreground resume."))
+        try configureModel(on: server)
+        let (app, chat) = makeApp(wantsOn: true, sessionOn: false)
+        defer { app.stopSession() }
+        app.wentToBackground()
+
+        var locked = true
+        let phoneLink = FakePhoneLink()
+        let phone = WatchVoicePhone(
+            app: app,
+            chat: chat,
+            transport: phoneLink,
+            backgroundExecution: FakeBackgroundExecution(),
+            journal: tempDirectory.appending(path: "PollingStopPhone.json"),
+            isProtectedDataAvailable: { !locked },
+            isScreenLocked: { locked }
+        )
+
+        let watchLink = FakeWatchDeliveryLink()
+        watchLink.handler = { _, data, replyHandler, _ in
+            phone.session(WCSession.default, didReceiveMessageData: data, replyHandler: replyHandler)
+        }
+        let watch = WatchVoiceDeliveryController(
+            link: watchLink,
+            archiveURL: tempDirectory.appending(path: "PollingStopWatch.json"),
+            timing: WatchVoiceDeliveryTiming(
+                reachabilityWait: .milliseconds(80),
+                sendTimeout: .milliseconds(250),
+                unlockPollInterval: .milliseconds(60)
+            )
+        )
+        phoneLink.onUpdate = { [weak watch] update in watch?.receive(update) }
+        watch.setActive(true)
+
+        let id = UUID()
+        postedNoticeIDs.append(id)
+        XCTAssertTrue(watch.enqueue(id: id, audio: Data("m4a".utf8)))
+
+        let parked = await waitUntil(timeout: .seconds(2)) { watch.update?.phase == .waitingForUnlock }
+        XCTAssertTrue(parked)
+
+        let activePollObserved = await waitUntil(timeout: .seconds(2)) {
+            watchLink.sentRequests.contains {
+                if case .status(let reqID) = $0 { return reqID == id }
+                return false
+            }
+        }
+        XCTAssertTrue(activePollObserved, "Active Watch waiting for unlock must issue status polls")
+        XCTAssertEqual(watch.update?.phase, .waitingForUnlock)
+
         watch.setActive(false)
-        let pollCountAfterBackground = watchLink.sentRequests.count
-        try? await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(watchLink.sentRequests.count, pollCountAfterBackground)
+        let countAfterBackground = watchLink.sentRequests.count
+        try? await Task.sleep(for: .milliseconds(220))
+        XCTAssertEqual(watch.update?.phase, .waitingForUnlock, "Task must still be waiting for unlock while backgrounded")
+        XCTAssertEqual(
+            watchLink.sentRequests.count,
+            countAfterBackground,
+            "Watch must stop unlock status polling immediately after leaving foreground while still waiting for unlock"
+        )
+
+        locked = false
+        watch.setActive(true)
+        let resumed = await waitUntil(timeout: .seconds(5)) {
+            watch.results.first(where: { $0.id == id })?.phase == .finished
+        }
+        XCTAssertTrue(resumed, "Returning Watch to foreground while waiting for unlock must resume status polling and finish")
+        let cleanedUp = await waitUntil(timeout: .seconds(2)) { !app.background.isOn }
+        XCTAssertTrue(cleanedUp)
+    }
+
+    func testBackgroundColdWakePreservesPreexistingBuiltInTunnelAndReleasesWatchStartedTunnel() async throws {
+        let server = try FakeCompletions(replies: finishTaskReplies("Built-in tunnel preserved."))
+        try configureModel(on: server)
+
+        // Case 1: Built-in local VPN was already connected by the user before iOS reclaimed Poki.
+        let preexistingTunnel = FakeTunnel(connected: true)
+        let (app1, chat1) = makeApp(wantsOn: true, sessionOn: false, loopback: .builtIn, tunnel: preexistingTunnel)
+        defer { app1.stopSession() }
+        app1.wentToBackground()
+        XCTAssertFalse(app1.sessionOn)
+        XCTAssertTrue(preexistingTunnel.connected)
+
+        let link1 = FakePhoneLink()
+        let bg1 = FakeBackgroundExecution()
+        let phone1 = WatchVoicePhone(
+            app: app1,
+            chat: chat1,
+            transport: link1,
+            backgroundExecution: bg1,
+            journal: tempDirectory.appending(path: "BuiltInPreserve.json"),
+            isProtectedDataAvailable: { true },
+            isScreenLocked: { false }
+        )
+
+        let receipt1 = try await sendToPhone(phone1, request: .submit(id: UUID(), audio: Data("m4a".utf8)))
+        XCTAssertEqual(receipt1?.phase, .received)
+        let finished1 = await waitUntil { link1.sentUpdates.last?.phase == .finished }
+        XCTAssertTrue(finished1, "Watch task must finish using pre-existing built-in tunnel; sent=\(link1.sentUpdates)")
+
+        let cleanedUp1 = await waitUntil(timeout: .seconds(2)) { !app1.background.isOn && !app1.sessionOn && bg1.activeCount == 0 }
+        XCTAssertTrue(cleanedUp1)
+        XCTAssertEqual(preexistingTunnel.connectCalls, 0)
+        XCTAssertEqual(preexistingTunnel.disconnectCalls, 0, "Watch task end must not disconnect a pre-existing built-in tunnel")
+        XCTAssertTrue(preexistingTunnel.connected, "Pre-existing built-in tunnel must stay connected after Watch task ends")
+        XCTAssertTrue(app1.wantsOn)
+
+        // Returning to Poki uses startSession(reconnectLocal: false) and must not report that the local connection is off.
+        app1.becameActive()
+        app1.startSession(reconnectLocal: false)
+        XCTAssertNil(app1.problem, "Returning to Poki must not report the local connection is off; problem=\(app1.problem ?? "nil")")
+        XCTAssertTrue(app1.sessionOn)
+
+        // Case 2: Built-in local VPN was off and started by this Watch task; ending the task must disconnect it.
+        let server2 = try FakeCompletions(replies: finishTaskReplies("Built-in tunnel released."))
+        try configureModel(on: server2)
+        let freshTunnel = FakeTunnel(connected: false)
+        let (app2, chat2) = makeApp(wantsOn: true, sessionOn: false, loopback: .builtIn, tunnel: freshTunnel)
+        defer { app2.stopSession() }
+        app2.wentToBackground()
+        XCTAssertFalse(freshTunnel.connected)
+
+        let link2 = FakePhoneLink()
+        let bg2 = FakeBackgroundExecution()
+        let phone2 = WatchVoicePhone(
+            app: app2,
+            chat: chat2,
+            transport: link2,
+            backgroundExecution: bg2,
+            journal: tempDirectory.appending(path: "BuiltInRelease.json"),
+            isProtectedDataAvailable: { true },
+            isScreenLocked: { false }
+        )
+
+        let receipt2 = try await sendToPhone(phone2, request: .submit(id: UUID(), audio: Data("m4a".utf8)))
+        XCTAssertEqual(receipt2?.phase, .received)
+        let finished2 = await waitUntil { link2.sentUpdates.last?.phase == .finished }
+        XCTAssertTrue(finished2, "Watch task must finish after starting built-in tunnel; sent=\(link2.sentUpdates)")
+
+        let cleanedUp2 = await waitUntil(timeout: .seconds(2)) { !app2.background.isOn && !app2.sessionOn && bg2.activeCount == 0 }
+        XCTAssertTrue(cleanedUp2)
+        XCTAssertEqual(freshTunnel.connectCalls, 1)
+        XCTAssertEqual(freshTunnel.disconnectCalls, 1, "Watch task end must disconnect a built-in tunnel that this Watch task started")
+        XCTAssertFalse(freshTunnel.connected)
+        XCTAssertTrue(app2.wantsOn)
     }
 
     func testBackgroundSessionStartTimeoutReturnsPromptlyWhenStartStalls() async {
@@ -578,7 +756,7 @@ final class WatchVoiceBackgroundTests: XCTestCase {
     func testWatchDeliveryTimeoutWCErrorAndCancelLeaveSendingState() async throws {
         let link = FakeWatchDeliveryLink()
         let watch = WatchVoiceDeliveryController(
-            transport: link,
+            link: link,
             archiveURL: tempDirectory.appending(path: "DeliveryArchive.json"),
             timing: WatchVoiceDeliveryTiming(
                 reachabilityWait: .milliseconds(60),
