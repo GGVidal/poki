@@ -338,6 +338,44 @@ func toPNG(_ data: Data) -> (Data, Int, Int) {
   return (out as Data, img.width, img.height)
 }
 
+// MARK: - devicectl helpers (public tool; used for display identity, capture and launch)
+
+func devicectl(_ args: [String]) -> (Int32, String) {
+  let p = Process()
+  p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+  p.arguments = ["devicectl"] + args
+  let pipe = Pipe()
+  p.standardOutput = pipe; p.standardError = pipe
+  do { try p.run() } catch { return (-1, "\(error)") }
+  let data = pipe.fileHandleForReading.readDataToEndOfFile()
+  p.waitUntilExit()
+  return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+}
+
+// The secondary display(s) as devicectl reports them: (numeric displayId, uniqueId, name, WxH).
+func secondaryDisplays(udid: String) -> [(Int, String, String, String)] {
+  let tmp = NSTemporaryDirectory() + "bgdisplay-displays-\(getpid()).json"
+  _ = devicectl(["device", "info", "displays", "--device", udid, "--json-output", tmp])
+  defer { try? FileManager.default.removeItem(atPath: tmp) }
+  guard let data = FileManager.default.contents(atPath: tmp),
+        let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let result = root["result"] as? [String: Any],
+        let displays = result["displays"] as? [[String: Any]] else { return [] }
+  return displays.compactMap { d in
+    guard (d["primary"] as? Bool) != true, let uid = d["uniqueId"] as? String else { return nil }
+    var size = "?"
+    if let b = d["bounds"] as? [[Double]], b.count == 2 { size = "\(Int(b[1][0]))x\(Int(b[1][1]))" }
+    return ((d["displayId"] as? Int) ?? -1, uid, (d["name"] as? String) ?? "?", size)
+  }
+}
+
+func requireUDID(_ args: Args) -> String {
+  guard let u = args.flags["udid"] ?? ProcessInfo.processInfo.environment["BGDISPLAY_UDID"] else {
+    fail("pass --udid <phone UDID> (devicectl namespace), or set BGDISPLAY_UDID")
+  }
+  return u
+}
+
 // MARK: - Control socket (one line in, one line out)
 
 // sun_path holds 104 bytes; scratch paths are longer, so bind and connect relative to the
@@ -450,7 +488,7 @@ struct Main {
   static func run() async {
     let raw = Array(CommandLine.arguments.dropFirst())
     guard let cmd = raw.first else {
-      print("usage: bgdisplay probe|start-display|capture|act|status|stop [flags]  (see README.md)")
+      print("usage: bgdisplay probe|server-status|start-display|displays|launch-on-display|capture|act|status|stop [flags]  (see README.md)")
       exit(64)
     }
     let args = Args(Array(raw.dropFirst()))
@@ -483,10 +521,26 @@ struct Main {
       print("ready \(daemon.status())")
       fflush(stdout)
       while true { try? await Task.sleep(nanoseconds: 3_600_000_000_000) }
+    case "displays":
+      for (id, uid, name, size) in secondaryDisplays(udid: requireUDID(args)) { print("displayId=\(id) uniqueId=\(uid) name=\(name) size=\(size)") }
     case "capture":
-      guard let path = args.positional.first else { fail("usage: capture <out.png>") }
-      let abs = (path as NSString).isAbsolutePath ? path : FileManager.default.currentDirectoryPath + "/" + path
-      client("capture \(abs)", stateDir: stateDir)
+      // The host-side AVConference decoder is refused on an ad-hoc host (LOG.md, Gate 1), so
+      // capture uses devicectl's per-display screenshot of the virtual display.
+      guard let path = args.positional.first else { fail("usage: capture <out.png> --udid <UDID> [--display <uniqueId>]") }
+      let udid = requireUDID(args)
+      guard let uid = args.flags["display"] ?? secondaryDisplays(udid: udid).first?.1 else { fail("no secondary display; run start-display first") }
+      let (rc, out) = devicectl(["device", "capture", "screenshot", "--device", udid, "--destination", path, "--display-unique-id", uid])
+      print(out.split(separator: "\n").suffix(3).joined(separator: "\n"))
+      exit(rc == 0 ? 0 : 2)
+    case "launch-on-display":
+      // launch-on-display <bundle-id> --udid <UDID> [--display <uniqueId>]; never --terminate-existing.
+      guard let bundle = args.positional.first else { fail("usage: launch-on-display <bundle-id> --udid <UDID> [--display <uniqueId>]") }
+      let udid = requireUDID(args)
+      guard let uid = args.flags["display"] ?? secondaryDisplays(udid: udid).first?.1 else { fail("no secondary display; run start-display first") }
+      log("launch \(bundle) on display uniqueId \(uid)")
+      let (rc, out) = devicectl(["device", "process", "launch", "--device", udid, "--display", uid, bundle])
+      print(out)
+      exit(rc == 0 ? 0 : 2)
     case "act":
       // act tap <x> <y> [--target display2]   |   act swipe <x1> <y1> <x2> <y2> [--target display2] [--edge bottom]
       let p = args.positional

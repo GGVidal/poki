@@ -60,3 +60,18 @@ Secure Element ID are left out of every record.
 
 - **[device]** Virtual display uniqueId A2640608-AFA7-45A0-AD89-6515A7B04C96, 1280x800. HID: bottom-edge swipe (0.5,0.995 -> 0.5,0.6, edge bottom) and a centre tap, each to target raw 2 and raw 3. `devicectl device capture screenshot --display-unique-id` hash identical before and after every action (solid black). **No shell, dock or launcher appears on display 3. Touches cannot open anything there.**
 - **[device]** The owner was using the handset (a video feed) during the probe. The handset was unchanged after the raw-2 swipe and tap. The feed advanced to the next video right after the raw-3 bottom swipe. Owner scrolling and crossover cannot be told apart from this run. Earlier, raw 3 tap on a static Calculator did not cross over. **Open:** repeat the raw-3 swipe against a static handset screen, with the owner's agreement. Handset screenshots from this run show the owner's personal content and are not committed.
+
+## Crossover settled (22:10 ET, session 597A5F05-C064-4063-B3C4-45DC0B823F02)
+
+- **[device]** Calculator in front on the handset showing `8`. Display 3 uniqueId E393998B-7D08-4333-BB9E-169228799307, 1280x800. Each step: one action, then screenshot of the handset and of display 3 (records/gate3-crossover/).
+  - raw 2 bottom-edge swipe: handset unchanged (no Home gesture). raw 2 tap on "5": handset still `8` (the only pixel change was the Dynamic Island indicator).
+  - raw 3 bottom-edge swipe: unchanged. raw 3 tap on "5": unchanged.
+  - Control: raw 1 tap on "5": handset becomes `85`.
+  - Display 3 identical solid black after every step.
+- **Result: digitizer targets raw 2 and raw 3 do not reach the handset (no input crossover); raw 0/1 are the handset.** The earlier feed change was the owner's own scrolling. Whether raw 2 or 3 reaches display 3 can only be shown once a scene is there.
+
+## R7 / Settings (reading, 22:08-22:13 ET)
+
+- **[binary]** SpringBoard 27.3 has `SBExternalDisplayService` (strings: "client %@ is setting displayArrangement / displayMode settings / mirroringEnabled %u for display", "connected extended display capable participant", "Connection did not pass entitlement validation"), and SpringBoardServices `SBSCreateLayoutServiceEndpointForExternalDisplay`.
+- **[binary]** Settings `DisplayAndBrightnessSettings.framework` 27.3 has `DBSExternalDisplayMultitaskingOptionExtendedDisplay` / `DBSExternalDisplayMultitaskingOptionScreenMirroring`, `EXTENDED_DISPLAY`, `DISPLAY_ARRANGEMENT`, `ChamoisExtendedDisplayLivingOn`, `ExternalDisplays_J8xx`. ("Chamois" is Stage Manager. J8xx are iPad board ids.) Hypothesis: an "Extended Display" mode exists in Settings but may be gated to iPad-class devices. Not yet checked on this phone.
+- **[device]** Tried to open Settings > Display & Brightness on the handset with display 3 up (session B853704C-0F31-4BA9-A6D6-CDBA0E957442). `--payload-url prefs:root=DISPLAY` opened Settings at its root. One tap, then the screen was changing on its own (Developer, then iPhone Mirroring pages), apparently from the owner's use. I stopped there without touching any switch. Open: look at Display & Brightness for an "External Display" section while display 3 exists.

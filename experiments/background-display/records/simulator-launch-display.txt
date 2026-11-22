@@ -1,0 +1,4 @@
+           The operation couldn?t be completed. (OSStatus error -10814.) (NSOSStatusErrorDomain error -10814 (0xFFFFD5C2))
+           _LSLine = 2008
+           _LSFile = LSBindingEvaluator.mm
+           _LSFunction = runEvaluator
