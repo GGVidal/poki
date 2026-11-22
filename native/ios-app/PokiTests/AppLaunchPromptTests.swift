@@ -244,6 +244,24 @@ final class AppLaunchPromptTests: XCTestCase {
         ))
         XCTAssertTrue(normalRead.ok)
         XCTAssertNil(normalRead.error)
+
+        // Explicit structured CallRecord.failure takes precedence directly without body parsing,
+        // including for non-error waitingForOwner replies and arbitrary answer prose.
+        let explicitTunnel = ChatDebugLog.call(CallRecord(
+            name: "do",
+            arguments: #"{"actions":[{"launch":{"bundle":"com.taobao.taobao4iphone"}}]}"#,
+            answer: "arbitrary text",
+            ms: 5,
+            ok: true,
+            failure: .notSentTunnelDisconnected
+        ))
+        XCTAssertFalse(explicitTunnel.ok)
+        XCTAssertEqual(explicitTunnel.error, "not_sent_tunnel_disconnected")
+
+        // Backwards compatibility: stored CallRecord JSON without `failure` still decodes cleanly.
+        let legacyJSON = Data(#"{"name":"do","arguments":"{}","answer":"ok","ms":1,"ok":true}"#.utf8)
+        let decodedLegacy = try? JSONDecoder().decode(CallRecord.self, from: legacyJSON)
+        XCTAssertEqual(decodedLegacy, CallRecord(name: "do", arguments: "{}", answer: "ok", ms: 1, ok: true, failure: nil))
     }
 
     /// The file keeps the newest 20 tasks: the number is written here, not read from the code.

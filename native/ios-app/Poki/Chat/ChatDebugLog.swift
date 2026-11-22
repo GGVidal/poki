@@ -30,8 +30,8 @@ enum ChatDebugLog {
         var error: String?
     }
 
-    /// What went wrong in a failed call, read from the answer but kept as a category only.
-    enum Failure: String {
+    /// What went wrong in a failed or refused call, kept as a category only.
+    enum Failure: String, Codable, Equatable {
         case notInstalled = "launch_not_installed"
         case approval = "approval_required"
         case busy = "runner_busy"
@@ -54,98 +54,162 @@ enum ChatDebugLog {
         case failed
 
         init(answer: String) {
+            self = Self.classify(answer: answer, allowNonError: false) ?? .failed
+        }
+
+        /// Extracts a structured refusal category from a non-error phone tool answer
+        /// (such as `waitingForOwner == true` while waiting for the loopback).
+        static func nonErrorRefusal(answer: String) -> Failure? {
+            classify(answer: answer, allowNonError: true)
+        }
+
+        private static func classify(answer: String, allowNonError: Bool) -> Failure? {
+            let lines = answer.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            let first = lines.first ?? ""
+            let runnerLine = lines.first { $0.hasPrefix("runner: ") }
+            let errorLine = lines.first { $0.hasPrefix("error: ") }
+            let notSentFromLine = lines.first { $0.hasPrefix("not_sent from action ") }
+            let hasNothingSent = lines.contains {
+                $0 == "nothing was sent."
+                    || $0.hasPrefix("nothing was sent.")
+                    || $0.contains("; nothing was sent")
+                    || $0.contains(". nothing was sent.")
+                    || $0.contains(". no requested action was sent.")
+            }
+
+            if let runnerLine, hasNothingSent {
+                return classifyRunnerLine(String(runnerLine.dropFirst("runner: ".count)))
+            }
+            if first.hasPrefix("not_sent: poki could not turn on: ") {
+                return classifyStartupReason(String(first.dropFirst("not_sent: poki could not turn on: ".count)))
+            }
+            if isAppPreflightHeader(first: first, errorLine: errorLine) {
+                return .notSentAppPreflight
+            }
+            if errorLine?.contains("no app with that bundle id is installed") == true
+                || (first.hasPrefix("not_sent: launch:") && first.contains("no app with that bundle id is installed")) {
+                return .notInstalled
+            }
+            if let notSentFromLine {
+                return classifyNotSentFromAction(notSentFromLine)
+            }
+            if let header = classifySingleHeader(first: first, errorLine: errorLine) {
+                return header
+            }
+            guard !allowNonError else { return nil }
             let a = answer.lowercased()
-            let notSent = a.hasPrefix("not_sent") || a.contains("\nnot_sent")
-                || a.contains("nothing was sent") || a.contains("no requested action was sent")
-                || a.hasPrefix("runner:") || a.contains("\nrunner:")
-                || a.contains("not_hittable") || a.contains("is known on this phone")
-            if a.contains("no app with that bundle id is installed") { self = .notInstalled }
-            else if a.contains("approval_required") { self = .approval }
-            else if a.contains("busy") || (notSent && a.contains("still finishing")) { self = .busy }
-            else if a.contains("task stopped") { self = .stopped }
-            else if a.contains("timed out") || a.contains("timeout") || a.contains("did not answer in time") { self = .timeout }
-            else if notSent, Self.isTunnelDisconnected(a) { self = .notSentTunnelDisconnected }
-            else if notSent, Self.isPairingRequired(a) { self = .notSentPairingRequired }
-            else if a.contains("could not turn on") { self = .sessionOff }
-            else if notSent, Self.isAppPreflight(a) { self = .notSentAppPreflight }
-            else if notSent, Self.isScreenEvidence(a) { self = .notSentScreenEvidence }
-            else if notSent, Self.isSessionNotReady(a) { self = .notSentSessionNotReady }
-            else if notSent, Self.isLocked(a) { self = .notSentLocked }
-            else if notSent, a.contains("step is handed to the owner") { self = .notSentHandoff }
-            else if notSent, a.contains("leave poki first") { self = .notSentOwnApp }
-            else if notSent, Self.isApprovalDeclined(a) { self = .notSentApprovalDeclined }
-            else if notSent, Self.isSplitView(a) { self = .notSentSplitView }
-            else if notSent, Self.isTargetRefused(a) { self = .notSentTargetRefused }
-            else if a.contains("not json") || a.contains("must be an array") || a.contains("needs a ") || a.contains("takes ") { self = .invalidArguments }
-            else if notSent { self = .notSent }
-            else { self = .failed }
+            if a.contains("approval_required") { return .approval }
+            if a.contains("busy") { return .busy }
+            if a.contains("could not turn on") { return .sessionOff }
+            if a.contains("task stopped") { return .stopped }
+            if a.contains("timed out") || a.contains("timeout") || a.contains("did not answer in time") { return .timeout }
+            if a.contains("not json") || a.contains("must be an array") || a.contains("needs a ") || a.contains("takes ") { return .invalidArguments }
+            if first.hasPrefix("not_sent") || hasNothingSent { return .notSent }
+            return .failed
         }
 
-        private static func isTunnelDisconnected(_ a: String) -> Bool {
-            a.contains("waiting for the loopback")
-                || a.contains("waiting for the local developer connection")
-                || a.contains("local connection is off")
-                || a.contains("choose and enable a local connection")
-                || a.contains("remote pairing")
-                || a.contains("loopback")
-                || a.contains("10.7.0.1")
+        private static func classifyRunnerLine(_ detail: String) -> Failure {
+            if detail.hasPrefix("failed: cannot read the pairing file")
+                || detail.hasPrefix("failed: the pairing file is neither")
+                || detail.contains("fix on the phone: pair again in poki's setup.") {
+                return .notSentPairingRequired
+            }
+            if detail.hasPrefix("starting (waiting for the loopback")
+                || detail.hasPrefix("starting (waiting for the local developer connection")
+                || detail == "starting (needs loopback)"
+                || detail.hasPrefix("failed: remote pairing connect failed:")
+                || detail.hasPrefix("failed: remote pairing handshake failed:")
+                || detail.contains("fix on the phone: turn on the loopback")
+                || detail.contains("fix on the phone: open setup › loopback")
+                || detail.contains("fix on the phone: poki can't reach this iphone. check in this order: setup › loopback")
+                || detail.contains("fix on the phone: the loopback is on. ios moved its pairing service") {
+                return .notSentTunnelDisconnected
+            }
+            return .notSentSessionNotReady
         }
 
-        private static func isPairingRequired(_ a: String) -> Bool {
-            a.contains("refused the pairing")
-                || a.contains("pair this iphone first")
-                || a.contains("pair again in poki's setup")
-                || a.contains("cannot read the pairing file")
-                || a.contains("pairing file is neither")
+        private static func classifyStartupReason(_ reason: String) -> Failure {
+            if reason.hasPrefix("the local connection is off")
+                || reason.hasPrefix("choose and enable a local connection") {
+                return .notSentTunnelDisconnected
+            }
+            if reason.hasPrefix("the phone refused the pairing")
+                || reason.hasPrefix("pair this iphone first") {
+                return .notSentPairingRequired
+            }
+            return .sessionOff
         }
 
-        private static func isAppPreflight(_ a: String) -> Bool {
-            a.contains("is known on this phone")
-                || a.contains("apps by name")
-                || a.contains("does not know an app called")
-                || a.contains("could be any of")
-                || a.contains("is not installed on this iphone")
+        private static func isAppPreflightHeader(first: String, errorLine: String?) -> Bool {
+            if first.hasPrefix("do: no app named ") || first.hasPrefix("do: app is turned off") { return true }
+            if first.hasPrefix("launch ") && first.contains(": no app named ") { return true }
+            if let errorLine, errorLine.hasPrefix("error: launch ") && errorLine.contains(": no app named ") { return true }
+            if first.hasPrefix("not_sent: poki does not know an app called ") { return true }
+            if first.hasPrefix("not_sent: ") && (first.contains(" could be any of ") || first.contains(" is not installed on this iphone.")) { return true }
+            return false
         }
 
-        private static func isScreenEvidence(_ a: String) -> Bool {
-            a.contains("call look to read the current screen")
-                || a.contains("is not in the latest read")
-                || a.contains("needs a fresh read")
-                || a.contains("the iphone unlocked. no requested action was sent")
-                || a.contains("look at the selected pane")
+        private static func classifyNotSentFromAction(_ line: String) -> Failure {
+            guard let colon = line.range(of: ": ") else { return .notSent }
+            let reason = line[colon.upperBound...]
+            if reason.hasPrefix("approval_required") { return .approval }
+            if reason.hasPrefix("a coordinate action needs a fresh read") { return .notSentScreenEvidence }
+            if reason.hasPrefix("the owner declined on the phone") || reason.hasPrefix("the approval request ended unanswered") {
+                return .notSentApprovalDeclined
+            }
+            return .notSent
         }
 
-        private static func isSessionNotReady(_ a: String) -> Bool {
+        private static func classifySingleHeader(first: String, errorLine: String?) -> Failure? {
+            if first.hasPrefix("not_sent: the runner is still finishing") || first.hasPrefix("busy: ") { return .busy }
+            if first.hasPrefix("task stopped.") || first.hasPrefix("not_sent: task stopped") { return .stopped }
+            if first.hasPrefix("automation is ready. nothing was sent.")
+                || first.hasPrefix("the iphone unlocked. no requested action was sent.")
+                || first.hasPrefix("split view: look at the selected pane")
+                || (first.hasPrefix("element ") && first.contains(" is not in the latest read; nothing was sent"))
+                || (errorLine?.hasPrefix("error: element ") == true && errorLine?.contains(" is not in the latest read; nothing was sent") == true) {
+                return .notSentScreenEvidence
+            }
+            if first.hasPrefix("poki stopped waiting for automation to be ready.")
+                || first.hasPrefix("poki is waiting for automation to be ready.")
+                || isPasscodeConfirmationHeader(first) {
+                return .notSentSessionNotReady
+            }
+            if first.hasPrefix("screen: locked.")
+                || first.hasPrefix("automatic unlock could not be confirmed.")
+                || errorLine?.hasPrefix("error: automatic unlock could not be confirmed.") == true {
+                return .notSentLocked
+            }
+            if first.hasPrefix("not_sent: a step is handed to the owner") { return .notSentHandoff }
+            if first.hasPrefix("not_sent: ") && first.contains("leave poki first") { return .notSentOwnApp }
+            if first.hasPrefix("not_sent: the user declined on the phone")
+                || first.hasPrefix("not_sent: the user did not allow it on the phone in time") {
+                return .notSentApprovalDeclined
+            }
+            if first.hasPrefix("not_sent: the two visible apps")
+                || first.hasPrefix("not_sent: split view")
+                || first.hasPrefix("not_sent: keep both apps in place")
+                || first.hasPrefix("not_sent: use look with pane")
+                || first.hasPrefix("not_sent: choose left or right")
+                || first.hasPrefix("not_sent: use the two visible apps")
+                || first.hasPrefix("not_sent: that drag was already dropped") {
+                return .notSentSplitView
+            }
+            if first.hasPrefix("not_hittable:")
+                || errorLine?.hasPrefix("error: not_hittable:") == true
+                || (first.hasPrefix("path:") && first.contains("nothing was sent")) {
+                return .notSentTargetRefused
+            }
+            return nil
+        }
+
+        private static func isPasscodeConfirmationHeader(_ first: String) -> Bool {
             let passcode = AppLocalization.text(AppModel.passcodeConfirmationMessage).lowercased()
-            return a.contains(passcode)
-                || a.contains("open settings › connection")
-                || a.contains("设置 › 连接")
-                || a.contains("設定 › 連線")
-                || a.contains("waiting for automation to be ready")
-                || a.hasPrefix("runner:")
-                || a.contains("\nrunner:")
-        }
-
-        private static func isLocked(_ a: String) -> Bool {
-            a.contains("screen: locked")
-                || a.contains("automatic unlock could not be confirmed")
-        }
-
-        private static func isApprovalDeclined(_ a: String) -> Bool {
-            a.contains("declined on the phone")
-                || a.contains("approval request ended unanswered")
-                || a.contains("did not allow it on the phone in time")
-        }
-
-        private static func isSplitView(_ a: String) -> Bool {
-            a.contains("split view")
-                || a.contains("two visible apps")
-                || a.contains("already dropped")
-        }
-
-        private static func isTargetRefused(_ a: String) -> Bool {
-            a.contains("not_hittable")
-                || (a.hasPrefix("path:") && a.contains("nothing was sent"))
+            return first.hasPrefix("not_sent: \(passcode)")
+                || first.hasPrefix("not_sent: to turn on automation, open settings › connection")
+                || first.hasPrefix("not_sent: 要开启自动化，请前往设置 › 连接")
+                || first.hasPrefix("not_sent: 若要開啟自動化，請前往設定 › 連線")
         }
     }
 
@@ -180,8 +244,12 @@ enum ChatDebugLog {
     }
 
     static func call(_ record: CallRecord) -> Call {
-        Call(tool: record.name, actions: record.name == "do" ? actions(record.arguments) : [], ok: record.ok, ms: record.ms,
-             error: record.ok ? nil : Failure(answer: record.answer).rawValue)
+        let resolvedFailure = record.failure
+            ?? (!record.ok ? Failure(answer: record.answer)
+                : (record.name == "do" || record.name == "look" ? Failure.nonErrorRefusal(answer: record.answer) : nil))
+        return Call(tool: record.name, actions: record.name == "do" ? actions(record.arguments) : [],
+                    ok: record.ok && resolvedFailure == nil, ms: record.ms,
+                    error: resolvedFailure?.rawValue)
     }
 
     /// Each do action's kind. Only values that cannot hold the owner's text are added: a launch's bundle

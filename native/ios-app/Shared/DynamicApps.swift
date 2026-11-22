@@ -17,14 +17,17 @@ enum DynamicApps {
     nonisolated(unsafe) private static var entries: [Entry] = []
     nonisolated(unsafe) private static var byName: [String: String] = [:]
     nonisolated(unsafe) private static var byID: [String: Entry] = [:]
+    nonisolated(unsafe) private static var currentByName: [String: String] = [:]
+    nonisolated(unsafe) private static var currentByID: [String: Entry] = [:]
     nonisolated(unsafe) private static var stamp = 0
 
     /// Bumped on each change, so a table built from `uniquelyNamedUserApps` knows to build again.
     static var version: Int { lock.withLock { stamp } }
 
     /// Replaces the index. A name two apps share counts for neither: a capsule or an icon by that name
-    /// would be a guess.
-    static func set(_ list: [Entry]) {
+    /// would be a guess. Only lists from a live phone refresh (`current: true`) count as current install
+    /// evidence for launch preflight; disk-cached lists stay limited to names, icons and capsules.
+    static func set(_ list: [Entry], current: Bool = false) {
         var names: [String: String] = [:], shared: Set<String> = [], ids: [String: Entry] = [:]
         for entry in list {
             ids[entry.id.lowercased()] = entry
@@ -37,8 +40,19 @@ enum DynamicApps {
             }
         }
         lock.withLock {
-            guard entries != list else { return }
-            entries = list; byName = names; byID = ids; stamp += 1
+            if entries != list {
+                entries = list; byName = names; byID = ids; stamp += 1
+            }
+            currentByID = current ? ids : [:]
+            currentByName = current ? names : [:]
+        }
+    }
+
+    /// Drops current install evidence after a stale refresh fails while keeping display names and icons.
+    static func clearCurrent() {
+        lock.withLock {
+            currentByID = [:]
+            currentByName = [:]
         }
     }
 
@@ -53,12 +67,18 @@ enum DynamicApps {
         lock.withLock { byID[id.lowercased()]?.name }
     }
 
-    /// The installed app's bundle id when `id` matches it exactly.
-    static func installedID(forID id: String) -> String? {
+    /// The bundle id when the current phone refresh confirmed this exact id is installed.
+    static func currentInstalledID(forID id: String) -> String? {
         lock.withLock {
-            guard let entry = byID[id.lowercased()], entry.id == id else { return nil }
+            guard let entry = currentByID[id.lowercased()], entry.id == id else { return nil }
             return entry.id
         }
+    }
+
+    /// The bundle id when the current phone refresh confirmed an app with exactly this name is installed.
+    static func currentID(forName name: String) -> String? {
+        let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return key.isEmpty ? nil : lock.withLock { currentByName[key] }
     }
 
     /// The installed User apps whose name no other installed app shares: the ones a name can stand for.
@@ -91,13 +111,13 @@ extension KnownApps {
            let installedID = proxy.perform(identifier)?.takeUnretainedValue() as? String, installedID == name {
             return installedID
         }
-        if let installedID = DynamicApps.installedID(forID: name) { return installedID }
+        if let installedID = DynamicApps.currentInstalledID(forID: name) { return installedID }
         if let id = byName[name.lowercased()], let app = byID[id.lowercased()],
            let installed = app.ids.first(where: isInstalledOnPhone)
-            ?? app.ids.first(where: { DynamicApps.name(forID: $0) != nil }) {
+            ?? app.ids.first(where: { DynamicApps.currentInstalledID(forID: $0) != nil }) {
             return installed
         }
-        return DynamicApps.id(forName: name)
+        return DynamicApps.currentID(forName: name)
     }
 
     private static func isInstalledOnPhone(_ id: String) -> Bool {

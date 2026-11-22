@@ -214,7 +214,7 @@ final class DynamicAppsTests: XCTestCase {
             .init(id: "com.xingin.discover", name: "小红书", user: true),
             .init(id: "ctrip.com", name: "携程旅行", user: true),
             strava,
-        ])
+        ], current: true)
         for (input, expected) in [
             ("com.xingin.discover", "com.xingin.discover"),
             ("小红书", "com.xingin.discover"),
