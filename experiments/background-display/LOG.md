@@ -84,3 +84,11 @@ Secure Element ID are left out of every record.
 - **[device]** Display 3 stayed solid black throughout.
 - Result: **this iPhone offers no user-facing Extended Display mode for the virtual display.** The strings in DisplayAndBrightnessSettings belong to a mode that is not shown here (consistent with iPad-only Stage Manager). No setting was changed, so nothing needed restoring.
 - Disk free at 22:21 ET: 4.6 GiB.
+
+## R6 step 1: background launch without activation (22:21-22:23 ET)
+
+- **[device]** Handset in front: Settings (AirPlay & Continuity). Calculator pid 32561 already present (backgrounded since 21:57).
+- **[device]** `devicectl device process launch --no-activate com.apple.calculator` -> "Launched application", JSON `activatedWhenStarted: false`, `terminateExistingInstances: false`, same pid 32561 (audit token pid 32561). Handset foreground unchanged (Settings) 5 s later.
+- **[device]** Calculator pid still listed at +5 s, +30 s and +2 min. `devicectl device info processes` does not report run state, so "listed" does not mean "running": iOS normally suspends a backgrounded app. Unknown until an accessibility query answers or times out.
+- **[binary]** Poki's in-process XCTest path (native/ios-app/Poki/Native/InProcess.m) chooses its target from `XCAXClient activeApplications` / `systemApplication` and hit tests, so it only reaches apps that are on screen. It has no call that addresses a background pid's tree. A Poki-side probe would need a new API (an AX element for an arbitrary pid). Whether testmanagerd answers for a suspended app is unknown.
+- Waiting on the owner's yes to install pymobiledevice3 for the accessibility-server read (R6 step 2).
