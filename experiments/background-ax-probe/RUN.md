@@ -284,3 +284,20 @@ XCTest daemon, in the background with Settings in front:
   called from `UIScene scene:didUpdateWithDiff:transitionContext:completion:` when FrontBoard updates the scene settings.
   `-[UIWindowScene _prepareForResume]` → `createContextsWithTest:creationAction:` → `+createContextForBindable:withSubstrate:` recreates it on return.
   The testmanagerd background assertion keeps the process running, but doesn't stop the purge.
+
+### testmanagerd (iOS 27.3 DDI, static strings only) and SpringBoard test automation
+
+- Runner→daemon launch calls: `_XCT_launchApplicationWithBundleID:arguments:environment:completion:`,
+  `_XCT_launchApplicationWithBundleID:path:arguments:environment:completion:`, `_XCT_launchProcessWithPath:bundleID:arguments:environmentVariables:`,
+  `_XCT_openURL:usingApplication:completion:`, `_XCT_openURL:processPath:bundleID:arguments:environmentVariables:`. None takes an
+  options dictionary or a display. Internally it uses an `XCTDFBSOpenApplicationService`.
+- Display awareness: `XCTDDisplayManager`, `_resolvedDisplayForID:`, `_keyboardSenderForDisplayIdOrMain:`, `_buttonSenderForDisplayId:`,
+  `_typeKey:modifiers:displayID:completion:`, plus "Failed to resolve displays. Defaulting to generic keyboard sender" and
+  "Using touch screen digitizer sender for button event on the main display". This picks HID senders per display for synthesized
+  events (system path, so they land on whatever is on that display). No string creates or attaches a virtual display, though the
+  daemon holds `backboardd.virtualDisplay`/`virtualframebuffer`.
+- `SBSTestAutomationService` (SpringBoardServices) has 54 methods, including `setChamoisWindowingUIEnabled:`,
+  `countScenesForBundleIdentifier:withCompletion:`, `getActiveDisplayWindowSceneDisplayIdentifierWithCompletion:`, `suspendAllDisplays`,
+  and `togglePictureInPictureProminence`. Of these, testmanagerd references only `setDeviceOrientation:` and `setOrientationLockEnabled:`.
+- Other daemon calls of note: `_XCTD_setFrontProcess:`, `_XCT_playBackHIDEventRecordingFromData:reply:`, VoiceOver enable/move,
+  `_XCTD_performHandGesture:`, `_XCTD_performDeviceEvent:`. None changes a scene's foreground state.
