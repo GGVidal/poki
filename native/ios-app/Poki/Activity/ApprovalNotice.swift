@@ -2,11 +2,12 @@ import Foundation
 import UserNotifications
 
 /// A time-sensitive notification for an approval when no Live Activity can ask (off, dismissed, or
-/// never started), so the person still hears about it. Never both: AppModel's askOwner posts it only
-/// without a Live Activity. Touch and hold
-/// it for Allow (Face ID or the passcode first), Don't Allow, and on a step that turning asking off
-/// reaches, Don't Ask Again (Face ID or the passcode first). PokiCore sends no input while an
-/// approval waits, so only the person can press them.
+/// never started), or as a 7-second fallback on devices without a Dynamic Island after the top Live
+/// Activity banner auto-dismisses. Dynamic Island phones never show both at once, and answering on
+/// the Live Activity cancels any pending fallback notice. Touch and hold it for Allow (Face ID or
+/// the passcode first), Don't Allow, and on a step that turning asking off reaches, Don't Ask Again
+/// (Face ID or the passcode first). PokiCore sends no input while an approval waits, so only the
+/// person can press them.
 enum ApprovalNotice {
     static let category = "approval"
     /// The same buttons and Don't Ask Again, for a step the owner can stop being asked about.

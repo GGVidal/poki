@@ -319,6 +319,7 @@ final class BrowserGuardTests: XCTestCase {
         window.makeKeyAndVisible()
         defer {
             window.isHidden = true
+            window.rootViewController = nil
             browser.close()
         }
 
