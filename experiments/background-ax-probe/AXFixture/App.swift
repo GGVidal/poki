@@ -156,7 +156,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
         let ctx = (w.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
         let layerContext = (w.layer.value(forKey: "context") as AnyObject?).map { "\($0)" } ?? "nil"
         if let sc = w.windowScene, sc.responds(to: NSSelectorFromString("_FBSScene")), let fbs = sc.value(forKey: "_FBSScene") as? NSObject, let ident = fbs.value(forKey: "identifier") as? String {
-            Fix.sceneLabel?.accessibilityValue = ident; Fix.sceneLabel?.text = "scene"
+            Fix.sceneLabel?.accessibilityValue = ident; Fix.sceneLabel?.text = "ctx:\(ctx)"
             NSLog("FIXLOG scene id=%@ key=%d", ident, w.isKeyWindow ? 1 : 0)
         }
         NSLog("FIXLOG window %@ contextId=%u layer.context=%@ activation=%d hidden=%d", tag, ctx, layerContext, w.windowScene?.activationState.rawValue ?? -9, w.isHidden ? 1 : 0)

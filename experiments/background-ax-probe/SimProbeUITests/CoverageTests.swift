@@ -124,3 +124,111 @@ extension SimFixtureTests {
     func testCOV_foreground() { runCoverage(false) }
     func testCOV_background() { runCoverage(true) }
 }
+
+extension SimFixtureTests {
+    func covLaunch(tab: String, presenter: String? = nil, bg: Bool) {
+        background = bg
+        fixture.launchArguments = ["-coverage", "-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        fixture.launch()
+        let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        if tab != "UIKit" { fixture.tabBars.buttons[tab].tap(); sleep(1) }
+        if let p = presenter { fixture.descendants(matching: .any)[p].firstMatch.tap(); sleep(1) }
+        if bg { _ = PBHelper.requestBackgroundAssertion(forPID: pid); settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10); sleep(1) }
+    }
+    func tryAct(_ name: String, _ e: XCUIElementSnapshot?, _ id: Int, _ v: Any? = nil) {
+        guard let e else { say("ALT | \(name) | not found"); return }
+        let before = lastEvent(); var err: NSString?
+        let ok = PBHelper.pressSnapshot(e, action: id, value: v, error: &err); usleep(1_200_000)
+        say("ALT | \(name) | \(id) \(ok ? "ok" : "fail") | handler: \(lastEvent() == before ? "none" : lastEvent())")
+    }
+    func fkaFocus(_ e: XCUIElementSnapshot?) -> String {
+        guard let app = snap(), let e else { return "no" }
+        var err: NSString?
+        let sid = (find(snap()) { $0.identifier == "sceneId" }?.value as? String) ?? ""
+        _ = PBHelper.pressSnapshot(app, action: 5305, value: NSNumber(value: true), error: &err)
+        if !sid.isEmpty { _ = PBHelper.pressSnapshot(app, action: 5310, value: sid as NSString, error: &err) }
+        usleep(500_000)
+        return PBHelper.pressSnapshot(e, action: 2044, value: nil, error: &err) ? "ok" : "fail"
+    }
+    func altRun(_ bg: Bool) {
+        // back: escape on app, on the pushed screen's nav bar, on the detail item
+        covLaunch(tab: "UIKit", presenter: "cov.push", bg: bg)
+        tryAct("back: 2013 on app", snap(), 2013)
+        tryAct("back: 2013 on nav bar", find(snap()) { $0.elementType == .navigationBar }, 2013)
+        tryAct("back: 2013 on detail item", find(snap()) { $0.identifier == "cov.detailitem" }, 2013)
+        // tabs: actions on the tab bar itself
+        covLaunch(tab: "UIKit", bg: bg)
+        for id in [2008, 2009, 2004, 2005, 2019, 2020, 2006, 2007] { tryAct("tabs: \(id) on tab bar", find(snap()) { $0.elementType == .tabBar }, id) }
+        // cells: focus (selection follows focus?), then Return/Space keys
+        covLaunch(tab: "Lists", bg: bg)
+        for (n, p) in [("list cell 1", { (s: XCUIElementSnapshot) in s.label == "ListCell 1" }), ("table cell 1", { (s: XCUIElementSnapshot) in s.label.hasPrefix("TableCell 1") })] {
+            let before = lastEvent(); let f = fkaFocus(find(snap(), p)); usleep(1_200_000)
+            say("ALT | \(n): FKA focus \(f) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+            for k in ["\r", " ", "UIKeyInputDownArrow"] {
+                let b2 = lastEvent(); let r = sendKey(k); usleep(1_000_000)
+                say("ALT | \(n): key \(k == "\r" ? "Return" : k == " " ? "Space" : "Down") \(r) | handler: \(lastEvent() == b2 ? "none" : lastEvent())")
+            }
+        }
+        // text field: becomeFirstResponder via attribute 3002, set value, Return key event
+        covLaunch(tab: "UIKit", bg: bg)
+        for fid in ["cov.field", "cov.search"] {
+            guard let f = find(snap(), { $0.identifier == fid }) else { continue }
+            var err: NSString?
+            let fr = PBHelper.setAttribute("XC_kAXXCAttributeFocused", value: NSNumber(value: true), onSnapshot: f, error: &err) || PBHelper.setAttribute("3002", value: NSNumber(value: true), onSnapshot: f, error: &err)
+            let sv = PBHelper.setAttribute("XC_kAXXCAttributeValue", value: "hello" as NSString, onSnapshot: f, error: &err); usleep(500_000)
+            let before = lastEvent(); let r = sendKey("\r"); usleep(1_000_000)
+            say("ALT | \(fid): 3002 \(fr), set \(sv), key Return \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+            tryAct("\(fid): 2054 after first responder", find(snap(), { $0.identifier == fid }), 2054)
+        }
+        if bg { say("ALT | front after: \(String(frontSummary().prefix(50)))") }
+    }
+    func testALT_foreground() { altRun(false) }
+    func testALT_background() { altRun(true) }
+}
+
+extension SimFixtureTests {
+    // Covered-but-foreground: fixture in front, then an overlay. Log state, then the in-process tap ("j"),
+    // the switch via FKA focus + arrow, and a plain 2010 for reference.
+    func overlayRun(_ overlay: String) {
+        background = false
+        fixture.launchArguments = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        fixture.launch(); sleep(3)
+        let sb = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        switch overlay {
+        case "notification-center":
+            let start = sb.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.0)); let end = sb.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.7))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        case "control-center":
+            let start = sb.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.0)); let end = sb.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.7))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        case "app-switcher":
+            let start = sb.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.999)); let end = sb.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+            start.press(forDuration: 0.05, thenDragHoldTo: end) 
+        default: break
+        }
+        sleep(3)
+        say("OV | \(overlay) | fixture state \(fixture.state.rawValue)")
+        var before = lastEvent(); _ = sendKey("j"); sleep(2)
+        say("OV | \(overlay) | in-process tap (j) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        if let sw = find(snap(), { $0.elementType == .switch }) {
+            let f = fkaFocus(sw); usleep(600_000)
+            before = lastEvent(); _ = sendKey("UIKeyInputRightArrow"); usleep(1_200_000)
+            say("OV | \(overlay) | switch FKA focus \(f) + Right | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        }
+        if let b = find(snap(), { $0.label == "Plain button" && $0.elementType == .button }), let lab = find(snap(), { $0.identifier == "sceneId" })?.label, lab.hasPrefix("ctx:"), let ctx = UInt32(lab.dropFirst(4)) {
+            let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+            let p = CGPoint(x: b.frame.midX, y: b.frame.midY)
+            before = lastEvent(); let r = PBHelper.postTap(at: p, contextId: ctx, pid: pid, displayId: 0, down: 1, up: 6); sleep(1)
+            say("OV | \(overlay) | context-addressed AX touch ctx=\(ctx) at \(p) \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+        } else { say("OV | \(overlay) | no ctx label") }
+        tryAct("\(overlay) | plain button 2010", find(snap()) { $0.label == "Plain button" && $0.elementType == .button }, 2010)
+        XCUIDevice.shared.press(.home); sleep(1)
+    }
+    func testOV_notificationCenter() { overlayRun("notification-center") }
+    func testOV_controlCenter() { overlayRun("control-center") }
+    func testOV_appSwitcher() { overlayRun("app-switcher") }
+}
+
+extension XCUICoordinate {
+    func press(forDuration d: TimeInterval, thenDragHoldTo end: XCUICoordinate) { press(forDuration: d, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 1.0) }
+}

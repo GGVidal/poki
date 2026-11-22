@@ -402,3 +402,36 @@ WKWebView content.
   `requestSceneSessionRefresh:`) and background-event state restoration (`_handleNonLaunchSpecificActions:`) each call `_prepareForResume`, then
   `_prepareForSuspend`, synchronously on the main thread. An externally queued event runs after that. Matches the diagnostic:
   `_updateSnapshotForBackgroundApplication:` left the context nil.
+
+### Alternative paths, round 2 (simulator 27.3, fixture), 2026-11-22 ET
+
+Background, Settings in front (unchanged afterwards); all no effect on the handler:
+- Back: 2013 (escape) on the app element (fails), on the pushed screen's navigation bar and on its bar item (accepted, no pop).
+- Tabs: 2004/2005 on the tab bar (accepted, no change); 2006–2009, 2019, 2020 fail.
+- Cells: FKA focus (5305 + 5310 + 2044) on a list cell works, then Return, Space or Down via 2034 selects nothing. Focus on the table cell fails.
+- Text and search fields: first responder via attribute (`XC_kAXXCAttributeFocused` / 3002) fails; set value + Return key event, no submit; 2054 fails.
+
+**Foreground but covered (new measurement):**
+
+| overlay | fixture activation / context | in-process tap (`_keyboardActivate` via fixture "j") | switch via FKA focus + Right | context-addressed AX touch (AXBackBoardServer, ctx + pid) | 2010 on plain button |
+|---|---|---|---|---|---|
+| Control Center | 1 (foreground inactive), context live | **fires button** | **toggles** | no | fail |
+| App switcher | 1, context live | **fires button** | **toggles** | no | fail |
+| Notification Center | 2 (background), context nil | no | no | - | fail |
+
+So with a scene that's foreground but inactive (covered), the switch works from outside today. Plain buttons, cells and tabs still need
+an outside way into `_keyboardActivate`, which only the switch's FKA key commands give.
+
+### Launch options (reading)
+
+- FrontBoard `FBSOpenApplicationOptionKey…`: Actions, ActivateAsClassic, ActivateForEvent, ActivateSuspended, AppLink, DebuggingOptions,
+  DocumentOpen, LaunchAppArguments, LaunchIntent, LaunchOrigin, PayloadURL/Options/Annotation, PromptUnlockDevice, UnlockDevice, UserActivity, Persona, ….
+- SpringBoard `SBSOpenApplicationOptionKey…`: AdditionalApplications, DisplayDeviceName, DisplayUniqueIdentifier, InsertIntoCenterStage,
+  LaunchPreferCenterZoom, LaunchSceneless, LaunchWithoutAnimation, LayoutRole, MigrateContentToScene, PreventDismissalOfTransientOverlays,
+  SceneIdentifier, WindowingArrangement, WindowingFormat, DoNotDismissSiri, ….
+- What we can reach: `devicectl device process launch` exposes only `--activate/--no-activate`, `--display` (refused earlier at the
+  display-lookup gate), `--payload-url`, `--background-content-fetching-enabled`, `--start-stopped`, environment and arguments. testmanagerd's
+  launch takes bundle id, path, arguments and environment only. LayoutRole, WindowingFormat/Arrangement and InsertIntoCenterStage aren't reachable.
+- `devicectl device appResize start` ("Moves the frontmost apps to a resizable display …" whose name contains "Resizable") is the
+  supported route for moving an app to another display. Earlier in this project the phone answered `device info appResize` with
+  "does not offer the on-device service … Resizable App Management" (`com.apple.coredevice.feature.resizableappmanagement`, error 1001).
