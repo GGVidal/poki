@@ -184,7 +184,7 @@ final class DynamicAppsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 
-    func testLiveCoreLaunchSendsExplicitBundleIDAndDynamicAppsWithoutLSApplicationProxy() async {
+    func testLiveCoreLaunchRefusesUninstalledBundleIDsAndAllowsDynamicAppsAndExplicitBundleObjects() async {
         let savedAppNames = UserDefaults.standard.object(forKey: SpeedOptions.appNamesKey)
         UserDefaults.standard.set(true, forKey: SpeedOptions.appNamesKey)
         defer {
@@ -197,38 +197,55 @@ final class DynamicAppsTests: XCTestCase {
         let transport = LaunchProbeTransport()
         let core = LiveCore(host: host, transport: transport)
 
-        let explicit = await core.callTool("do", arguments: #"{"actions":[{"launch":"com.xingin.discover"}]}"#, localTask: "esp-1274")
-        XCTAssertFalse(explicit.isError, explicit.text)
-        let afterExplicit = await transport.activated
-        XCTAssertEqual(afterExplicit, ["com.xingin.discover"])
-
-        let shortKnownID = await core.callTool("do", arguments: #"{"actions":[{"launch":"ctrip.com"}]}"#, localTask: "esp-1274")
-        XCTAssertFalse(shortKnownID.isError, shortKnownID.text)
-        let afterShortID = await transport.activated
-        XCTAssertEqual(afterShortID, ["com.xingin.discover", "ctrip.com"])
-
-        DynamicApps.set([strava])
-        let byDynamicName = await core.callTool("do", arguments: #"{"actions":[{"launch":"Strava"}]}"#, localTask: "esp-1274")
-        XCTAssertFalse(byDynamicName.isError, byDynamicName.text)
-        let afterDynamicName = await transport.activated
-        XCTAssertEqual(afterDynamicName, ["com.xingin.discover", "ctrip.com", "com.strava.stravaride"])
-
-        for unknown in ["Nonesuch", "tutti.ch"] {
-            let refused = await core.callTool("do", arguments: #"{"actions":[{"launch":"\#(unknown)"}]}"#, localTask: "esp-1274")
-            XCTAssertTrue(refused.isError, refused.text)
-            XCTAssertTrue(refused.text.contains("no app named \"\(unknown)\" is known"), refused.text)
+        for uninstalled in ["com.xingin.discover", "ctrip.com", "Nonesuch", "tutti.ch"] {
+            let refused = await core.callTool("do", arguments: #"{"actions":[{"button":"home"},{"launch":"\#(uninstalled)"}]}"#, localTask: "esp-1274")
+            XCTAssertTrue(refused.isError, "\(uninstalled): \(refused.text)")
+            XCTAssertTrue(refused.text.contains("no app named \"\(uninstalled)\" is known"), "\(uninstalled): \(refused.text)")
         }
-        let afterRefused = await transport.activated
-        XCTAssertEqual(afterRefused, ["com.xingin.discover", "ctrip.com", "com.strava.stravaride"])
+        let mutationsBeforeInstall = await transport.mutatingPaths
+        XCTAssertEqual(mutationsBeforeInstall, [], "an uninstalled launch string refuses the whole batch before sending any action")
+
+        let explicitBundleObject = await core.callTool("do", arguments: #"{"actions":[{"launch":{"bundle":"com.not.installed"}}]}"#, localTask: "esp-1274")
+        XCTAssertFalse(explicitBundleObject.isError, explicitBundleObject.text)
+        let afterBundleObject = await transport.activated
+        XCTAssertEqual(afterBundleObject, ["com.not.installed"])
+
+        DynamicApps.set([
+            .init(id: "com.xingin.discover", name: "小红书", user: true),
+            .init(id: "ctrip.com", name: "携程旅行", user: true),
+            strava,
+        ])
+        for (input, expected) in [
+            ("com.xingin.discover", "com.xingin.discover"),
+            ("小红书", "com.xingin.discover"),
+            ("ctrip.com", "ctrip.com"),
+            ("Strava", "com.strava.stravaride"),
+        ] {
+            let result = await core.callTool("do", arguments: #"{"actions":[{"launch":"\#(input)"}]}"#, localTask: "esp-1274")
+            XCTAssertFalse(result.isError, "\(input): \(result.text)")
+            let latest = await transport.activated.last
+            XCTAssertEqual(latest, expected, input)
+        }
+
+        let wrongCase = await core.callTool("do", arguments: #"{"actions":[{"launch":"COM.XINGIN.DISCOVER"}]}"#, localTask: "esp-1274")
+        XCTAssertTrue(wrongCase.isError, wrongCase.text)
+        XCTAssertTrue(wrongCase.text.contains("no app named \"COM.XINGIN.DISCOVER\" is known"), wrongCase.text)
+
+        let finalActivated = await transport.activated
+        XCTAssertEqual(finalActivated, ["com.not.installed", "com.xingin.discover", "com.xingin.discover", "ctrip.com", "com.strava.stravaride"])
     }
 }
 
 private actor LaunchProbeTransport: HTTPTransport {
     private(set) var activated: [String] = []
+    private(set) var mutatingPaths: [String] = []
     private var foreground = "nz.zheha.poki"
 
     func send(method: String, url: URL, body: Data?, timeout: Double) async throws -> (status: Int, body: Data) {
         let path = url.path.replacingOccurrences(of: #"^/session/[^/]+"#, with: "", options: .regularExpression)
+        if method == "POST", path != "/session" {
+            mutatingPaths.append(path)
+        }
         let value: JSON
         switch (method, path) {
         case ("POST", "/session"):
