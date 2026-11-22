@@ -775,7 +775,7 @@ final class ChatModel {
            loop.model.reasoning == model.reasoning, loop.hasCurrentCustomBackups, !changedWorkspace { return loop }
         // A different workspace starts without old screen evidence.
         let next = PiLoop(provider: provider, model: model,
-                          tools: Harness.toolSpecs(inSplitView: inSplitView, includeScreenHistory: true),
+                          tools: Harness.toolSpecs(inSplitView: inSplitView),
                           inSplitView: inSplitView, carrying: changedWorkspace ? [] : loop?.messages ?? []) { [weak self] call in
             guard let self else { return PokiCore.ToolAnswer(text: "Task stopped. Action not executed.", jpeg: nil, isError: true) }
             return await self.perform(call)
@@ -1051,12 +1051,18 @@ final class ChatModel {
                 if args["finish"] as? Bool == true || actions.contains(where: { $0["launch"] != nil || $0["run"] != nil || $0["path"] != nil || $0["button"] != nil }) {
                     return splitViewRefusal("Keep both apps in place. Do not launch apps, use hardware buttons, or run skills. Finish with finish_task.")
                 }
-            case "report_plan", "finish_task", "status", "screen_history", SensesContext.name: break
+            case "report_plan", "finish_task", "status", SensesContext.name: break
             default:
                 return splitViewRefusal("Use the two visible apps with look and do for this task.")
             }
         }
         switch call.name {
+        case "screen_history":
+            // Not offered to Poki's chat: its raw screen text is for outside agents. A model that
+            // calls it anyway is pointed at the checked route.
+            return PokiCore.ToolAnswer(text: SensesContext.offered
+                ? "Not available here. Ask with personal_context {question, hours} instead."
+                : "Not available here. Go on without Screen History.", jpeg: nil, isError: true)
         case "report_plan":
             guard let steps = args["steps"] as? [String], (1...8).contains(steps.count), let current = args["currentStep"] as? Int, (1...steps.count).contains(current) else {
                 return PokiCore.ToolAnswer(text: Harness.invalidPlan, jpeg: nil, isError: true)

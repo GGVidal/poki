@@ -153,11 +153,14 @@ final class SensesSuggestions {
         // Too little on the tape to know what the owner is in the middle of.
         guard entries.count >= 6 else { return [] }
         let take = min(entries.count, 14)
+        // The chat model, online, gets the screen titles only, as Settings says; the screen text
+        // stays with the model on this iPhone.
+        let online = SensesModel.choice == .chat
         var text = ""
         for index in 0..<take {
             let entry = entries[index * entries.count / take]
             let time = entry.at.formatted(date: .omitted, time: .shortened)
-            text += "[\(time)] \(HistoryNames.app(entry.app)) \(entry.title)\n\(entry.text.prefix(170))\n\n"
+            text += "[\(time)] \(HistoryNames.app(entry.app)) \(entry.title)\n" + (online ? "\n" : "\(entry.text.prefix(170))\n\n")
         }
         let language = Locale(identifier: "en").localizedString(forIdentifier: AppLocalization.locale.identifier) ?? "English"
         let instructions = """
