@@ -317,3 +317,16 @@ XCTest daemon, in the background with Settings in front:
   `_alwaysGetsContexts` is YES only for UIKit's own internal window classes (remote keyboard, snapshot, drag, client renderer).
   No UIKit defaults key, launch argument, accessibility id or attribute found for any of them.
 - A background snapshot refresh (`-[UIApplication _updateSnapshotForBackgroundApplication:]`) doesn't recreate the context.
+
+### Who can set keep-context, and outside levers (reading, simulator 27.3)
+
+- Callers, from a bl-decode of UIKitCore `__text`: `setKeepContextInBackground:` only in `-[_UIHostedWindow initWithFrame:]`;
+  `_setKeepContextAssociationInBackground:` only in `+[UIWindow _setAllWindowsKeepContextInBackground:]`,
+  `-[UIWindowScene initWithSession:connectionOptions:]` and `-[_UIHostedWindowScene initWithSession:connectionOptions:]`.
+  With 33 feature frameworks loaded (AVKit/PiP, AirPlay, CarPlay, ReplayKit, ScreenCaptureKit, screen sharing, Sidecar, Live Activities,
+  scene hosting, widgets), no other image has a stub for these. In all 3,410 runtime executables the selector strings appear only in
+  SpringBoard, OverlayUI, druid and pointeruid.
+- AX side storage: the only outside write is in the set-attribute dispatcher, with the fixed key `AXShowOnscreenKeyboardWithBraille`.
+  Action and attribute blocks (`AccessibilityActionBlockStorageKey`, `AccessibilityAttributeBlockStorageKey`) are filled by in-app code.
+  The base `_accessibilityUserTestingActions` is empty. `_accessibilityKeyCommands` is fixed per class (NSObject base: adjustable and
+  directional-focus arrows).
