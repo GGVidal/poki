@@ -493,3 +493,11 @@ Times are from the fixture's own log (scene willEnterForeground → handler → 
   "[State.WaitingForScenes] --> moving to .invalid because airplay mirroring": with AirPlay mirroring active the external-display scene state machine goes invalid.
 - **airPlay (9) / pip (12):** not fully traced. The SpringBoard strings tie PiP to `SBPIPController` and `SBPIPInterruptionAssertion`/`SBPIPStashAssertion` (the app's
   PiP content scene), and AirPlay to mirroring state. Neither names a mechanism that keeps an ordinary app's main scene foreground behind another app.
+- **Extended display gate, decoded (SpringBoard 27.3):** `-[SBExternalDisplaySettings setDefaultValues]` sets `extendedDisplayHardwareRequirementMask` = 3
+  and copies `SBDefaults.localDefaults.externalDisplayDefaults.allowWirelessDisplaysForExtendedDisplayMode` into the fake storage.
+  `-[SBExtendedDisplayController _areAllRequiredHardwareAvailable]` tests the mask against `mousePointerManager isHardwarePointingDeviceAttached` and
+  `SBHIDKeyboardMonitor` (bits: pointing device, hardware keyboard). `-[SBExtendedDisplayController _reevaluateMirroringEnablement]` turns mirroring off
+  (extended mode) only when `shouldUpdateExternalDisplayMirroringWhenWindowManagementStyleUpdates` and (`chamoisWindowingEnabled` or
+  `medusaMultitaskingEnabled`) and all required hardware is attached. Otherwise the display stays mirrored.
+  So on iPhone, extended external display needs Chamois/Medusa windowing, which was found gated off on this iPhone earlier. A wired display
+  plus mouse and keyboard doesn't change that gate.
