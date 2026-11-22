@@ -693,18 +693,27 @@ final class WatchVoiceBackgroundTests: XCTestCase {
     }
 
     func testBackgroundSessionStartTimeoutReturnsPromptlyWhenStartStalls() async {
+        var stalledCompleted = false
+        var releaseStall: CheckedContinuation<Void, Never>?
+        var shouldResumeImmediately = false
         let stalled = Task {
-            // Simulate a non-cooperative blocking call inside startTask.
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.6) {
+                if shouldResumeImmediately {
                     continuation.resume()
+                } else {
+                    releaseStall = continuation
                 }
             }
+            stalledCompleted = true
         }
-        let started = ContinuousClock.now
+        defer {
+            shouldResumeImmediately = true
+            releaseStall?.resume()
+            releaseStall = nil
+        }
         await AppModel.waitForSessionStart(stalled, timeout: .milliseconds(60))
-        let elapsed = ContinuousClock.now - started
-        XCTAssertLessThan(elapsed, .milliseconds(250), "Timeout must not block on a stalled sessionStartTask; elapsed=\(elapsed)")
+        XCTAssertFalse(stalledCompleted, "Timeout must return without waiting for a stalled sessionStartTask")
+        XCTAssertTrue(stalled.isCancelled, "Timeout must cancel the stalled sessionStartTask")
     }
 
     func testOwnerTurnedOffAndOwnerPausedBothRefuseBackgroundExecution() async throws {
