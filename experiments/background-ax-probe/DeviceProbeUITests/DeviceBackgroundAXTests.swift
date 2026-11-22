@@ -111,6 +111,97 @@ final class DeviceBackgroundAXTests: XCTestCase {
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.lifetime = .keepAlways; add(shot)
     }
 
+    // ---- I: navigation mechanism and scrolling, round 4
+    func nav(_ s: XCUIElementSnapshot) -> String { first(s) { $0.elementType == .navigationBar }?.identifier ?? "nil" }
+    func press(_ e: XCUIElementSnapshot) -> String { var err: NSString?; let ok = PBHelper.pressSnapshot(e, action: 2010, error: &err); return "ok=\(ok) err=\(err ?? "nil")" }
+
+    func testI1_navigationVariants() {
+        _ = bgSettings("I1")
+        func cell(_ s: XCUIElementSnapshot, _ label: String) -> XCUIElementSnapshot? { first(s) { ($0.elementType == .cell || $0.elementType == .button) && $0.label == label } }
+        func read() -> XCUIElementSnapshot? { try? settings.snapshot() }
+        guard let s0 = read(), let g = cell(s0, "General") else { say("[I1] General not found"); return }
+        say("[I1] press General \(press(g))"); sleep(3)
+        say("[I1] nav now=\(read().map(nav) ?? "nil")")
+        // (b) back, then General again
+        if let s = read(), let back = first(s, { $0.elementType == .button && $0.label == "Settings" }) {
+            say("[I1] press back \(press(back))"); sleep(3)
+            say("[I1] after back nav=\(read().map(nav) ?? "nil")")
+            if let s2 = read(), let g2 = cell(s2, "General") { say("[I1] press General again \(press(g2))"); sleep(3); say("[I1] nav=\(read().map(nav) ?? "nil")") }
+        }
+        // (a) wait 60 s, then About cell
+        sleep(60)
+        if let s = read(), let a = cell(s, "About") {
+            say("[I1] +60s press About cell (type \(a.elementType.rawValue)) \(press(a))"); sleep(3)
+            say("[I1] nav=\(read().map(nav) ?? "nil")")
+            // (d) children of the About element
+            for c in a.children {
+                say("[I1] About child type=\(c.elementType.rawValue) label=\(c.label) \(press(c))"); sleep(3)
+                say("[I1] nav=\(read().map(nav) ?? "nil")")
+            }
+        }
+        // other rows on the General page
+        for row in ["Software Update", "iPhone Storage", "AirDrop"] {
+            if let s = read(), nav(s) == "General", let r = cell(s, row) { say("[I1] press \(row) \(press(r))"); sleep(3); say("[I1] nav=\(read().map(nav) ?? "nil")") }
+        }
+    }
+
+    func testI2_notesTwoLevels() {
+        let notes = XCUIApplication(bundleIdentifier: "com.apple.mobilenotes")
+        notes.launch()
+        let pid = (notes.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[I2] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10)
+        guard let s0 = try? notes.snapshot() else { say("[I2] read failed"); return }
+        say("[I2] start nav=\(nav(s0)) cells=\(s0.children.count)")
+        for step in 0..<2 {
+            guard let s = try? notes.snapshot(), let c = first(s, { $0.elementType == .cell }) else { say("[I2] step \(step): no cell"); break }
+            say("[I2] step \(step): press first cell (type \(c.elementType.rawValue)) \(press(c))"); sleep(3)
+            say("[I2] step \(step): nav=\((try? notes.snapshot()).map(nav) ?? "nil") | settings=\(settings.state.rawValue)")
+        }
+    }
+
+    func testI3_scrollFrames() {
+        _ = bgSettings("I3")
+        func cells(_ s: XCUIElementSnapshot) -> [XCUIElementSnapshot] { var o: [XCUIElementSnapshot] = []; func w(_ e: XCUIElementSnapshot) { if e.elementType == .cell { o.append(e) }; e.children.forEach(w) }; w(s); return o }
+        func summary(_ s: XCUIElementSnapshot) -> String { let c = cells(s); return "cells=\(c.count) first='\(c.first?.label ?? "")'@\(Int(c.first?.frame.minY ?? -1)) last='\(c.last?.label ?? "")'@\(Int(c.last?.frame.minY ?? -1))" }
+        guard let s0 = try? settings.snapshot() else { return }
+        say("[I3] before \(summary(s0))")
+        let lists = { (s: XCUIElementSnapshot) -> [XCUIElementSnapshot] in var o: [XCUIElementSnapshot] = []; func w(_ e: XCUIElementSnapshot) { if [.table, .collectionView, .scrollView].contains(e.elementType) { o.append(e) }; e.children.forEach(w) }; w(s); return o }
+        for (i, l) in lists(s0).enumerated() {
+            for a in [2006, 2007] {
+                var err: NSString?
+                let ok = PBHelper.pressSnapshot(l, action: a, error: &err)
+                usleep(900_000)
+                say("[I3] list#\(i) type=\(l.elementType.rawValue) action \(a) ok=\(ok) -> \((try? settings.snapshot()).map(summary) ?? "nil")")
+            }
+        }
+        if let s = try? settings.snapshot(), let last = cells(s).last {
+            var err: NSString?
+            let ok = PBHelper.pressSnapshot(last, action: 2003, error: &err)
+            usleep(900_000)
+            say("[I3] scrollToVisible last cell '\(last.label)' ok=\(ok) -> \((try? settings.snapshot()).map(summary) ?? "nil")")
+        }
+    }
+
+    func testI4_lookUpTab() {
+        let app = XCUIApplication(bundleIdentifier: "in.muditbhargava.LookUp")
+        app.launch()
+        let pid = (app.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("[I4] assertion granted=\(String(describing: PBHelper.requestBackgroundAssertion(forPID: pid)))")
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10)
+        guard let s = try? app.snapshot(), let bar = first(s, { $0.elementType == .tabBar || $0.label == "Tab Bar" }) else { say("[I4] no tab bar"); return }
+        var items: [XCUIElementSnapshot] = []
+        func w(_ e: XCUIElementSnapshot) { if e !== bar as AnyObject, !e.label.isEmpty, e.elementType != .other || e.children.isEmpty { items.append(e) }; e.children.forEach(w) }
+        w(bar)
+        say("[I4] tab bar items: \(items.map { "\($0.elementType.rawValue):\($0.label)" })")
+        if items.count > 1 {
+            let t = items[1]
+            say("[I4] press tab '\(t.label)' \(press(t))"); sleep(2)
+            say("[I4] after: \((try? app.snapshot()).map { allLabels($0).prefix(10) } ?? []) | settings=\(settings.state.rawValue)")
+            say("[I4] press tab back '\(items[0].label)' \(press(items[0]))")
+        }
+    }
+
     // ---- H: second generality round (action ids from XCUIAutomation: 2003 scroll-to-visible,
     // 2004 increment, 2005 decrement; 2006/2007 page down/up are a hypothesis to test).
     func allLabels(_ s: XCUIElementSnapshot) -> [String] { var o: [String] = []; func w(_ e: XCUIElementSnapshot) { if !e.label.isEmpty { o.append(e.label) }; e.children.forEach(w) }; w(s); return o }

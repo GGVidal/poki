@@ -99,3 +99,14 @@ not guessed: `+[XCUIAccessibilityAction scrollToVisibleAction]` = 2003, `increme
 | H4b Notion (third-party, web-view heavy) | Background read with Settings in front: **354 elements, including the owner's page titles**. No tab bar found. No press. |
 
 The probe runner was uninstalled after the run.
+
+## Round 4 on the phone, 2026-11-22 04:35-04:37 ET
+
+| Test | Result |
+| - | - |
+| Scrolling, background Settings root | **Works.** Action 2006 on the collection view (type 32): visible cells 11 -> 16, first cell frame y 168 -> -25, so the list moved down a page. 2007 moved it back up (first y 542). Scroll-to-visible (2003) on the last cell moved it again (first y -389). Round 3's "no change" was my probe comparing labels, which are empty on these cells. |
+| Navigation, two levels | General opened (nav bar "General"). Pressing the "Settings" back button failed with `kAXErrorFailure`. **After waiting 60 s, the About row opened About** (nav bar "About"). In round 3 the same press after 30 s did not. Pressing About's non-actionable children failed with `kAXErrorFailure`. Working hypothesis: the first push's transition takes 30-60 s to finish in the background, and a second push waits for it. Not confirmed (no app-side logs). |
+| Notes, two levels | Not tested: Notes was open on a note, with no cells to press. |
+| LookUp tab switch | Tab items found under the tab bar (buttons with image children). AXPress failed with `kAXErrorFailure` on both an image and a tab button. Open. |
+
+The probe runner was uninstalled after the run.
