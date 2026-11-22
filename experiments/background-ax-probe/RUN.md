@@ -301,3 +301,19 @@ XCTest daemon, in the background with Settings in front:
   and `togglePictureInPictureProminence`. Of these, testmanagerd references only `setDeviceOrientation:` and `setOrientationLockEnabled:`.
 - Other daemon calls of note: `_XCTD_setFrontProcess:`, `_XCT_playBackHIDEventRecordingFromData:reply:`, VoiceOver enable/move,
   `_XCTD_performHandGesture:`, `_XCTD_performDeviceEvent:`. None changes a scene's foreground state.
+
+### The last gate, isolated (fixture diagnostics)
+
+- With the fixture's own window kept alive in the background, the in-process touch from `_keyboardActivate` fires the plain button
+  in the background (state 2, Settings in front): `sendEvent:` → window → `UIControl touchesBegan/Ended` → handler "button".
+  This holds with any one of these, set by the fixture itself:
+  `+[UIWindow _setAllWindowsKeepContextInBackground:YES]` before the scene exists,
+  `-[UIWindowScene _setKeepContextAssociationInBackground:YES]` (binder `contextManagementPolicy` ≠ 0, so purge returns early), or
+  `-[UIWindow setKeepContextInBackground:YES]` (read in `_bindingDescription`; `__UIContextBinderDisposeContextForBindable` skips the window).
+- So the four controls need two things in the background: an in-process activation (we have it for the switch via its FKA key
+  commands), and a live window context.
+- Who can set these switches: in a normal app nothing calls `setKeepContextInBackground:` (breakpoint over launch, background, foreground).
+  No loaded framework references `+_setAllWindowsKeepContextInBackground:`. The scene policy comes only from the global at scene init.
+  `_alwaysGetsContexts` is YES only for UIKit's own internal window classes (remote keyboard, snapshot, drag, client renderer).
+  No UIKit defaults key, launch argument, accessibility id or attribute found for any of them.
+- A background snapshot refresh (`-[UIApplication _updateSnapshotForBackgroundApplication:]`) doesn't recreate the context.

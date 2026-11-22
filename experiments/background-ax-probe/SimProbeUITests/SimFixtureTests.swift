@@ -482,6 +482,15 @@ final class SimFixtureTests: XCTestCase {
     func testAF_traceBackgroundFakeCtx() { launchArgsOverride = ["-traceFakeCtx"]; traceRoute(true) }
     func testAF_traceBackgroundLLDB() { launchArgsOverride = ["-waitLLDB"]; traceRoute(true) }
     func testAF_traceForegroundLLDB() { launchArgsOverride = ["-waitLLDB"]; traceRoute(false) }
+    func testAG_snapshotBackground() {
+        launchArgs = []; start(background: true); sleep(4)
+        _ = sendKey("s"); usleep(30_000)
+        let before = lastEvent(); _ = sendKey("j"); sleep(2)
+        say("AG | s then j | handler: \(lastEvent() == before ? "none" : lastEvent())")
+    }
+    func testAH_keepAll() { launchArgsOverride = ["-keepAll"]; traceRoute(true) }
+    func testAH_keepScene() { launchArgsOverride = ["-keepScene"]; traceRoute(true) }
+    func testAH_keepWin() { launchArgsOverride = ["-keepWin"]; traceRoute(true) }
     func testAF_traceForeground() { traceRoute(false) }
     func testAF_traceBackground() { traceRoute(true) }
     func testAE_forceFocusBackground() {

@@ -104,6 +104,17 @@ enum Fix {
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
+    // Diagnostics only (our fixture): which UIKit switch keeps the window context in the background.
+    override init() {
+        super.init()
+        if ProcessInfo.processInfo.arguments.contains("-keepAll") {
+            let sel = NSSelectorFromString("_setAllWindowsKeepContextInBackground:")
+            if let m = class_getClassMethod(UIWindow.self, sel) {
+                typealias F = @convention(c) (AnyClass, Selector, Bool) -> Void
+                unsafeBitCast(method_getImplementation(m), to: F.self)(UIWindow.self, sel, true); NSLog("FIXLOG trace keepAll set")
+            }
+        }
+    }
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let c = UISceneConfiguration(name: "Default", sessionRole: session.role); c.delegateClass = SceneDelegate.self; return c
     }
@@ -114,6 +125,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
         let w = UIWindow(windowScene: scene)
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("-keepWin") { w.setValue(true, forKey: "keepContextInBackground"); NSLog("FIXLOG trace keepWin set") }
+        if args.contains("-keepScene") {
+            let sel = NSSelectorFromString("_setKeepContextAssociationInBackground:")
+            if let m = class_getInstanceMethod(type(of: scene), sel) {
+                typealias F = @convention(c) (AnyObject, Selector, Bool) -> Void
+                unsafeBitCast(method_getImplementation(m), to: F.self)(scene, sel, true); NSLog("FIXLOG trace keepScene set")
+            }
+        }
         let tabs = UITabBarController()
         tabs.delegate = self
         let nav = UINavigationController(rootViewController: ControlsController())
@@ -228,9 +248,21 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
     }
     override var canBecomeFirstResponder: Bool { true }
     override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); becomeFirstResponder() }
-    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "k", modifierFlags: [], action: #selector(keyK)), UIKeyCommand(input: "k", modifierFlags: [.command], action: #selector(keyCmdK)), UIKeyCommand(input: "j", modifierFlags: [], action: #selector(keyJ))] }
+    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "k", modifierFlags: [], action: #selector(keyK)), UIKeyCommand(input: "k", modifierFlags: [.command], action: #selector(keyCmdK)), UIKeyCommand(input: "j", modifierFlags: [], action: #selector(keyJ)), UIKeyCommand(input: "s", modifierFlags: [], action: #selector(keyS))] }
     @objc func keyK() { Fix.log("keyCommand k") }
     @objc func keyCmdK() { Fix.log("keyCommand cmd-k") }
+    @objc func keyS() {
+        let app = UIApplication.shared
+        let sel = NSSelectorFromString("_updateSnapshotForBackgroundApplication:")
+        guard let m = class_getInstanceMethod(type(of: app), sel) else { NSLog("FIXLOG trace no snapshot method"); return }
+        typealias F = @convention(c) (AnyObject, Selector, Bool) -> Void
+        let f = unsafeBitCast(method_getImplementation(m), to: F.self)
+        let w = Fix.plainButton?.window
+        NSLog("FIXLOG trace snap before ctx=%@ id=%u", w?.layer.value(forKey: "context") == nil ? "nil" : "yes", (w?.value(forKey: "_contextId") as? UInt32) ?? 0)
+        f(app, sel, true)
+        NSLog("FIXLOG trace snap after ctx=%@ id=%u", w?.layer.value(forKey: "context") == nil ? "nil" : "yes", (w?.value(forKey: "_contextId") as? UInt32) ?? 0)
+        for d in [0.05, 0.2, 0.5, 1.0] { DispatchQueue.main.asyncAfter(deadline: .now() + d) { NSLog("FIXLOG trace snap +%.2f ctx=%@ id=%u", d, w?.layer.value(forKey: "context") == nil ? "nil" : "yes", (w?.value(forKey: "_contextId") as? UInt32) ?? 0) } }
+    }
     @objc func keyJ() {
         guard let b = Fix.plainButton else { return }
         let w = b.window
