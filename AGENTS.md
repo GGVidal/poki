@@ -24,22 +24,30 @@ Run commands from the repository root unless a command uses `--package-path`, `-
 
 ### iOS app (`native/ios-app/`)
 
-Build `PokiLauncher` for the simulator target first if `native/launcher/target/aarch64-apple-ios-sim/release/libpoki_launcher.a` is not present.
+Build `PokiLauncher` for the simulator target first (including `rustup target add aarch64-apple-ios-sim`, see below) if `native/launcher/target/aarch64-apple-ios-sim/release/libpoki_launcher.a` is not present.
 
 ```sh
 # 1. Build assets and generate the Xcode project
 native/ios-app/scripts/make-assets.sh
 xcodegen generate --spec native/ios-app/project.yml
-# Use project-external.yml for builds without packet-tunnel entitlements.
 
-# 2. Build unsigned Debug for the iOS Simulator
+# 2. Build unsigned Debug for the iOS Simulator (default build with local tunnel)
 xcodebuild build \
   -project native/ios-app/Poki.xcodeproj -scheme Poki -configuration Debug \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath build/sim \
   CODE_SIGNING_ALLOWED=NO ARCHS=arm64
 
-# 3. Run PokiTests inside Poki on a booted simulator
-native/ios-app/scripts/app-tests.sh <SIMULATOR_UDID>
+# 2b. External build without packet-tunnel entitlements generates PokiExternal.xcodeproj
+xcodegen generate --spec native/ios-app/project-external.yml
+xcodebuild build \
+  -project native/ios-app/PokiExternal.xcodeproj -scheme Poki -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath build/sim-external \
+  CODE_SIGNING_ALLOWED=NO ARCHS=arm64
+
+# 3. Run PokiTests inside Poki on a booted simulator (project.yml / Poki.xcodeproj only)
+# Replace with a booted UDID from: xcrun simctl list devices booted
+SIMULATOR_UDID="YOUR_BOOTED_SIMULATOR_UDID"
+native/ios-app/scripts/app-tests.sh "$SIMULATOR_UDID"
 ```
 
 ### PokiCore, PokiLoopback, and PokiLauncher
@@ -50,6 +58,7 @@ swift test --package-path native/ios/PokiLoopback
 
 # PokiLauncher (Rust static library for the iOS app)
 native/launcher/fetch-idevice.sh
+rustup target add aarch64-apple-ios-sim           # Add aarch64-apple-ios for device builds
 cargo metadata --locked --format-version 1 --manifest-path native/launcher/Cargo.toml > /dev/null
 cargo test --manifest-path native/launcher/Cargo.toml
 cargo build --release --locked --target aarch64-apple-ios-sim --manifest-path native/launcher/Cargo.toml
@@ -65,7 +74,7 @@ npm run build:native                              # Rebuild build/ocr, build/sim
 cargo test --manifest-path native/bridge/Cargo.toml
 ```
 
-`npm run build:native` requires `.deps/idevice`, which `./bin/setup` fetches.
+Both `npm run build:native` and `cargo test --manifest-path native/bridge/Cargo.toml` require `.deps/idevice`, which `./bin/setup` fetches.
 
 ### Poki Setup (`desktop/`) and relay (`deploy/cf-relay/`)
 
