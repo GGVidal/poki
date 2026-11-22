@@ -1,0 +1,6 @@
+[2026-11-21T21:41:26.569-05:00] usage assertion 7CFE5D0F-3029-4B82-8EBA-09B786B8E69D
+[2026-11-21T21:41:26.570-05:00] client session 8A1490D3-EE45-4347-9453-D967E1F1C95F mode=primary requested=1280x720 timeout=120s
+[2026-11-21T21:41:26.572-05:00] makeVideoStream returned PrimaryVideoStreamReceiveAVC
+[2026-11-21T21:41:26.573-05:00] calling activate()
+[2026-11-21T21:42:45.156-05:00] stopping: invalidate stream, release assertion
+[2026-11-21T21:42:45.852-05:00] stopped session 8A1490D3-EE45-4347-9453-D967E1F1C95F

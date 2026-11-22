@@ -138,6 +138,21 @@ func probe(_ args: Args) async {
   }
 }
 
+// MARK: - server-status (read-only)
+
+func serverStatus(_ args: Args) async {
+  let d = await Device.find(args.flags["device"])
+  do {
+    let a = try await Device.assertion(d, "bgdisplay server-status")
+    defer { a.releaseAssertion() }
+    let st = try await d.mediaStreamServerStatus
+    print("running=\(st.running) runDurationSeconds=\(st.runDurationSeconds) sessions=\(st.sessions?.count ?? 0)")
+    var out = ""
+    dump(st, to: &out, maxDepth: 12)
+    print(out)
+  } catch { print("server-status error: \(errorText(error))") }
+}
+
 // MARK: - start-display (the daemon that owns the stream)
 
 final class FrameWaiter: @unchecked Sendable {
@@ -197,6 +212,7 @@ final class Daemon: @unchecked Sendable {
   }
 
   private func activate<S: VideoStream>(_ s: S) async throws {
+    log("calling activate()")
     let events = try await s.activate()
     log("activate() returned; consuming events")
     eventsTask = Task { [frames, weak self] in
@@ -390,7 +406,14 @@ func client(_ line: String, stateDir: String) {
 
 @main
 struct Main {
-  static func main() async {
+  static func main() {
+    // AVConference and CoreDevice deliver some callbacks through the main run loop,
+    // so the main thread runs CFRunLoop instead of an async main.
+    Task { await run(); exit(0) }
+    while true { RunLoop.main.run(mode: .default, before: .distantFuture) }
+  }
+
+  static func run() async {
     let raw = Array(CommandLine.arguments.dropFirst())
     guard let cmd = raw.first else {
       print("usage: bgdisplay probe|start-display|capture|act|status|stop [flags]  (see README.md)")
@@ -401,11 +424,20 @@ struct Main {
     switch cmd {
     case "probe":
       await probe(args)
+    case "server-status":
+      await serverStatus(args)
     case "start-display":
       try? FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
       let dev = await Device.find(args.flags["device"])
       let daemon = Daemon(device: dev, mode: args.flags["mode"] ?? "external",
                           size: args.size("size", CGSize(width: 1280, height: 720)), stateDir: stateDir)
+      for sig in [SIGINT, SIGTERM] {
+        signal(sig, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+        src.setEventHandler { Task { await daemon.stop(); unlink(socketPath(stateDir)); exit(0) } }
+        src.resume()
+        signals.append(src)
+      }
       do {
         try await daemon.start(timeout: UInt(args.flags["timeout"] ?? "1800") ?? 1800)
       } catch {
@@ -414,13 +446,6 @@ struct Main {
         exit(3)
       }
       serve(daemon)
-      for sig in [SIGINT, SIGTERM] {
-        signal(sig, SIG_IGN)
-        let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-        src.setEventHandler { Task { await daemon.stop(); unlink(socketPath(stateDir)); exit(0) } }
-        src.resume()
-        signals.append(src)
-      }
       print("ready \(daemon.status())")
       fflush(stdout)
       while true { try? await Task.sleep(nanoseconds: 3_600_000_000_000) }

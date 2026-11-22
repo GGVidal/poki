@@ -1,0 +1,6 @@
+[2026-11-21T21:45:09.011-05:00] usage assertion CB2D0BDB-F033-4420-B415-7329AAAC0DC6
+[2026-11-21T21:45:09.011-05:00] client session DD462596-9765-4FB4-A634-85D09B7B6B86 mode=external requested=1920x1080 timeout=120s
+[2026-11-21T21:45:09.017-05:00] makeVideoStream returned VirtualExternalVideoStreamReceiveAVC
+[2026-11-21T21:45:09.017-05:00] calling activate()
+[2026-11-21T21:46:00.858-05:00] stopping: invalidate stream, release assertion
+[2026-11-21T21:46:01.048-05:00] stopped session DD462596-9765-4FB4-A634-85D09B7B6B86

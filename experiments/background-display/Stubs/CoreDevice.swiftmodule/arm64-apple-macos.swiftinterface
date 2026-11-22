@@ -151,8 +151,28 @@ extension CoreDevice.DeviceMediaStream {
   public static var kVideoStreamDisplayModeByDisplayID: Swift.String { get }
 }
 
+extension CoreDevice.DeviceMediaStream {
+  public struct StatusInfo {
+    public var connectionErrors: Swift.UInt { get }
+    public var runDurationSeconds: Swift.UInt { get }
+  }
+  public struct ConnectionInfo {
+    public var timeout: Swift.UInt { get }
+  }
+  public struct SessionInfo {
+    public var connection: CoreDevice.DeviceMediaStream.ConnectionInfo? { get }
+    public var status: CoreDevice.DeviceMediaStream.StatusInfo { get }
+  }
+  public struct DeviceServerInfo {
+    public var running: Swift.Bool { get }
+    public var runDurationSeconds: Swift.UInt { get }
+    public var sessions: [CoreDevice.DeviceMediaStream.SessionInfo]? { get }
+  }
+}
+
 extension CoreDevice.RemoteDevice {
   final public var mediaStreamSupportInfo: CoreDevice.DeviceMediaStream.SupportInfoResponse { get async throws }
+  final public var mediaStreamServerStatus: CoreDevice.DeviceMediaStream.DeviceServerInfo { get async throws }
 }
 
 public enum DeviceOrientation {

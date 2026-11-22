@@ -1,0 +1,103 @@
+running=true runDurationSeconds=50 sessions=1
+▿ CoreDevice.DeviceMediaStream.DeviceServerInfo
+  - running: true
+  - runDurationSeconds: 50
+  ▿ sessions: Optional([CoreDevice.DeviceMediaStream.SessionInfo(connection: Optional(CoreDevice.DeviceMediaStream.ConnectionInfo(direction: CoreDevice.DeviceMediaStream.Direction.output, receiver: CoreDevice.DeviceMediaStream.NetworkInfo(ipv6Address: "fd0d:7c05:f27f::2", port: 60017), sender: CoreDevice.DeviceMediaStream.NetworkInfo(ipv6Address: "fd0d:7c05:f27f::1", port: 63905), type: CoreDevice.DeviceMediaStream.StreamType.video, source: Optional(Virtual external display with size: (1920.0, 1080.0)), timeout: 120, streamConfig: CoreDevice.DeviceMediaStream.MediaStreamConfig(AccessNetworkType: 1, AudioStreamMode: 0, CaptureSource: 1, CustomHeight: 1088, CustomWidth: 1920, DestIp: "fd0d:7c05:f27f::2", DestIsIPv6: true, DestPort: 60017, Direction: 1, DisplayID: 0, Framerate: 60, HDRMode: 0, IsltrpEnabled: true, JitterBufferMode: 1, KeyFrameInterval: 0, LocalSSRC: 3796321569, NetworkClockID: 18446744073709551615, PixelFormat: 875704422, RTCPEnabled: true, RTCPRemotePort: 60017, RTCPSendInterval: 1.0, RTCPTimeoutEnabled: true, RTCPTimeoutInterval: 120.0, RTPTimeoutEnabled: false, RTPTimeoutInterval: 0.0, RXMaxBitrate: 6000000, RXMinBitrate: 333000, RateAdaptationEnabled: true, RecommendedMTU: 0, RemoteSSRC: 3649694006, RxCodecFeatureListString: "VRAE:0;SW:1;FLS", RxPayloadType: 100, SRTCPCipherSuite: 0, SRTPCipherSuite: 0, SourceIP: "fd0d:7c05:f27f::1", SourceIsIPv6: true, SourcePort: 63905, StreamInputID: 0, SyncStreamToken: 0, TransportProtocolType: 2, TXMaxBitrate: 6000000, TXMinBitrate: 333000, TilesPerFrame: 1, TxCodecFeatureListString: "VRAE:0;SW:1;FLS", TxPayloadType: 100, VideoResolution: 12, VideoStreamMode: 4, VideoSynchronizationSourceStreamToken: 0), options: ["VideoStreamDisplayWidth": CoreDevice.CodableValue.int(1920), "VideoStreamDisplayHeight": CoreDevice.CodableValue.int(1080), "avcMediaStreamOptionClientSessionID": CoreDevice.CodableValue.uuid(DD462596-9765-4FB4-A634-85D09B7B6B86), "AVCMediaStreamNegotiatorTransportProtocolType": CoreDevice.CodableValue.int(2), "AVCMediaStreamNegotiatorAccessNetworkType": CoreDevice.CodableValue.int(1), "CoreDeviceVideoDisplayMode": CoreDevice.CodableValue.string("VirtualExternalDisplay")])), status: CoreDevice.DeviceMediaStream.StatusInfo(connectionErrors: 0, quality: nil, runDurationSeconds: 50))])
+    ▿ some: 1 element
+      ▿ CoreDevice.DeviceMediaStream.SessionInfo
+        ▿ connection: Optional(CoreDevice.DeviceMediaStream.ConnectionInfo(direction: CoreDevice.DeviceMediaStream.Direction.output, receiver: CoreDevice.DeviceMediaStream.NetworkInfo(ipv6Address: "fd0d:7c05:f27f::2", port: 60017), sender: CoreDevice.DeviceMediaStream.NetworkInfo(ipv6Address: "fd0d:7c05:f27f::1", port: 63905), type: CoreDevice.DeviceMediaStream.StreamType.video, source: Optional(Virtual external display with size: (1920.0, 1080.0)), timeout: 120, streamConfig: CoreDevice.DeviceMediaStream.MediaStreamConfig(AccessNetworkType: 1, AudioStreamMode: 0, CaptureSource: 1, CustomHeight: 1088, CustomWidth: 1920, DestIp: "fd0d:7c05:f27f::2", DestIsIPv6: true, DestPort: 60017, Direction: 1, DisplayID: 0, Framerate: 60, HDRMode: 0, IsltrpEnabled: true, JitterBufferMode: 1, KeyFrameInterval: 0, LocalSSRC: 3796321569, NetworkClockID: 18446744073709551615, PixelFormat: 875704422, RTCPEnabled: true, RTCPRemotePort: 60017, RTCPSendInterval: 1.0, RTCPTimeoutEnabled: true, RTCPTimeoutInterval: 120.0, RTPTimeoutEnabled: false, RTPTimeoutInterval: 0.0, RXMaxBitrate: 6000000, RXMinBitrate: 333000, RateAdaptationEnabled: true, RecommendedMTU: 0, RemoteSSRC: 3649694006, RxCodecFeatureListString: "VRAE:0;SW:1;FLS", RxPayloadType: 100, SRTCPCipherSuite: 0, SRTPCipherSuite: 0, SourceIP: "fd0d:7c05:f27f::1", SourceIsIPv6: true, SourcePort: 63905, StreamInputID: 0, SyncStreamToken: 0, TransportProtocolType: 2, TXMaxBitrate: 6000000, TXMinBitrate: 333000, TilesPerFrame: 1, TxCodecFeatureListString: "VRAE:0;SW:1;FLS", TxPayloadType: 100, VideoResolution: 12, VideoStreamMode: 4, VideoSynchronizationSourceStreamToken: 0), options: ["VideoStreamDisplayWidth": CoreDevice.CodableValue.int(1920), "VideoStreamDisplayHeight": CoreDevice.CodableValue.int(1080), "avcMediaStreamOptionClientSessionID": CoreDevice.CodableValue.uuid(DD462596-9765-4FB4-A634-85D09B7B6B86), "AVCMediaStreamNegotiatorTransportProtocolType": CoreDevice.CodableValue.int(2), "AVCMediaStreamNegotiatorAccessNetworkType": CoreDevice.CodableValue.int(1), "CoreDeviceVideoDisplayMode": CoreDevice.CodableValue.string("VirtualExternalDisplay")]))
+          ▿ some: CoreDevice.DeviceMediaStream.ConnectionInfo
+            - direction: CoreDevice.DeviceMediaStream.Direction.output
+            ▿ receiver: CoreDevice.DeviceMediaStream.NetworkInfo
+              - ipv6Address: "fd0d:7c05:f27f::2"
+              - port: 60017
+            ▿ sender: CoreDevice.DeviceMediaStream.NetworkInfo
+              - ipv6Address: "fd0d:7c05:f27f::1"
+              - port: 63905
+            - type: CoreDevice.DeviceMediaStream.StreamType.video
+            ▿ source: Optional(Virtual external display with size: (1920.0, 1080.0))
+              ▿ some: Virtual external display with size: (1920.0, 1080.0)
+                ▿ videoVirtualExternalDisplay: (1 element)
+                  ▿ size: (1920.0, 1080.0)
+                    - width: 1920.0
+                    - height: 1080.0
+            - timeout: 120
+            ▿ streamConfig: CoreDevice.DeviceMediaStream.MediaStreamConfig
+              - AccessNetworkType: 1
+              - AudioStreamMode: 0
+              - CaptureSource: 1
+              - CustomHeight: 1088
+              - CustomWidth: 1920
+              - DestIp: "fd0d:7c05:f27f::2"
+              - DestIsIPv6: true
+              - DestPort: 60017
+              - Direction: 1
+              - DisplayID: 0
+              - Framerate: 60
+              - HDRMode: 0
+              - IsltrpEnabled: true
+              - JitterBufferMode: 1
+              - KeyFrameInterval: 0
+              - LocalSSRC: 3796321569
+              - NetworkClockID: 18446744073709551615
+              - PixelFormat: 875704422
+              - RTCPEnabled: true
+              - RTCPRemotePort: 60017
+              - RTCPSendInterval: 1.0
+              - RTCPTimeoutEnabled: true
+              - RTCPTimeoutInterval: 120.0
+              - RTPTimeoutEnabled: false
+              - RTPTimeoutInterval: 0.0
+              - RXMaxBitrate: 6000000
+              - RXMinBitrate: 333000
+              - RateAdaptationEnabled: true
+              - RecommendedMTU: 0
+              - RemoteSSRC: 3649694006
+              - RxCodecFeatureListString: "VRAE:0;SW:1;FLS"
+              - RxPayloadType: 100
+              - SRTCPCipherSuite: 0
+              - SRTPCipherSuite: 0
+              - SourceIP: "fd0d:7c05:f27f::1"
+              - SourceIsIPv6: true
+              - SourcePort: 63905
+              - StreamInputID: 0
+              - SyncStreamToken: 0
+              - TransportProtocolType: 2
+              - TXMaxBitrate: 6000000
+              - TXMinBitrate: 333000
+              - TilesPerFrame: 1
+              - TxCodecFeatureListString: "VRAE:0;SW:1;FLS"
+              - TxPayloadType: 100
+              - VideoResolution: 12
+              - VideoStreamMode: 4
+              - VideoSynchronizationSourceStreamToken: 0
+            ▿ options: 6 key/value pairs
+              ▿ (2 elements)
+                - key: "VideoStreamDisplayWidth"
+                ▿ value: CoreDevice.CodableValue.int
+                  - int: 1920
+              ▿ (2 elements)
+                - key: "VideoStreamDisplayHeight"
+                ▿ value: CoreDevice.CodableValue.int
+                  - int: 1080
+              ▿ (2 elements)
+                - key: "avcMediaStreamOptionClientSessionID"
+                ▿ value: CoreDevice.CodableValue.uuid
+                  - uuid: DD462596-9765-4FB4-A634-85D09B7B6B86
+              ▿ (2 elements)
+                - key: "AVCMediaStreamNegotiatorTransportProtocolType"
+                ▿ value: CoreDevice.CodableValue.int
+                  - int: 2
+              ▿ (2 elements)
+                - key: "AVCMediaStreamNegotiatorAccessNetworkType"
+                ▿ value: CoreDevice.CodableValue.int
+                  - int: 1
+              ▿ (2 elements)
+                - key: "CoreDeviceVideoDisplayMode"
+                ▿ value: CoreDevice.CodableValue.string
+                  - string: "VirtualExternalDisplay"
+        ▿ status: CoreDevice.DeviceMediaStream.StatusInfo
+          - connectionErrors: 0
+          - quality: nil
+          - runDurationSeconds: 50
+

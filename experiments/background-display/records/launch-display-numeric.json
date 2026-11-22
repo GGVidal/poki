@@ -1,0 +1,71 @@
+{
+  "error" : {
+    "code" : 10002,
+    "domain" : "com.apple.dt.CoreDeviceError",
+    "userInfo" : {
+      "BundleIdentifier" : {
+        "string" : "com.apple.calculator"
+      },
+      "NSLocalizedDescription" : {
+        "string" : "The application failed to launch."
+      },
+      "NSUnderlyingError" : {
+        "error" : {
+          "code" : 1,
+          "domain" : "FBSOpenApplicationServiceErrorDomain",
+          "userInfo" : {
+            "BSErrorCodeDescription" : {
+              "string" : "RequestDenied"
+            },
+            "FBSOpenApplicationRequestID" : {
+              "string" : "0x4fc6"
+            },
+            "NSLocalizedDescription" : {
+              "string" : "The request to open \"com.apple.calculator\" failed."
+            },
+            "NSLocalizedFailureReason" : {
+              "string" : "The request was denied by service delegate (SBMainWorkspace) for reason: Security (\"Can't look up displays without the proper entitlement, bub\")."
+            },
+            "NSUnderlyingError" : {
+              "error" : {
+                "code" : 3,
+                "domain" : "FBSOpenApplicationErrorDomain",
+                "userInfo" : {
+                  "BSErrorCodeDescription" : {
+                    "string" : "Security"
+                  },
+                  "NSLocalizedFailureReason" : {
+                    "string" : "Can't look up displays without the proper entitlement, bub."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "errorSignature" : "(com.apple.dt.CoreDeviceError 10002 (FBSOpenApplicationServiceErrorDomain 1 (FBSOpenApplicationErrorDomain 3)))",
+  "info" : {
+    "arguments" : [
+      "devicectl",
+      "device",
+      "process",
+      "launch",
+      "--device",
+      "00008150-000829EA2183C01C",
+      "--display",
+      "3",
+      "--json-output",
+      "/private/tmp/claude-501/-Users-zhehanz-Developer/3c533941-a7c7-48af-bf52-205eba4d8dd5/scratchpad/st2-launch-num.json",
+      "com.apple.calculator"
+    ],
+    "commandType" : "devicectl.device.process.launch",
+    "environment" : {
+
+    },
+    "jsonVersion" : 6,
+    "outcome" : "failed",
+    "version" : "699.2"
+  }
+}

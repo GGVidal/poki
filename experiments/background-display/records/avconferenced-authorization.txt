@@ -1,0 +1,2 @@
+2026-11-21 21:41:29.294 E  avconferenced[969:1711381] [com.apple.AVConference:ViceroyTrace] AVConferenceXPCServer [ERROR] -[AVConferenceXPCServer(XPCManagement) _xpc_handle_incoming_request:]_block_invoke:866 API name=vcMediaStreamSetSessionConfig failed autho
+2026-11-21 21:45:10.186 E  avconferenced[969:17142c3] [com.apple.AVConference:ViceroyTrace] AVConferenceXPCServer [ERROR] -[AVConferenceXPCServer(XPCManagement) _xpc_handle_incoming_request:]_block_invoke:866 API name=vcMediaStreamSetSessionConfig failed autho
