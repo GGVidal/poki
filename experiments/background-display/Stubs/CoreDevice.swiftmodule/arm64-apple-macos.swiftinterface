@@ -129,6 +129,9 @@ public struct MediaStreamSupportedFeatures {
   public var rawValue: Swift.UInt64 { get }
   public static var virtualExternalDisplayOutput: CoreDevice.MediaStreamSupportedFeatures { get }
   public static var mediaStreamVirtualExternalVideo: CoreDevice.MediaStreamSupportedFeatures { get }
+  public static var secondaryVirtualDisplayOutput: CoreDevice.MediaStreamSupportedFeatures { get }
+  public static var mediaStreamSecondaryVirtualVideo: CoreDevice.MediaStreamSupportedFeatures { get }
+  public static var current: CoreDevice.MediaStreamSupportedFeatures { get }
 }
 
 public struct DeviceMediaStream {

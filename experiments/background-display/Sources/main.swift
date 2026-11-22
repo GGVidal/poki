@@ -113,7 +113,7 @@ func probe(_ args: Args) async {
   let d = await Device.find(args.flags["device"])
   print("coredevice_identifier=\(d.deviceIdentifier.uuidString)")
   print("constants: displayModeKey=\(DeviceMediaStream.kVideoStreamDisplayMode) virtualExternal=\(DeviceMediaStream.kVideoStreamDisplayModeVirtualExternal) secondaryVirtual=\(DeviceMediaStream.kVideoStreamDisplayModeSecondaryVirtual) byDisplayID=\(DeviceMediaStream.kVideoStreamDisplayModeByDisplayID) displayIDKey=\(DeviceMediaStream.kVideoStreamForDisplayID)")
-  print("feature bits: virtualExternalDisplayOutput=\(MediaStreamSupportedFeatures.virtualExternalDisplayOutput.rawValue) mediaStreamVirtualExternalVideo=\(MediaStreamSupportedFeatures.mediaStreamVirtualExternalVideo.rawValue)")
+  print("feature bits: virtualExternalDisplayOutput=\(MediaStreamSupportedFeatures.virtualExternalDisplayOutput.rawValue) mediaStreamVirtualExternalVideo=\(MediaStreamSupportedFeatures.mediaStreamVirtualExternalVideo.rawValue) secondaryVirtualDisplayOutput=\(MediaStreamSupportedFeatures.secondaryVirtualDisplayOutput.rawValue) mediaStreamSecondaryVirtualVideo=\(MediaStreamSupportedFeatures.mediaStreamSecondaryVirtualVideo.rawValue) hostCurrent=\(MediaStreamSupportedFeatures.current.rawValue)")
   for (name, t) in [("mainScreen", DigitizerTarget.mainScreen), ("display1", .display1), ("display2", .display2), ("display3", .display3)] {
     print("digitizer target \(name) rawValue=\(t.rawValue)")
   }
