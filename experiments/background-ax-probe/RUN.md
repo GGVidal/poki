@@ -435,3 +435,21 @@ an outside way into `_keyboardActivate`, which only the switch's FKA key command
 - `devicectl device appResize start` ("Moves the frontmost apps to a resizable display …" whose name contains "Resizable") is the
   supported route for moving an app to another display. Earlier in this project the phone answered `device info appResize` with
   "does not offer the on-device service … Resizable App Management" (`com.apple.coredevice.feature.resizableappmanagement`, error 1001).
+
+### Covered states, the covered-state touch, `_keyboardActivate` callers, round trip (simulator 27.3)
+
+- Deactivation reasons (`UIApplicationSceneDeactivationReasonDescription`): 0 systemGesture, 1 notificationCenter, 2 controlCenter,
+  3 appSwitcher, 4 siri, 5 systemAnimation, 6 interactiveBanner, 7 systemOverlay, 8 keyboardSuppression, 9 airPlay,
+  10 fullscreenTransientOverlay, 11 occluded, 12 pip, 13 systemModalAlert, 18 libraryOverlay, 19 sceneOverlap, 30 underLock.
+  Each is a system presentation over the app (or windowed-multitasking overlap). None stands for an ordinary app shown on top on iPhone.
+  Measured: Control Center and the app switcher leave the fixture foreground-inactive with its context. Notification Center backgrounds it.
+- Covered-state context-addressed AX touch (AXBackBoardServer, ctx + pid): the fixture logs no `UIApplication sendEvent:` for it, while the
+  in-process tap and the switch's key path in the same run log `sendEvent:` → window → control. The touch is dropped or routed outside
+  the app (backboardd), not by a UIKit check.
+- `_keyboardActivate` callers (bl-decode of UIKitCore, UIKit.axbundle, UIAccessibility, SwiftUI, SwiftUICore): only
+  `UISwitchAccessibility _fkaSwitchOn/_fkaSwitchOff` and `UIStepperAccessibility` key-command plus/minus. `_enqueueHIDEvent:` is called only by
+  `_keyboardActivate` and `_UIRemoteViewControllerLegacyImpl __trampolineButtonPressData:`. So there's no outside path to an in-process tap
+  for buttons, cells or tabs.
+- Round trip (fixture in background → `activate()` → `XCUIElement.tap()` on the plain button → `Settings.activate()`), 3 runs:
+  to front 74–104 ms (call return; the switch animation continues), tap until handler 4.3–6.3 s (XCTest's element query and idle waits),
+  back to Settings 0.28–1.2 s; total 4.7–7.1 s. The owner sees the fixture come to the front for the whole tap leg.

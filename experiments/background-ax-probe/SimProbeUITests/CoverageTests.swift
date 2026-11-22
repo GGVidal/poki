@@ -232,3 +232,26 @@ extension SimFixtureTests {
 extension XCUICoordinate {
     func press(forDuration d: TimeInterval, thenDragHoldTo end: XCUICoordinate) { press(forDuration: d, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 1.0) }
 }
+
+extension SimFixtureTests {
+    // Round trip: background fixture -> front -> tap plain button (normal synthesized tap) -> back to Settings. Timings.
+    func testRT_roundTrip() {
+        background = true
+        fixture.launchArguments = []
+        fixture.launch(); sleep(2)
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10); sleep(2)
+        for i in 1...3 {
+            let t0 = Date()
+            fixture.activate(); _ = fixture.wait(for: .runningForeground, timeout: 10)
+            let t1 = Date()
+            let b = fixture.buttons["Plain button"]; let before = lastEvent()
+            b.tap()
+            var t2 = Date(); for _ in 0..<50 { if lastEvent() != before { t2 = Date(); break }; usleep(20_000) }
+            settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10)
+            let t3 = Date()
+            func ms(_ a: Date, _ b: Date) -> Int { Int(b.timeIntervalSince(a) * 1000) }
+            say("RT | run \(i) | to front \(ms(t0, t1)) ms | tap+handler \(ms(t1, t2)) ms | back to Settings \(ms(t2, t3)) ms | total \(ms(t0, t3)) ms | handler: \(lastEvent())")
+            sleep(2)
+        }
+    }
+}
