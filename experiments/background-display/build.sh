@@ -12,5 +12,5 @@ swiftc -parse-as-library -O -target arm64-apple-macos27.0 \
   -F "$PF" -framework CoreDevice \
   -F "$NESTED" -framework CoreDeviceMediaStreamSupport \
   -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers \
-  Sources/main.swift -o .build/bgdisplay
+  Sources/main.swift Sources/XPCHello.swift -o .build/bgdisplay
 echo "built $(pwd)/.build/bgdisplay"

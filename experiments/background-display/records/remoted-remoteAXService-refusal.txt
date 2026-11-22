@@ -1,0 +1,9 @@
+2026-11-21 23:35:13.584 Df remoted[374:177718f] [com.apple.xpc:connection] [0x77c511da40] Connection returned listener port: 0x9cdb
+2026-11-21 23:35:13.584 Df remoted[374:177718f] [com.apple.RemoteServiceDiscovery:ClientInterface] device_get_service: Returning service "com.apple.accessibility.axAuditDaemon.remoteAXService" (client="pid/225")
+2026-11-21 23:35:13.586 Df remoted[374:177718f] [com.apple.xpc:connection] [0x77c5059180] activating connection: mach=false listener=false peer=true name=com.apple.xpc.anonymous.0x77c511da40.peer[225].0x77c5059180
+2026-11-21 23:35:13.587 Df remoted[374:177718f] [com.apple.RemoteServiceDiscovery:ClientInterface] service_handler: Client lacks privilege to interact with service with name com.apple.accessibility.axAuditDaemon.remoteAXService (client="pid/225")
+2026-11-21 23:35:13.594 Df remoted[374:177718f] [com.apple.xpc:connection] [0x77c5059180] invalidated because the client process (pid 225) either cancelled the connection or exited
+2026-11-21 23:35:13.956 Df remoted[374:177718f] [com.apple.xpc:connection] [0x77c511d180] Connection returned listener port: 0x90c3
+2026-11-21 23:35:13.956 Df remoted[374:177718f] [com.apple.RemoteServiceDiscovery:ClientInterface] device_get_service: Returning service "com.apple.coredevice.deviceinfo" (client="pid/225")
+2026-11-21 23:35:13.956 Df remoted[374:177718f] [com.apple.xpc:connection] [0x77c5059180] activating connection: mach=false listener=false peer=true name=com.apple.xpc.anonymous.0x77c511d180.peer[225].0x77c5059180
+2026-11-21 23:35:13.961 Df remoted[374:177718f] [com.apple.xpc:connection] [0x77c5059180] invalidated because the client process (pid 225) either cancelled the connection or exited

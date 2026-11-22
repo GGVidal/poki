@@ -1,0 +1,12 @@
+[2026-11-21T23:35:13.994-05:00] socket to com.apple.coredevice.deviceinfo: fd 4
+[2026-11-21T23:35:13.996-05:00] sent 195 bytes of handshake
+[2026-11-21T23:35:17.998-05:00] received 180 bytes
+[2026-11-21T23:35:17.999-05:00] closed
+frame type=4 flags=0 stream=0 len=12
+frame type=8 flags=0 stream=0 len=4
+frame type=4 flags=1 stream=0 len=0
+frame type=1 flags=4 stream=1 len=0
+frame type=0 flags=0 stream=1 len=44 xpc magic=29b00b92 flags=00000001 body=20 ascii=...)....................B7.B................
+frame type=0 flags=0 stream=1 len=24 xpc magic=29b00b92 flags=00000201 body=0 ascii=...)....................
+frame type=1 flags=4 stream=3 len=0
+frame type=0 flags=0 stream=3 len=24 xpc magic=29b00b92 flags=00400001 body=0 ascii=...)..@.................

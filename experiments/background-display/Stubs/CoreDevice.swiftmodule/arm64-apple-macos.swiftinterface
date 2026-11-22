@@ -91,6 +91,21 @@ public protocol HIDDigitizer : CoreDevice.DeviceCapabilityProtocol {
   func sendBarrier()
 }
 
+public protocol CreateServiceSocketProtocol : CoreDevice.DeviceCapabilityProtocol {
+  func fileHandle(toServiceNamed name: Swift.String) async throws -> Foundation.FileHandle
+  func fileHandle(toFeatureIdentifiedBy identifier: Swift.String) async throws -> Foundation.FileHandle
+}
+
+public struct CreateServiceSocketCapability : CoreDevice.DeviceCapability {
+  public typealias ProtocolType = any CoreDevice.CreateServiceSocketProtocol
+  public typealias ImplType = Swift.Never
+  public static var capability: CoreDevice.Capability { get }
+}
+
+extension CoreDevice.CapabilityStaticMember where T : CoreDevice.DeviceCapability {
+  public static var createServiceSocket: CoreDevice.CapabilityStaticMember<CoreDevice.CreateServiceSocketCapability> { get }
+}
+
 public protocol CoreDeviceServiceConnection {
 }
 

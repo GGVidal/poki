@@ -498,6 +498,8 @@ struct Main {
       await probe(args)
     case "server-status":
       await serverStatus(args)
+    case "xpc-hello":
+      await xpcHello(args)
     case "start-display":
       try? FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
       let dev = await Device.find(args.flags["device"])
