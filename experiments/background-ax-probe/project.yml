@@ -42,7 +42,42 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: DeviceProbeUITests/Bridging.h
         DEVELOPMENT_TEAM: Q64ZL36CJN
         CODE_SIGN_STYLE: Automatic
+  AXFixture:
+    type: application
+    platform: iOS
+    sources: [AXFixture]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.pokimcp.axfixture
+        PRODUCT_NAME: AXFixture
+        SWIFT_VERSION: '5.0'
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        TARGETED_DEVICE_FAMILY: '1'
+        IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+        CODE_SIGNING_ALLOWED: NO
+  SimProbeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [SimProbeUITests]
+    dependencies:
+      - target: AXFixture
+    settings:
+      base:
+        TEST_TARGET_NAME: AXFixture
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: '5.0'
+        SWIFT_OBJC_BRIDGING_HEADER: SimProbeUITests/Bridging.h
+        CODE_SIGNING_ALLOWED: NO
 schemes:
+  SimProbe:
+    build:
+      targets:
+        AXFixture: all
+        SimProbeUITests: [test]
+    test:
+      targets: [SimProbeUITests]
   DeviceProbe:
     build:
       targets:

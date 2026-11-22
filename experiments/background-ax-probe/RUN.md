@@ -118,3 +118,50 @@ The probe runner was uninstalled after the run.
 - The same sweep on LookUp's "Collect" tab button and its tab bar: 2010 (press) failed, and nothing changed the selected tab. **Action 2025 crashed LookUp** (LookUp-2026-11-22-044659.ips). Increment/decrement on the tab bar: no change.
 - Both apps relaunch normally. No data was created or changed. The probe runner was uninstalled.
 - Conclusion: back buttons and tab bar buttons in a background app are not operable by AX action on 27.3 with the actions found. **Do not sweep unknown action numbers again: 2025 crashes apps.**
+
+## Simulator fixture (ours), 2026-11-22 05:00-06:00 ET
+
+Fixture `AXFixture/App.swift` (UIKit controls, a 500-row table, tabs, nav, alert, sheet, SwiftUI) logs every
+handler. Tests `SimProbeUITests/SimFixtureTests.swift`. Simulator iPhone 17 Pro, iOS 27.3.
+
+**Action numbers** (from the fixture's overrides; background, with the assertion):
+
+| Id | UIKit entry point |
+| - | - |
+| 2001 / 2002 | accessibilityZoomIn / ZoomOut |
+| 2003 | scroll-to-visible (kAXErrorFailure on a non-scrollable element) |
+| 2004 / 2005 | accessibilityIncrement / Decrement |
+| 2006 / 2007 / 2008 / 2009 | accessibilityScroll down (4) / up (3) / right (1) / left (2) |
+| 2010 | accessibilityActivate |
+| 2011 | accessibilityPerformMagicTap |
+| 2013 | accessibilityPerformEscape |
+| 2019 / 2020 | accessibilityScroll next (5) / previous (6) page |
+| 2025 | **crashes the app**: `-[NSObject(AXPrivCategory) _iosAccessibilityPerformAction:withValue:fencePort:]` -> `_accessibilityAnnouncementComplete:` -> `+[NSDictionary dictionaryWithObjects:forKeys:count:]` with a nil value -> SIGABRT. Never send it. |
+| 2012, 2017, 2021, 2023, 2032-2036, 2040 | kAXErrorFailure on this element. Others: ok with no entry point fired. |
+
+**Controls** (action 2010 unless noted):
+
+| Control | Background (Settings in front) | Foreground |
+| - | - | - |
+| UIButton | fail kAXErrorFailure, no handler | **fail kAXErrorFailure** |
+| UISwitch | fail | **fail** |
+| UITableViewCell | fail | **fail** |
+| UITabBarController tab | fail | **fail** |
+| Buttons that show an alert / sheet (UIButton) | fail | fail |
+| UIBarButtonItem | ok, handler fired | ok |
+| UISegmentedControl segment | ok, handler fired | ok |
+| UISlider (2004) | ok, handler fired | ok |
+| UITextField (set XC_kAXXCAttributeValue) | ok, handler fired, value read back | ok |
+| Table page down (2006) | ok | ok, table scrolled |
+| Element with its own accessibilityActivate | ok, handler fired | ok |
+| Escape 2013 on the navigation bar | kAXErrorFailure (no pushed screen: see below) | **ok, popped Level 3 -> Level 2** |
+| Push (bar button handler calls pushViewController) | handler fired, **the pushed screen never appeared within 90 s** (no willShow) | appeared in 0.1-9 s |
+
+So the four failing controls fail **in the foreground as well**: their 2010 failure is not caused by the
+background or by having no display. It is the accessibility activate path for those UIKit classes when the
+request comes from XCTest's AX client. On the phone, Calculator keys and Settings rows worked because
+those classes handle activation themselves. Separately, a UIKit push inside a backgrounded fixture waits
+(Settings on the phone pushed one level).
+
+lldb attach to the fixture worked, but breakpoints in the simulator's shared cache did not resolve within
+the time limit, so the exact failing check is not yet traced.
