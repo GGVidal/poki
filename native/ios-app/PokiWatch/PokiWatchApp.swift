@@ -234,15 +234,12 @@ private struct WatchVoiceRemoteView: View {
         }
         switch mode {
         case .unavailable:
-            return model.remoteDetail ?? String(localized: "iPhone not connected")
+            return String(localized: "iPhone not connected")
         case .needsSetup:
-            return model.remoteDetail ?? String(localized: "Finish voice setup on iPhone")
+            return String(localized: "Finish voice setup on iPhone")
         case .idle:
             if let transportError = model.remoteTransportError {
                 return String(localized: transportError)
-            }
-            if let detail = model.remoteDetail, !detail.isEmpty {
-                return detail
             }
             return String(localized: "Tap to talk or hold to speak")
         case .connecting:
@@ -252,7 +249,8 @@ private struct WatchVoiceRemoteView: View {
         case .listening, .thinking, .speaking:
             return nil
         case .acting(let step, _):
-            return step
+            let trimmed = step.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? String(localized: "Using the phone") : trimmed
         case .muted:
             return String(localized: "Tap Poki to unmute")
         case .ending:
@@ -260,16 +258,10 @@ private struct WatchVoiceRemoteView: View {
         case .ended:
             return String(localized: "Call ended. Returning in 3s")
         case .locked:
-            if let detail = model.remoteDetail, !detail.isEmpty {
-                return detail
-            }
             return String(localized: "Continues automatically after unlock")
         case .failed:
             if let transportError = model.remoteTransportError {
                 return String(localized: transportError)
-            }
-            if let detail = model.remoteDetail, !detail.isEmpty {
-                return detail
             }
             return String(localized: "Poki isn’t running on iPhone")
         }

@@ -83,6 +83,24 @@ final class WatchVoiceRemoteHost {
                 hasMicrophonePermission: { AVAudioApplication.shared.recordPermission == .granted },
                 currentStep: {
                     guard app.voice.isOn else { return nil }
+                    if let plan = app.activityPlan, plan.total > 0 {
+                        let current = min(max(plan.current, 1), plan.total)
+                        let stepTitle = (plan.steps.indices.contains(current - 1) ? plan.steps[current - 1] : nil)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let planTitle = plan.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let name = (stepTitle?.isEmpty == false ? stepTitle : nil)
+                            ?? (planTitle?.isEmpty == false ? planTitle : nil)
+                        if let name {
+                            return "\(current)/\(plan.total) \(name)"
+                        }
+                    }
+                    #if DEBUG && targetEnvironment(simulator)
+                    if TalkRehearsal.asked,
+                       let rehearsalStep = TalkRehearsal.rehearsalStep,
+                       app.voice.activeStepDescription != nil {
+                        return rehearsalStep
+                    }
+                    #endif
                     let activityStep = app.activityText.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !activityStep.isEmpty, activityStep != "Idle" {
                         return ActivityWords.label(activityStep)

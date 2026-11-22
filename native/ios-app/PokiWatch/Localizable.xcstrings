@@ -68,6 +68,7 @@
       }
     },
     "Connecting": {
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -78,13 +79,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "连接中"
+            "value": "正在连接"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "連線中"
+            "value": "正在連線"
           }
         }
       }
@@ -134,6 +135,7 @@
       }
     },
     "Continues automatically after unlock": {
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -310,6 +312,7 @@
       }
     },
     "Listening": {
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -320,13 +323,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在听"
+            "value": "正在聆听"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "在聽"
+            "value": "正在聆聽"
           }
         }
       }
@@ -442,6 +445,7 @@
       }
     },
     "Poki is speaking": {
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -452,23 +456,24 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Poki 在说"
+            "value": "正在回复"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Poki 在說"
+            "value": "正在回覆"
           }
         }
       }
     },
     "Poki isn’t running on iPhone": {
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Poki isn’t running on iPhone"
+            "value": "Poki on iPhone isn’t running. Open it first."
           }
         },
         "zh-Hans": {
@@ -750,6 +755,7 @@
       }
     },
     "Thinking": {
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -760,13 +766,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在想"
+            "value": "正在思考"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "在想"
+            "value": "正在思考"
           }
         }
       }
@@ -794,6 +800,7 @@
       }
     },
     "Unavailable": {
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -804,13 +811,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "不可用"
+            "value": "连接失败"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "無法使用"
+            "value": "連線失敗"
           }
         }
       }
@@ -943,6 +950,98 @@
           "stringUnit": {
             "state": "translated",
             "value": "iPhone 未連線"
+          }
+        }
+      }
+    },
+    "Using the phone": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Using the phone"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在操作手机"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在操作手機"
+          }
+        }
+      }
+    },
+    "iPhone is unavailable. Open Poki on your iPhone and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iPhone is unavailable. Open Poki on your iPhone and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手机上的 Poki 未运行，请先打开"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手機上的 Poki 未執行，請先開啟"
+          }
+        }
+      }
+    },
+    "iPhone didn’t confirm the command.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iPhone didn’t confirm the command."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iPhone 未确认指令，请重试"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iPhone 未確認指令，請重試"
+          }
+        }
+      }
+    },
+    "iPhone hasn’t replied. Open Poki on your iPhone and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iPhone hasn’t replied. Open Poki on your iPhone and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手机上的 Poki 未响应，请先打开重试"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手機上的 Poki 未回應，請先開啟重試"
           }
         }
       }

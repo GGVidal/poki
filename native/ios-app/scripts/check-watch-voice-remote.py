@@ -140,8 +140,8 @@ def snapshot_version(snapshot):
 
 def tap_bear_orb(session):
     sleep(0.35)
-    print("[tap] bear orb @ (0.500, 0.430)", flush=True)
-    touch(session, 0.50, 0.43, hold_ms=90)
+    print("[tap] bear orb @ (0.500, 0.350)", flush=True)
+    touch(session, 0.50, 0.35, hold_ms=90)
 
 
 def tap_start_and_wait(watch, ocr_bin, session, watch_archive, predicate, timeout_s, failure, label="Start"):
@@ -668,7 +668,7 @@ def run_checks(args):
             lines_zh, w_zh, h_zh = wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("在听" in r["text"] for r in rows)
+                lambda rows: any("正在聆听" in r["text"] for r in rows)
                 and any(button_matches(r["text"], "静音") for r in rows),
                 20,
                 "Watch did not render Chinese Listening + Mute UI",
@@ -685,7 +685,7 @@ def run_checks(args):
                 15,
                 "Watch did not return to Chinese Ready after End",
             )
-            print("[PASS 4] Chinese localization verified (就绪 -> 在听/静音/结束 -> 就绪)")
+            print("[PASS 4] Chinese localization verified (就绪 -> 正在聆听/静音/结束 -> 就绪)")
         finally:
             clear_phone_defaults(args.phone)
             session.stdin.close()

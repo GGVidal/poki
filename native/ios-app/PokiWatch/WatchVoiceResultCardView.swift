@@ -69,6 +69,7 @@ struct WatchVoiceResultView: View {
                         .padding(.bottom, 6)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .scrollIndicators(.visible)
                     .background(
                         WatchDesignTokens.cardFill,
                         in: RoundedRectangle(cornerRadius: WatchDesignTokens.resultCardCornerRadius, style: .continuous)
