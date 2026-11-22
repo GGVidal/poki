@@ -32,7 +32,9 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
     @ObservationIgnored private var recordingLimit: Task<Void, Never>?
     @ObservationIgnored private var meterDecayTask: Task<Void, Never>?
     @ObservationIgnored private var transientSyncTask: Task<Void, Never>?
+    @ObservationIgnored private var endedScreenTask: Task<Void, Never>?
     @ObservationIgnored private var lastStateQueryAt: Date?
+    @ObservationIgnored private var pendingDeepLinkStartAt: Date?
     @ObservationIgnored private var pendingContent: NSKeyValueObservation?
     @ObservationIgnored private var backgroundTasks: [WKWatchConnectivityRefreshBackgroundTask] = []
 
@@ -43,7 +45,10 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
 
     private(set) var remoteReachable = false
     private(set) var remoteCommandInFlight = false
+    private(set) var isStartingCall = false
+    private(set) var showingEndedScreen = false
     private(set) var remoteTransportError: LocalizedStringResource?
+    var selectedResultID: UUID?
 
     var hasPending: Bool { archive.pending != nil }
     var update: WatchVoiceUpdate? { archive.pending?.update }
@@ -92,9 +97,60 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         updateReachability()
         receiveContext(session.receivedApplicationContext)
         flushPendingEnd()
+        consumePendingDeepLinkStart()
         refreshRemoteState()
         updateActiveSync()
         sync()
+    }
+
+    func handleStartDeepLink() {
+        dismissEndedScreen()
+        guard !remoteState.isActiveCall, remoteState != .ending else { return }
+        if remoteReachable, !remoteCommandInFlight {
+            pendingDeepLinkStartAt = nil
+            remotePrimaryAction()
+        } else {
+            pendingDeepLinkStartAt = Date()
+            updateReachability()
+            consumePendingDeepLinkStart()
+        }
+    }
+
+    func openResult(_ id: UUID) {
+        selectedResultID = id
+    }
+
+    func clearSelectedResult() {
+        selectedResultID = nil
+    }
+
+    func dismissEndedScreen() {
+        endedScreenTask?.cancel()
+        endedScreenTask = nil
+        showingEndedScreen = false
+    }
+
+    private func consumePendingDeepLinkStart() {
+        guard let requestedAt = pendingDeepLinkStartAt else { return }
+        if Date().timeIntervalSince(requestedAt) > 6.0 {
+            pendingDeepLinkStartAt = nil
+            return
+        }
+        guard remoteReachable, !remoteCommandInFlight else { return }
+        pendingDeepLinkStartAt = nil
+        guard !remoteState.isActiveCall, remoteState != .ending else { return }
+        remotePrimaryAction()
+    }
+
+    private func triggerEndedScreen() {
+        endedScreenTask?.cancel()
+        showingEndedScreen = true
+        endedScreenTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.showingEndedScreen = false
+            self?.endedScreenTask = nil
+        }
     }
 
     func refreshRemoteState() {
@@ -180,14 +236,20 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         }
         guard let data = try? JSONEncoder().encode(command) else { return }
         let isUserCommand = command.action != .state
+        let isStartCommand = command.action == .start
         if isUserCommand {
             remoteCommandInFlight = true
             remoteTransportError = nil
+            if isStartCommand {
+                dismissEndedScreen()
+                isStartingCall = true
+            }
         }
         session.sendMessage([WatchVoiceRemote.commandKey: data]) { [weak self] replyMessage in
             Task { @MainActor in
                 guard let self else { return }
                 if isUserCommand { self.remoteCommandInFlight = false }
+                if isStartCommand { self.isStartingCall = false }
                 guard let replyData = replyMessage[WatchVoiceRemote.replyKey] as? Data,
                       let reply = try? JSONDecoder().decode(WatchVoiceRemoteReply.self, from: replyData),
                       reply.requestID == command.requestID else {
@@ -213,6 +275,7 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
             Task { @MainActor in
                 guard let self else { return }
                 if isUserCommand { self.remoteCommandInFlight = false }
+                if isStartCommand { self.isStartingCall = false }
                 self.updateReachability()
                 if command.action == .end, command.targetCallID != nil {
                     if self.remoteReducer.pendingEnd == nil {
@@ -236,9 +299,11 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
         cueOnAccept: WatchVoiceCue?,
         isUserCommand: Bool
     ) {
+        let previousState = remoteReducer.latestSnapshot?.state
         guard remoteReducer.apply(reply: reply, targetCallID: targetCallID) else {
             return
         }
+        handleEndedTransition(from: previousState, to: remoteReducer.latestSnapshot?.state)
         remoteTransportError = nil
         persistRemoteState(ingesting: reply.snapshot.deliveredResults)
         updateActiveSync()
@@ -256,11 +321,22 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
     }
 
     private func applyRemoteSnapshot(_ snapshot: WatchVoiceRemoteSnapshot) {
+        let previousState = remoteReducer.latestSnapshot?.state
         guard remoteReducer.apply(snapshot: snapshot) else { return }
+        handleEndedTransition(from: previousState, to: remoteReducer.latestSnapshot?.state)
         persistRemoteState(ingesting: snapshot.deliveredResults)
         updateActiveSync()
         if remoteReducer.pendingEnd != nil {
             flushPendingEnd()
+        }
+    }
+
+    private func handleEndedTransition(from previous: WatchVoiceCallState?, to next: WatchVoiceCallState?) {
+        guard let next else { return }
+        if next.isActiveCall || next == .ending {
+            dismissEndedScreen()
+        } else if next == .idle, let previous, previous.isActiveCall || previous == .ending {
+            triggerEndedScreen()
         }
     }
 
@@ -535,6 +611,7 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
             if remoteReachable {
                 remoteTransportError = nil
                 flushPendingEnd()
+                consumePendingDeepLinkStart()
                 refreshRemoteState()
             }
             updateActiveSync()

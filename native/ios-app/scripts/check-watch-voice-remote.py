@@ -138,9 +138,30 @@ def snapshot_version(snapshot):
     return (snapshot.get("epoch", 0), snapshot.get("sequence", 0))
 
 
+def tap_bear_orb(session):
+    sleep(0.35)
+    print("[tap] bear orb @ (0.500, 0.430)", flush=True)
+    touch(session, 0.50, 0.43, hold_ms=90)
+
+
 def tap_start_and_wait(watch, ocr_bin, session, watch_archive, predicate, timeout_s, failure, label="Start"):
     for attempt in range(2):
-        tap_label(watch, ocr_bin, session, lambda t: button_matches(t, label))
+        lines, width, height = ocr_screen(watch, ocr_bin)
+        if any(button_matches(r["text"], label) for r in lines):
+            tap_in_lines(session, lines, width, height, lambda t: button_matches(t, label))
+        elif any(
+            any(k in r["text"] for k in ("Continue on iPhone", "在 iPhone 上继续", "Retry", "重试"))
+            for r in lines
+        ):
+            tap_in_lines(
+                session,
+                lines,
+                width,
+                height,
+                lambda t: any(k in t for k in ("Continue on iPhone", "在 iPhone 上继续", "Retry", "重试")),
+            )
+        else:
+            tap_bear_orb(session)
         try:
             return wait_for_file(watch_archive, predicate, max(timeout_s, 35), failure, keep_awake_watch=watch)
         except AssertionError:
@@ -262,7 +283,16 @@ def launch_phone(phone, *extra_args, background=False, hold=None, long_result=Fa
 def launch_watch(watch, ocr_bin=None, session=None, language="en", locale="en_US"):
     simctl("terminate", watch, WATCH_BUNDLE, check=False)
     sleep(0.3)
-    simctl("launch", watch, WATCH_BUNDLE, "-AppleLanguages", f"({language})", "-AppleLocale", locale)
+    simctl(
+        "launch",
+        "--terminate-running-process",
+        watch,
+        WATCH_BUNDLE,
+        "-AppleLanguages",
+        f"({language})",
+        "-AppleLocale",
+        locale,
+    )
     sleep(1.5)
     if ocr_bin and session:
         for _ in range(3):
@@ -313,9 +343,9 @@ def run_checks(args):
                 args.watch,
                 ocr_bin,
                 lambda rows: any("Ready" in r["text"] for r in rows)
-                and any(button_matches(r["text"], "Start") for r in rows),
+                and any("Double Tap" in r["text"] or "hold to speak" in r["text"] for r in rows),
                 20,
-                "Watch did not reach Ready + Start screen",
+                "Watch did not reach Ready idle screen",
             )
             snap_fg = tap_start_and_wait(
                 args.watch,
@@ -376,18 +406,18 @@ def run_checks(args):
             assert snap_muted["callID"] == call_id
             assert snap_muted["isMuted"] is True
             assert snap_muted["inputReady"] is False
-            lines_muted, w_muted, h_muted = wait_for_ocr(
+            wait_for_ocr(
                 args.watch,
                 ocr_bin,
                 lambda rows: any("Muted" in r["text"] for r in rows)
-                and any(button_matches(r["text"], "Unmute") for r in rows),
+                and any("unmute" in r["text"].lower() for r in rows),
                 15,
-                "Watch UI did not show Muted + Unmute",
+                "Watch UI did not show Muted + Tap Poki to unmute",
                 save_to=shots / "03-muted.png" if shots else None,
             )
             print(f"[PASS 2b] Mute -> Muted (seq={snap_muted['sequence']})")
 
-            tap_in_lines(session, lines_muted, w_muted, h_muted, lambda t: button_matches(t, "Unmute"))
+            tap_bear_orb(session)
             snap_unmuted = wait_for_file(
                 watch_archive,
                 lambda d: (d.get("remoteSnapshot") or {}).get("state") == "listening"
@@ -400,7 +430,14 @@ def run_checks(args):
             assert snap_unmuted["callID"] == call_id
             print(f"[PASS 2c] Unmute -> Listening (seq={snap_unmuted['sequence']})")
 
-            tap_in_lines(session, lines_listen, w_listen, h_listen, lambda t: button_matches(t, "End"))
+            lines_unmuted, w_unmuted, h_unmuted = wait_for_ocr(
+                args.watch,
+                ocr_bin,
+                lambda rows: any(button_matches(r["text"], "End") for r in rows),
+                15,
+                "Watch UI did not show End after unmute",
+            )
+            tap_in_lines(session, lines_unmuted, w_unmuted, h_unmuted, lambda t: button_matches(t, "End"))
             snap_idle = wait_for_file(
                 watch_archive,
                 lambda d: (d.get("remoteSnapshot") or {}).get("state") == "idle"
@@ -413,11 +450,11 @@ def run_checks(args):
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any(button_matches(r["text"], "Start") for r in rows),
+                lambda rows: any("Ready" in r["text"] for r in rows),
                 15,
-                "Watch UI did not return to Start after End",
+                "Watch UI did not return to Ready after End",
             )
-            print(f"[PASS 2d] End -> Ready (seq={snap_idle['sequence']})")
+            print(f"[PASS 2d] End -> Ended -> Ready (seq={snap_idle['sequence']})")
 
             # 3a. Live step text during phone action (-pokiTalkHold acting avoids racing a short step).
             launch_phone(args.phone, hold="acting", background=True)
@@ -510,22 +547,34 @@ def run_checks(args):
             )
             assert len(caught_up["text"].encode("utf-8")) < full_bytes
             if (data_caught_up.get("remoteSnapshot") or {}).get("state") != "idle":
-                tap_label(args.watch, ocr_bin, session, lambda t: button_matches(t, "End"))
+                lines_end, w_end, h_end = ocr_screen(args.watch, ocr_bin)
+                if any(button_matches(r["text"], "End") for r in lines_end):
+                    tap_in_lines(session, lines_end, w_end, h_end, lambda t: button_matches(t, "End"))
                 wait_for_file(
                     watch_archive,
                     lambda d: (d.get("remoteSnapshot") or {}).get("state") == "idle",
-                    15,
+                    20,
                     "Watch did not return to idle after long-result turn",
                     keep_awake_watch=args.watch,
                 )
-            lines_card, w_card, h_card = wait_for_ocr(
+            wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("Task finished" in r["text"] for r in rows),
+                lambda rows: any("Ready" in r["text"] for r in rows),
                 15,
-                "Watch UI did not display shared latest result card",
-                save_to=shots / "05-result.png" if shots else None,
+                "Watch did not settle to Ready before opening secondary hub",
             )
+            # Swipe up to Page 1 (secondary hub) to view shared latest result card.
+            lines_card = None
+            w_card = h_card = 0
+            for _ in range(4):
+                swipe_up(session)
+                sleep(0.7)
+                cand_lines, cand_w, cand_h = ocr_screen(args.watch, ocr_bin, save_to=shots / "05-result.png" if shots else None)
+                if any("Task finished" in r["text"] for r in cand_lines):
+                    lines_card, w_card, h_card = cand_lines, cand_w, cand_h
+                    break
+            assert lines_card is not None, "Watch secondary hub did not display shared latest result card"
             print(
                 f"[PASS 3b] Offline >16 KB result caught up on Watch reconnect "
                 f"(id={long_id}, fullTextBytes={full_bytes}, previewBytes={len(caught_up['text'].encode('utf-8'))})"
@@ -559,7 +608,7 @@ def run_checks(args):
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any(button_matches(r["text"], "Start") for r in rows)
+                lambda rows: any("Ready" in r["text"] for r in rows)
                 or any("Listening" in r["text"] for r in rows),
                 15,
                 "Watch did not recover state after relaunch",
@@ -570,7 +619,7 @@ def run_checks(args):
                 for item in (reloaded.get("results") or [])
             ), "Full >16 KB result did not persist across Watch relaunch"
 
-            # Scroll down to reveal and open #591's Voice Task screen.
+            # Swipe up to secondary hub and open #591's Voice Task screen.
             voice_task_lines = None
             vt_w = vt_h = 0
             for _ in range(5):
@@ -602,9 +651,9 @@ def run_checks(args):
                 args.watch,
                 ocr_bin,
                 lambda rows: any("就绪" in r["text"] for r in rows)
-                and any(button_matches(r["text"], "开始") for r in rows),
+                and any("空中双击" in r["text"] or "按住说话" in r["text"] for r in rows),
                 20,
-                "Watch did not render Chinese Ready + Start UI",
+                "Watch did not render Chinese Ready UI",
             )
             tap_start_and_wait(
                 args.watch,
@@ -632,9 +681,9 @@ def run_checks(args):
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any(button_matches(r["text"], "开始") for r in rows),
+                lambda rows: any("就绪" in r["text"] for r in rows),
                 15,
-                "Watch did not return to Chinese Start after End",
+                "Watch did not return to Chinese Ready after End",
             )
             print("[PASS 4] Chinese localization verified (就绪 -> 在听/静音/结束 -> 就绪)")
         finally:
