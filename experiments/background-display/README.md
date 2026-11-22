@@ -13,11 +13,20 @@ are in [LOG.md](LOG.md); records are in [records/](records).
 | Display allocation | **Observed.** A new display appears for the life of the session: `type: wireless`, name `Wireless`, requested size (1920x1088 or 1280x800), own `uniqueId`. It is solid black and **not** a mirror of the handset. |
 | Host video | The phone streams, but avconferenced refuses the Mac-side decoder for an ad-hoc binary (`vcMediaStreamSetSessionConfig failed authorization check ... entitlementStatus=2`). `devicectl device capture screenshot --display-unique-id` is used instead. |
 | App placement | **Refused.** `devicectl device process launch --display <any id>` -> SpringBoard: `Can't look up displays without the proper entitlement, bub.` The entitlement next to that string is `com.apple.springboard.display-lookup`. No DDI daemon holds it. A normal launch goes to the handset. |
-| Input | CoreDevice digitizer targets raw 0/1 = handset. Raw 2/3 never reach the handset. Their effect on display 3 is unproven while it is empty. |
+| Shell / Extended mode | Display 3 has no shell (swipes and taps change nothing). Settings shows no Extended Display option on this iPhone. |
+| App content | Photos shows its own external-screen scene (the video alone) on display 3, **only while Photos is in front** on the handset. Black within 2 s of switching to Settings. |
+| Input | CoreDevice digitizer targets raw 0/1 = handset. Raw 2/3 never reach the handset (controlled test). Their effect on display 3 is unproven, because no interactive scene can be put there. |
+| Headless route | `--no-activate` launch leaves the handset foreground alone. The accessibility audit service reads only the foreground app (background Calculator: 0 elements; foreground: 23), and its press had no effect. |
 | Concurrent use | Not reached. |
 
-Open leads: Settings "Extended Display" mode while the virtual display exists (LOG.md, R7);
-headless background accessibility (R6).
+**Conclusion: partial, last passed gate 2 (display allocation).** On stock iOS 27.3 on an
+iPhone 17 Pro, an ordinary app cannot be placed on or kept running on the virtual display.
+The scene placement path needs `com.apple.springboard.display-lookup`, which no developer
+service has, and external-screen scenes are foreground-only.
+
+Next experiments most likely to change this: an XCTest probe in Poki's in-process session
+for a background pid's tree (needs a phone build, owner's go); the same tests on an iPad or
+iPhone Duo with Stage Manager (classified separately, not the phone result).
 
 ## Build
 
@@ -66,5 +75,5 @@ virtual display was gone from `devicectl device info displays`.
 
 - Mac15,6 (M3 Pro), macOS 27.0 (26A428), Xcode 27.3 (27C5035i), devicectl/CoreDevice 699.2, AVConference 2235.63.5.2.
 - iPhone 17 Pro (iPhone18,1), iOS 27.3 (24C5037i), Developer Mode on, paired, CoreDevice tunnel over TCP (reported as localNetwork, later wired). DDI 27C5035i cryptex.
-- Target: Calculator `com.apple.calculator` 12.0 (225), installed system app. Helpers: none installed. The only XCTest runner present is Poki 0.4.7 (71), unused.
+- Target: Calculator `com.apple.calculator` 12.0 (225), installed system app. Diagnostic: Photos `com.apple.mobileslideshow`. Helpers on the phone: none installed. The only XCTest runner present is Poki 0.4.7 (71), unused. Host helper: pymobiledevice3 11.61.2 in a temporary venv (`ax-probe.py`), deleted after the run.
 - Simulator: CoreDevice's default `DeviceManager` lists no simulators to this client. The iOS Simulator has no Calculator (`--display` launch -> OSStatus -10814). Simulator results do not count toward the phone result.
