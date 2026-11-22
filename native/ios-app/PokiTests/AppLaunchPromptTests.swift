@@ -1,3 +1,4 @@
+import PokiCore
 import XCTest
 @testable import Poki
 
@@ -153,6 +154,96 @@ final class AppLaunchPromptTests: XCTestCase {
         XCTAssertFalse(saved.contains(sentinel), saved)
         let exported = String(decoding: ChatDebugLog.exportBundle(), as: UTF8.self)
         XCTAssertFalse(exported.contains(sentinel), exported)
+    }
+
+    func testTheDebugFileClassifiesWaitingForLoopbackCorruptPairingAndLoopbackAppName() async {
+        let savedAppNames = UserDefaults.standard.object(forKey: SpeedOptions.appNamesKey)
+        UserDefaults.standard.set(true, forKey: SpeedOptions.appNamesKey)
+        defer {
+            if let savedAppNames { UserDefaults.standard.set(savedAppNames, forKey: SpeedOptions.appNamesKey) }
+            else { UserDefaults.standard.removeObject(forKey: SpeedOptions.appNamesKey) }
+        }
+
+        // 1. Waiting for loopback returns isError == false, waitingForOwner == true from PokiCore.
+        let waitingHost = AppCoreHost()
+        waitingHost.update(runner: .waitingForLoopback(since: "04:10:00", tunnelWithoutAnswer: false, connection: .external))
+        let waitingCore = LiveCore(host: waitingHost, transport: InertDebugTransport())
+        let waitingAnswer = await waitingCore.callTool(
+            "do",
+            arguments: #"{"actions":[{"launch":{"bundle":"com.taobao.taobao4iphone"}}]}"#,
+            localTask: "esp-1274"
+        )
+        XCTAssertFalse(waitingAnswer.isError, waitingAnswer.text)
+        XCTAssertTrue(waitingAnswer.waitingForOwner, waitingAnswer.text)
+        let waitingCall = ChatDebugLog.call(CallRecord(
+            name: "do",
+            arguments: #"{"actions":[{"launch":{"bundle":"com.taobao.taobao4iphone"}}]}"#,
+            answer: waitingAnswer.text,
+            ms: 12,
+            ok: !waitingAnswer.isError
+        ))
+        XCTAssertFalse(waitingCall.ok)
+        XCTAssertEqual(waitingCall.error, "not_sent_tunnel_disconnected", waitingAnswer.text)
+
+        // Status queries while waiting for loopback are not failed actions.
+        let statusAnswer = await waitingCore.callTool("status", arguments: "{}", localTask: "esp-1274")
+        let statusCall = ChatDebugLog.call(CallRecord(name: "status", arguments: "{}", answer: statusAnswer.text, ms: 2, ok: !statusAnswer.isError))
+        XCTAssertTrue(statusCall.ok)
+        XCTAssertNil(statusCall.error)
+
+        // 2. Corrupt pairing file from launcher (contains "remote pairing file") must classify as pairing, not tunnel disconnected.
+        let corruptHost = AppCoreHost()
+        corruptHost.update(runner: .failed(
+            "the pairing file is neither a remote pairing file nor a lockdown pairing record (invalid plist)",
+            fix: "Pair again in Poki's setup."
+        ))
+        let corruptCore = LiveCore(host: corruptHost, transport: InertDebugTransport())
+        let corruptAnswer = await corruptCore.callTool(
+            "do",
+            arguments: #"{"actions":[{"launch":{"bundle":"com.taobao.taobao4iphone"}}]}"#,
+            localTask: "esp-1274"
+        )
+        XCTAssertTrue(corruptAnswer.isError, corruptAnswer.text)
+        let corruptCall = ChatDebugLog.call(CallRecord(
+            name: "do",
+            arguments: #"{"actions":[{"launch":{"bundle":"com.taobao.taobao4iphone"}}]}"#,
+            answer: corruptAnswer.text,
+            ms: 8,
+            ok: !corruptAnswer.isError
+        ))
+        XCTAssertFalse(corruptCall.ok)
+        XCTAssertEqual(corruptCall.error, "not_sent_pairing_required", corruptAnswer.text)
+
+        // 3. Unknown app named "Loopback" must classify as app preflight, not tunnel disconnected.
+        let readyHost = AppCoreHost()
+        readyHost.update(runner: .automationReady(revision: 1))
+        let readyCore = LiveCore(host: readyHost, transport: InertDebugTransport())
+        let loopbackAppAnswer = await readyCore.callTool(
+            "do",
+            arguments: #"{"actions":[{"launch":"Loopback"}]}"#,
+            localTask: "esp-1274"
+        )
+        XCTAssertTrue(loopbackAppAnswer.isError, loopbackAppAnswer.text)
+        let loopbackAppCall = ChatDebugLog.call(CallRecord(
+            name: "do",
+            arguments: #"{"actions":[{"launch":"Loopback"}]}"#,
+            answer: loopbackAppAnswer.text,
+            ms: 4,
+            ok: !loopbackAppAnswer.isError
+        ))
+        XCTAssertFalse(loopbackAppCall.ok)
+        XCTAssertEqual(loopbackAppCall.error, "not_sent_app_preflight", loopbackAppAnswer.text)
+
+        // Normal screen reads mentioning "Loopback" stay ok with no error.
+        let normalRead = ChatDebugLog.call(CallRecord(
+            name: "look",
+            arguments: "{}",
+            answer: "app: Settings   read: 2026-11-22T04:10:00Z (10 ms)\nelements (1):\n 1 Button \"Loopback\" [0,0,100,44]",
+            ms: 10,
+            ok: true
+        ))
+        XCTAssertTrue(normalRead.ok)
+        XCTAssertNil(normalRead.error)
     }
 
     /// The file keeps the newest 20 tasks: the number is written here, not read from the code.
@@ -379,5 +470,11 @@ final class AppLaunchPromptTests: XCTestCase {
     func testTheModelIsOfferedFindApp() {
         XCTAssertTrue(Harness.tools.contains { $0.name == "find_app" })
         XCTAssertTrue(Harness.taskInstructions(for: "打开闲鱼").text.contains("find_app"))
+    }
+}
+
+private actor InertDebugTransport: HTTPTransport {
+    func send(method: String, url: URL, body: Data?, timeout: Double) async throws -> (status: Int, body: Data) {
+        (200, Data("{\"value\":null}".utf8))
     }
 }

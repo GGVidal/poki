@@ -234,6 +234,74 @@ final class DynamicAppsTests: XCTestCase {
         let finalActivated = await transport.activated
         XCTAssertEqual(finalActivated, ["com.not.installed", "com.xingin.discover", "com.xingin.discover", "ctrip.com", "com.strava.stravaride"])
     }
+
+    func testStaleDiskCacheNeverPassesInstalledLaunchPreflight() async throws {
+        let savedAppNames = UserDefaults.standard.object(forKey: SpeedOptions.appNamesKey)
+        UserDefaults.standard.set(true, forKey: SpeedOptions.appNamesKey)
+        defer {
+            if let savedAppNames { UserDefaults.standard.set(savedAppNames, forKey: SpeedOptions.appNamesKey) }
+            else { UserDefaults.standard.removeObject(forKey: SpeedOptions.appNamesKey) }
+        }
+
+        let cachedApps: [InstalledApps.App] = [
+            .init(id: "ctrip.com", name: "携程旅行", bundleName: "CtripWireless", type: "User"),
+            .init(id: "com.xingin.discover", name: "小红书", bundleName: "discover", type: "User"),
+            .init(id: "com.strava.stravaride", name: "Strava", bundleName: "StravaRide", type: "User"),
+        ]
+        try FileManager.default.createDirectory(at: InstalledApps.cacheFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(cachedApps).write(to: InstalledApps.cacheFile)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-2 * 86_400)],
+            ofItemAtPath: InstalledApps.cacheFile.path
+        )
+
+        var clock = Date(timeIntervalSince1970: 2_000_000)
+        let apps = InstalledApps()
+        apps.now = { clock }
+        XCTAssertEqual(AppIconStore.bundleID("Strava"), "com.strava.stravaride", "cached list still backs names and icons")
+        XCTAssertEqual(AppName.display("com.strava.stravaride"), "Strava")
+        XCTAssertEqual(DynamicApps.name(forID: "ctrip.com"), "携程旅行")
+
+        let host = AppCoreHost()
+        host.update(runner: .automationReady(revision: 1))
+        let transport = LaunchProbeTransport()
+        let core = LiveCore(host: host, transport: transport)
+
+        for stale in ["ctrip.com", "携程旅行", "com.xingin.discover", "小红书", "Strava"] {
+            let refused = await core.callTool("do", arguments: #"{"actions":[{"button":"home"},{"launch":"\#(stale)"}]}"#, localTask: "esp-1274")
+            XCTAssertTrue(refused.isError, "\(stale): \(refused.text)")
+            XCTAssertTrue(refused.text.contains("no app named \"\(stale)\" is known"), "\(stale): \(refused.text)")
+        }
+        let mutationsFromStaleCache = await transport.mutatingPaths
+        XCTAssertEqual(mutationsFromStaleCache, [], "disk-cached apps must not pass launch preflight without current install evidence")
+
+        var fetchCount = 0
+        apps.phone = { ["device_address": "10.7.0.1"] }
+        apps.call = { _ in
+            fetchCount += 1
+            if fetchCount > 1 { throw URLError(.timedOut) }
+            return try AppLaunchPromptTests.signerAnswer(cachedApps)
+        }
+        let fresh = await apps.list()
+        XCTAssertEqual(fresh?.fresh, true)
+
+        let liveLaunch = await core.callTool("do", arguments: #"{"actions":[{"launch":"ctrip.com"}]}"#, localTask: "esp-1274")
+        XCTAssertFalse(liveLaunch.isError, liveLaunch.text)
+        let activatedAfterRefresh = await transport.activated
+        XCTAssertEqual(activatedAfterRefresh, ["ctrip.com"])
+
+        clock += 600
+        let failedRefresh = await apps.list()
+        XCTAssertEqual(failedRefresh?.fresh, false)
+        XCTAssertEqual(AppName.display("com.strava.stravaride"), "Strava", "failed refresh still keeps display names")
+
+        let mutationsBeforeStaleRetry = await transport.mutatingPaths.count
+        let refusedAfterFailedRefresh = await core.callTool("do", arguments: #"{"actions":[{"button":"home"},{"launch":"ctrip.com"}]}"#, localTask: "esp-1274")
+        XCTAssertTrue(refusedAfterFailedRefresh.isError, refusedAfterFailedRefresh.text)
+        XCTAssertTrue(refusedAfterFailedRefresh.text.contains("no app named \"ctrip.com\" is known"), refusedAfterFailedRefresh.text)
+        let mutationsAfterStaleRetry = await transport.mutatingPaths.count
+        XCTAssertEqual(mutationsAfterStaleRetry, mutationsBeforeStaleRetry)
+    }
 }
 
 private actor LaunchProbeTransport: HTTPTransport {
