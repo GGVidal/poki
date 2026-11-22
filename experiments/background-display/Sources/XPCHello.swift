@@ -34,6 +34,7 @@ func xpcHello(_ args: Args) async {
     let sock = try await d.getImplementation(for: .createServiceSocket)
     let fh = try await sock.fileHandle(toServiceNamed: service)
     log("socket to \(service): fd \(fh.fileDescriptor)")
+    if args.flags["open-only"] != nil { try? fh.close(); log("open-only: closed without sending"); return }
     var out = Array("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".utf8)
     out += H2.frame(4, 0, 0, [0, 3] + H2.be32(100) + [0, 4] + H2.be32(1_048_576))   // SETTINGS
     out += H2.frame(8, 0, 0, H2.be32(983_041))                                        // WINDOW_UPDATE
