@@ -1,0 +1,9 @@
+build/
+.gradle/
+.kotlin/
+node_modules/
+Pods/
+*.xcworkspace/xcuserdata/
+.dart_tool/
+.xcode.env.local
+RNFix/android/

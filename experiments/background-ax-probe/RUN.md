@@ -595,3 +595,23 @@ accessibility call `sendActionsForControlEvents:` (via increment/decrement).
 - Fixture window beside a 375-wide Settings window (no overlap; dragging further right stops at the screen edge), Settings
   front: fixture stays ACTIVE (applicationState 0) with a live context for 90 s; in-process press fired switch 4/4 and button
   4/4 over 60 s, and push → detail bar item 2010 chained. Sliver, off-screen, minimise and key-window effects not measured.
+
+## RAW 76: cross-toolkit fixtures (iPhone 17 Pro simulator 27.3, 2026-11-23 ET)
+
+Fixtures in `toolkit-fixtures/` (Flutter 3.50.1; React Native 0.88.1 new architecture with React Navigation; Compose
+Multiplatform 1.12.2 / Kotlin 2.4.21 with a SceneDelegate host). Test: `ToolkitTests.testTOOLKIT` (env TK_BUNDLE, TK_CONTROLS,
+TK_ROW, TK_DETAIL). App in background with testmanagerd's assertion, Settings in front, 5 tries per control.
+
+| control | Flutter | Compose MP | React Native |
+|---|---|---|---|
+| button (2010) | fires 5/5, no rebuild | fires 5/5, no recompose | onPress-only Pressable 0/5; with onAccessibilityTap 5/5; accessibilityActions activate 0/5 |
+| switch (2010) | fires 5/5, value never flips | fires 5/5, value never flips | 0/5 |
+| bottom tab (2010) | fires 5/5 each | fires 5/5 each | 0/5 |
+| row → push (2010) | fires, route never built | fires, detail never composed | 0/5 |
+| text field 2006 / 2054 | fail | fail | fail |
+| chain row → detail → back | 0/3 | 0/3 | 0/3 |
+| AX tree in background | frozen at last frame | frozen at last frame | stays fresh |
+
+Flutter and Compose dispatch semantic actions to their callbacks in the background, but frames are paused, so state,
+navigation and the tree do not advance. React Native re-renders native views in the background, but only components with
+`onAccessibilityTap` implement `accessibilityActivate`.

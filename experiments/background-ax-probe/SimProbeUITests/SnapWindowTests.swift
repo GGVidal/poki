@@ -309,3 +309,55 @@ extension SimFixtureTests {
         fixture.terminate(); s.terminate()
     }
 }
+
+// RAW 76: cross-toolkit fixtures (Flutter, React Native, Compose) through the any-time AX route, in background.
+final class ToolkitTests: XCTestCase {
+    let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+    var app: XCUIApplication!
+    func say(_ s: String) { print("SIMPROBE TK \(s)") }
+    func snap() -> XCUIElementSnapshot? { try? app.snapshot() }
+    func all(_ s: XCUIElementSnapshot?) -> [XCUIElementSnapshot] { guard let s else { return [] }; return [s] + s.children.flatMap { all($0) } }
+    func find(_ label: String) -> XCUIElementSnapshot? {
+        if label.hasPrefix("type"), let t = UInt(label.dropFirst(4)) { return all(snap()).first { $0.elementType.rawValue == t } }
+        return all(snap()).first { ($0.label == label || $0.identifier == label) && $0.elementType != .staticText } ?? all(snap()).first { $0.label == label || $0.identifier == label }
+    }
+    func findPrefix(_ p: String) -> XCUIElementSnapshot? { all(snap()).first { $0.label.hasPrefix(p) } }
+    func last() -> String { let e = all(snap()).first { $0.identifier == "lastEvent" || $0.label.hasPrefix("last ") }; return e.map { $0.label.isEmpty ? (($0.value as? String) ?? "") : $0.label } ?? "nil" }
+    func act(_ e: XCUIElementSnapshot?, _ id: Int, _ v: Any? = nil) -> String {
+        guard let e else { return "not found" }; var err: NSString?
+        return PBHelper.pressSnapshot(e, action: id, value: v, error: &err) ? "ok" : "fail"
+    }
+    func testTOOLKIT() {
+        let env = ProcessInfo.processInfo.environment
+        app = XCUIApplication(bundleIdentifier: env["TK_BUNDLE"] ?? "local.pokimcp.flutterfix")
+        app.launch(); sleep(3)
+        say("tree FG: \(all(snap()).map { "\($0.elementType.rawValue):\($0.label)|\($0.identifier)" }.filter { !$0.hasSuffix(":|") }.prefix(60))")
+        let pid = (app.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        _ = PBHelper.requestBackgroundAssertion(forPID: pid)
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10); sleep(2)
+        say("tree BG: \(all(snap()).count) elements, last=\(last())")
+        // controls: "label:action[:value]" separated by ;
+        for spec in (env["TK_CONTROLS"] ?? "").split(separator: ";").map(String.init) {
+            let p = spec.split(separator: ":").map(String.init); guard p.count >= 2, let id = Int(p[1]) else { continue }
+            var hits = 0; var res = ""
+            for _ in 0..<5 {
+                let b = last(); let e = p[0].hasSuffix("*") ? findPrefix(String(p[0].dropLast())) : find(p[0])
+                res = act(e, id, p.count > 2 ? p[2] as NSString : nil); usleep(700_000)
+                if last() != b { hits += 1 }
+                if p.count > 3, p[3] == "back" { _ = act(snap(), 2013); usleep(700_000) }
+            }
+            say("CTL | \(p[0]) | \(id) | last result \(res) | fired \(hits)/5 | now \(last())")
+        }
+        // chain: row → detail unique button → back
+        if let row = env["TK_ROW"], let det = env["TK_DETAIL"] {
+            for i in 1...3 {
+                let b = last(); let r1 = act(find(row), 2010); sleep(2)
+                let d = find(det); let b2 = last(); let r2 = act(d, 2010); usleep(900_000)
+                let r3 = act(snap(), 2013); sleep(1)
+                say("CHAIN \(i) | row 2010 \(r1) (\(b) -> \(b2)) | detail found \(d != nil) 2010 \(r2) -> \(last()) | back 2013 \(r3) | row visible again \(find(row) != nil)")
+            }
+        }
+        say("front \(settings.state.rawValue) app \(app.state.rawValue)")
+        app.terminate()
+    }
+}
