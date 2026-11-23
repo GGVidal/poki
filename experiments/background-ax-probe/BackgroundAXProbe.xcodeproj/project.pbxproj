@@ -277,7 +277,6 @@
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					3A5CC8029621708F9E3839C5 = {
-						DevelopmentTeam = Q64ZL36CJN;
 						ProvisioningStyle = Automatic;
 					};
 					4E837F857AD20EF0AF369D57 = {
@@ -449,14 +448,13 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = Q64ZL36CJN;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.pokimcp.axprobe.uitests;
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = DeviceProbeUITests/Bridging.h;
 				SWIFT_VERSION = 5.0;
@@ -696,14 +694,13 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = Q64ZL36CJN;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.pokimcp.axprobe.uitests;
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = DeviceProbeUITests/Bridging.h;
 				SWIFT_VERSION = 5.0;

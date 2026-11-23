@@ -1,23 +1,38 @@
-# R8 probe (simulator only)
+# Background accessibility probe: how to run
 
-Not built or run until the owner approves an XCTest-family probe.
+Generate the project first. Signing uses your own team, passed on the command line.
 
 ```bash
 cd experiments/background-ax-probe
 xcodegen generate
+```
+
+Simulator, against the bundled fixture app (`SimProbe` scheme, iOS 27.3 runtime):
+
+```bash
 SIM=$(xcrun simctl create "AX probe" com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro <iOS 27.3 runtime id>)
-xcodebuild test -project BackgroundAXProbe.xcodeproj -scheme Probe -destination "id=$SIM" \
+xcodebuild test -project BackgroundAXProbe.xcodeproj -scheme SimProbe -destination "id=$SIM" \
   -derivedDataPath .build/dd CODE_SIGNING_ALLOWED=NO \
-  -only-testing:ProbeUITests/BackgroundAXActionTests | grep PROBE
+  -only-testing:SimProbeUITests/SimFixtureTests/testBACK_background
 xcrun simctl delete "$SIM"; rm -rf .build
 ```
 
-Pass: snapshot ok at t+40s with Settings still `runningForeground` (4), `performAction ok=true`, the counter read in the background changes, and the verification counter matches.
+iPhone, against stock apps (`DeviceProbe` scheme). Developer Mode on, Settings in front during the run:
+
+```bash
+xcodebuild test -project BackgroundAXProbe.xcodeproj -scheme DeviceProbe -destination "id=<device UDID>" \
+  -derivedDataPath .build/dd DEVELOPMENT_TEAM=<your team id> \
+  -only-testing:DeviceProbeUITests/DeviceBackgroundAXTests/testF_concurrentUse
+```
+
+Assertions: `testF_concurrentUse` fails unless every background press is verified on the display, the assertion runs fail if a background snapshot or press fails while the background assertion is held, and `testJ1_backByEscape` fails if no action leaves the pushed screen. The other tests are measurement sweeps that log with `say` and do not assert.
+
+Action 2025 crashes apps and is left out of every sweep. The first `Probe` scheme (`ProbeUITests/BackgroundAXActionTests.swift`) was the original simulator-only sketch and crashes with SIGSEGV. It is kept as a record only. Use `SimProbe` or `DeviceProbe`.
 
 ## On-device run (iPhone18,1, iOS 27.3 24C5037i), 2026-11-22 03:44-03:51 ET
 
 Owner approved the phone run. Target: the original Calculator. Handset front app: Settings throughout.
-Only addition to the phone: the probe's XCTest runner (`com.zhehanz.bgaxprobe.uitests.xctrunner`),
+Only addition to the phone: the probe's XCTest runner (`local.pokimcp.axprobe.uitests.xctrunner`),
 uninstalled after the run. Raw lines: `device-run-results.txt`.
 
 | Run | Mark | Assertion | Snapshot of background Calculator | AXPress "7" | Handset front |

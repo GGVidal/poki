@@ -44,7 +44,9 @@ final class DeviceBackgroundAXTests: XCTestCase {
             sleep(UInt32(m - t)); t = m
             var status: NSString?
             guard let root = PBHelper.snapshot(forPID: pid, timeout: 8, status: &status) as? NSObject else {
-                say("[\(tag)] t+\(m)s snapshot \(status ?? "nil"); \(front())"); continue
+                say("[\(tag)] t+\(m)s snapshot \(status ?? "nil"); \(front())")
+                if assert { XCTFail("[\(tag)] no background snapshot at t+\(m)s with the assertion held") }
+                continue
             }
             var line = "t+\(m)s snapshot ok elements=\(count(root)) display=[\(display(root))]"
             if let seven = key(root, "7") {
@@ -54,6 +56,7 @@ final class DeviceBackgroundAXTests: XCTestCase {
                 var s2: NSString?
                 let after = (PBHelper.snapshot(forPID: pid, timeout: 8, status: &s2) as? NSObject).map(display) ?? "snapshot \(s2 ?? "nil")"
                 line += " | AXPress(7) ok=\(ok) err=\(err ?? "nil") display_after=[\(after)]"
+                if assert { XCTAssertTrue(ok, "[\(tag)] AXPress(7) failed at t+\(m)s: \(err ?? "nil")") }
             } else { line += " | key 7 not found" }
             say("[\(tag)] \(line) | \(front())")
         }
@@ -108,6 +111,8 @@ final class DeviceBackgroundAXTests: XCTestCase {
             sleep(10)
         }
         say("[F] END: presses verified=\(pass) failed=\(fail) | \(frontName())")
+        XCTAssertGreaterThan(pass, 0, "[F] no background press was verified")
+        XCTAssertEqual(fail, 0, "[F] \(fail) background presses were not verified on the display")
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.lifetime = .keepAlways; add(shot)
     }
 
@@ -118,9 +123,9 @@ final class DeviceBackgroundAXTests: XCTestCase {
     func testJ1_backByEscape() {
         _ = bgSettings("J1")
         func cell(_ s: XCUIElementSnapshot, _ label: String) -> XCUIElementSnapshot? { first(s) { ($0.elementType == .cell || $0.elementType == .button) && $0.label == label } }
-        guard let s0 = try? settings.snapshot(), let g = cell(s0, "General") else { say("[J1] no General"); return }
+        guard let s0 = try? settings.snapshot(), let g = cell(s0, "General") else { XCTFail("[J1] no General"); return }
         say("[J1] press General \(press(g))"); sleep(3)
-        let candidates = (2011...2040).map { ($0, "AXAction \($0)") }  // no names exposed on 27.3: measured sweep, logged one by one
+        let candidates = (2011...2040).filter { $0 != 2025 }.map { ($0, "AXAction \($0)") }  // no names exposed on 27.3: measured sweep, logged one by one. 2025 crashes apps, so it is left out
         say("[J1] candidates: \(candidates)")
         for (n, d) in candidates {
             guard let s = try? settings.snapshot() else { continue }
@@ -136,6 +141,7 @@ final class DeviceBackgroundAXTests: XCTestCase {
                 if now != "General" { return }
             }
         }
+        XCTFail("[J1] no candidate action left General in the background")
     }
 
     func testJ2_tabCandidates() {
@@ -148,7 +154,7 @@ final class DeviceBackgroundAXTests: XCTestCase {
         guard let s = try? app.snapshot(), let bar = first(s, { $0.elementType == .tabBar || $0.label == "Tab Bar" }) else { say("[J2] no tab bar"); return }
         say("[J2] tab bar type=\(bar.elementType.rawValue) selected=\(selected(s))")
         let collect = first(bar) { $0.elementType == .button && $0.label == "Collect" }
-        let names = ([2010] + Array(2011...2040)).map { ($0, "AXAction \($0)") }
+        let names = ([2010] + Array(2011...2040)).filter { $0 != 2025 }.map { ($0, "AXAction \($0)") }  // 2025 crashes apps
         say("[J2] candidates: \(names)")
         for (n, d) in names {
             for (tname, t) in [("Collect button", collect), ("tab bar", bar as XCUIElementSnapshot?)] {
