@@ -22,7 +22,20 @@ installed from the Mac Studio at 9:34 am ET; never an alpha or beta build.
   service; dropping events", `HIDVirtualServicePool.enabledDeviceTypes`) suggest the services are
   published but never activated, and the CoreDevice protocol has no enable call.
 - **Stage Manager** turned on, display recreated after both generic devices existed: still black.
-- **Reading so far.** Keyboard and pointer presence is not enough; the virtual display itself may be
+- **Display kinds.** CoreDevice 699.2 offers virtual external, virtual secondary, and two mirrored
+  kinds. External 1920x1088, secondary 1920x1088 and external 2560x1440 all came up as display 3,
+  type wireless, black, with no Settings section.
+- **Check Displays inside Poki Lab (10:09 am ET).** Settings rows made reachable on device in
+  41b2458f (Agents, Experimental). Result: testmanagerd lists display 3 (1920x1088, not main) but
+  returns no picture (pictureBytes 0). UIKit has one UIScreen only (main, 1376x1032 points) and one
+  application scene session, so display 3 is not exposed to apps and no external display scene role
+  exists.
+- **Conclusion.** iPadOS does not treat CoreDevice's virtual display as a real display: no UIScreen,
+  no picture, no Settings section, black even with Stage Manager and generic HID devices present.
+  Wireless displays appear to be mirror only on iPadOS. A wired display or an HDMI dummy plug is the
+  only known route to an extended desktop, and the LabDisplay layer still needs one to be tested.
+  SpringBoard's own log line for display 3 is unread (needs the owner's `sudo log collect`).
+- **Earlier reading.** Keyboard and pointer presence is not enough; the virtual display itself may be
   the wall. Next: the display service's other modes and options, SpringBoard's log for display 3, and
   whether Poki Lab sees a UIScreen or scene session for display 3 so it could put its own window there.
 
