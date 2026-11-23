@@ -2616,6 +2616,12 @@ final class AppModel {
         relayAddress.map { identity.url(for: secret, relay: $0) }
     }
 
+    #if POKI_EXPERIMENTS
+    /// Poki Lab's simulator link check: the relay connection without turning Poki on (the simulator
+    /// has no launcher). Called only by LinkProbe.
+    func labStartRelay() { if let relayAddress { core.start(relay: relayAddress) } }
+    #endif
+
     func addConnector(name: String) -> ConnectorSecret {
         let secret = identity.addSecret(name: name)
         accessChanged()

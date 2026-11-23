@@ -302,6 +302,9 @@ struct RootView: View {
         } action: { sidebarWidth = $0 }
         .fullScreenCover(isPresented: $welcoming) { FirstRunGuide(link: $welcomeLink, done: { welcoming = false }) }
         .task { InProcessProbe.shared.startFromLaunchArguments(model: model) }
+        #if POKI_EXPERIMENTS && targetEnvironment(simulator)
+        .modifier(LabPagePreview())
+        #endif
         .alert(model.connectionAsk.map { AppLocalization.text(LocalizedStringResource("Allow \($0.client) to connect?")) } ?? "",
                isPresented: Binding(get: { model.connectionAsk != nil }, set: { if !$0 { model.answerConnection(false) } }),
                presenting: model.connectionAsk) { _ in

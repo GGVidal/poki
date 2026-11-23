@@ -72,6 +72,11 @@ final class InProcessProbe: ObservableObject {
             case "chat", "workspace-chat", "workspace-model", "fullscreen-model":
                 await chatCycle(model: model, inSplitView: mode.hasPrefix("workspace-"), configuredModel: mode.hasSuffix("-model"))
             case "web": await WebDemo.run()
+            #if POKI_EXPERIMENTS && targetEnvironment(simulator)
+            case "link-host": await LinkProbe.host(model: model, probe: self)
+            case "link-client": await LinkProbe.client(probe: self)
+            case "display-check": await LinkProbe.displayCheck(model: model, probe: self)
+            #endif
             case "bench": await benchmark(model: model, rounds: defaults.integer(forKey: "pokiBenchRounds") > 0 ? defaults.integer(forKey: "pokiBenchRounds") : 5)
             default: await prepareOnly()
             }
