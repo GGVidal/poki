@@ -91,6 +91,33 @@ public protocol HIDDigitizer : CoreDevice.DeviceCapabilityProtocol {
   func sendBarrier()
 }
 
+
+public struct KeyboardHIDCapability : CoreDevice.DeviceCapability {
+  public typealias ProtocolType = any CoreDevice.HIDKeyboard
+  public typealias ImplType = Swift.Never
+  public static var capability: CoreDevice.Capability { get }
+}
+
+public struct PointerHIDCapability : CoreDevice.DeviceCapability {
+  public typealias ProtocolType = any CoreDevice.HIDPointer
+  public typealias ImplType = Swift.Never
+  public static var capability: CoreDevice.Capability { get }
+}
+
+extension CoreDevice.CapabilityStaticMember where T == CoreDevice.HIDDeviceCapability {
+  public static var keyboard: CoreDevice.CapabilityStaticMember<CoreDevice.KeyboardHIDCapability> { get }
+  public static var pointer: CoreDevice.CapabilityStaticMember<CoreDevice.PointerHIDCapability> { get }
+}
+
+public protocol HIDKeyboard : CoreDevice.DeviceCapabilityProtocol {
+  func sendBarrier()
+}
+
+public protocol HIDPointer : CoreDevice.DeviceCapabilityProtocol {
+  func send(movedTo: CoreGraphics.CGPoint) async throws
+  func sendBarrier()
+}
+
 public protocol CreateServiceSocketProtocol : CoreDevice.DeviceCapabilityProtocol {
   func fileHandle(toServiceNamed name: Swift.String) async throws -> Foundation.FileHandle
   func fileHandle(toFeatureIdentifiedBy identifier: Swift.String) async throws -> Foundation.FileHandle

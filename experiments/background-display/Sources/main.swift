@@ -523,6 +523,28 @@ struct Main {
       print("ready \(daemon.status())")
       fflush(stdout)
       while true { try? await Task.sleep(nanoseconds: 3_600_000_000_000) }
+    case "hid-attach":
+      // Item 4(b): acquire CoreDevice's keyboard and/or pointer on the device (virtual HID
+      // services that UniversalHIDService creates there), nudge the pointer once, hold, release.
+      let dev = await Device.find(args.flags["device"])
+      let hold = UInt64(args.flags["hold"] ?? "60") ?? 60
+      let parts = (args.flags["parts"] ?? "keyboard,pointer").split(separator: ",").map(String.init)
+      do {
+        let assertion = try await Device.assertion(dev, "bgdisplay hid-attach")
+        var keyboard: (any HIDKeyboard)?
+        var pointer: (any HIDPointer)?
+        if parts.contains("keyboard") { keyboard = try await dev.getImplementation(for: .hid.keyboard); keyboard?.sendBarrier(); log("keyboard acquired") }
+        if parts.contains("pointer") {
+          pointer = try await dev.getImplementation(for: .hid.pointer)
+          try await pointer?.send(movedTo: CGPoint(x: 0.5, y: 0.5)); pointer?.sendBarrier(); log("pointer acquired and moved")
+        }
+        print("attached \(parts.joined(separator: "+")), holding \(hold) s"); fflush(stdout)
+        try? await Task.sleep(nanoseconds: hold * 1_000_000_000)
+        _ = (keyboard, pointer, assertion)
+        print("released")
+      } catch {
+        log("hid-attach failed: \(errorText(error))"); exit(3)
+      }
     case "displays":
       for (id, uid, name, size) in secondaryDisplays(udid: requireUDID(args)) { print("displayId=\(id) uniqueId=\(uid) name=\(name) size=\(size)") }
     case "capture":
