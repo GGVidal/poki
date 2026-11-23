@@ -33,7 +33,13 @@ extension PokiCore {
         }
         let bundle = config.resolveApp(app) ?? app
         var body: [String: JSON] = ["op": .string(op), "bundle": .string(bundle)]
-        if let ref = args["ref"]?.double { body["ref"] = .number(ref) }
+        if let raw = args["ref"] {
+            // A number the model sent: whole, finite and in range, or nothing is sent (Int() traps).
+            guard let d = raw.double, d.isFinite, d == d.rounded(), (0...1_000_000).contains(d) else {
+                return ToolResult(text: "error: ref must be a whole number from background look; nothing was sent.", jpeg: nil, isError: true)
+            }
+            body["ref"] = .number(d)
+        }
         for key in ["name", "text", "direction"] { if let v = args[key]?.string { body[key] = .string(v) } }
         if op != "look", op != "back", op != "escape", body["ref"] == nil {
             return ToolResult(text: "error: \(op) needs ref, a number from background look; nothing was sent.", jpeg: nil, isError: true)

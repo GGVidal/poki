@@ -16,7 +16,7 @@ enum BackgroundRoute {
             return ["error": "invalid argument", "message": "op and bundle are required"]
         }
         let bg = PKBackground.shared()
-        let ref = body?["ref"]?.int ?? -1
+        let ref = body?["ref"]?.double.flatMap { $0.isFinite && $0 == $0.rounded() && abs($0) <= 1_000_000 ? Int($0) : nil } ?? -1
         let before = op == "look" ? nil : digest(bundle)
         let outcome: PKBackgroundOutcome?
         switch op {

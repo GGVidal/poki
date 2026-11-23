@@ -62,6 +62,8 @@ final class BackgroundToolTests: XCTestCase {
         XCTAssertTrue(password.text.hasPrefix("needs_front"), password.text)
         let delete = await core.call("background", ["op": "custom", "app": "com.example.shop", "ref": 3, "name": "Delete"])
         XCTAssertTrue(delete.text.hasPrefix("needs_front"), delete.text)
+        let huge = await core.call("background", ["op": "activate", "app": "com.example.shop", "ref": .number(1e300)])
+        XCTAssertTrue(huge.isError)
         let own = await core.call("background", ["op": "look", "app": "nz.zheha.poki"])
         XCTAssertTrue(own.isError)
         XCTAssertEqual(sent.value, ["look"], "only the look reached the phone")
