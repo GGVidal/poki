@@ -89,24 +89,24 @@
         }
       }
     },
-    "On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free." : {
+    "On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on the iPad asks once to allow this iPhone. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free." : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free."
+            "value" : "On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on the iPad asks once to allow this iPhone. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 iPad 上打开 Poki Lab，在设置中添加智能体并拷贝其地址。之后这台 iPhone 上的 Poki 就能使用 iPad 工作区显示器上的 App，两块屏幕都不受影响。"
+            "value" : "在 iPad 上打开 Poki Lab，在设置中添加智能体并拷贝其地址。iPad 上的 Poki 会请求一次允许这台 iPhone。之后这台 iPhone 上的 Poki 就能使用 iPad 工作区显示器上的 App，两块屏幕都不受影响。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 iPad 上打開 Poki Lab，在設定中新增智慧體並複製其地址。之後這台 iPhone 上的 Poki 就能使用 iPad 工作區顯示器上的 App，兩個螢幕都不受影響。"
+            "value" : "在 iPad 上打開 Poki Lab，在設定中新增智慧體並複製其地址。iPad 上的 Poki 會請求一次允許這台 iPhone。之後這台 iPhone 上的 Poki 就能使用 iPad 工作區顯示器上的 App，兩個螢幕都不受影響。"
           }
         }
       }

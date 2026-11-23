@@ -8,6 +8,7 @@ import SwiftUI
 /// the secret and the iPad's approval rules are exactly those of any other agent of that iPad.
 enum WorkspaceLinkStore {
     private static let account = "experiments.workspaceLink"
+    private static let grantAccount = "experiments.workspaceLink.grant"
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cached: (text: String, link: WorkspaceLink)?
 
@@ -22,12 +23,15 @@ enum WorkspaceLinkStore {
     static func save(_ text: String) -> Bool {
         guard let address = WorkspaceLinkAddress(text) else { return false }
         do { try Keychain.write(Data(address.url.absoluteString.utf8), account: account) } catch { return false }
+        // A grant belongs to the address it was given for.
+        Keychain.delete(grantAccount)
         lock.withLock { cached = nil }
         return true
     }
 
     static func remove() {
         Keychain.delete(account)
+        Keychain.delete(grantAccount)
         lock.withLock { cached = nil }
     }
 
@@ -36,7 +40,10 @@ enum WorkspaceLinkStore {
         guard let address else { return nil }
         return lock.withLock {
             if let cached, cached.text == address.url.absoluteString { return cached.link }
-            let link = WorkspaceLink(address: address)
+            let kept = (try? Keychain.read(grantAccount)).flatMap { try? JSONDecoder().decode(WorkspaceLinkGrant.self, from: $0) }
+            let link = WorkspaceLink(address: address, grant: kept, saveGrant: { grant in
+                if let grant, let data = try? JSONEncoder().encode(grant) { try? Keychain.write(data, account: grantAccount) } else { Keychain.delete(grantAccount) }
+            })
             cached = (address.url.absoluteString, link)
             return link
         }
@@ -103,7 +110,7 @@ struct WorkspaceLinkView: View {
                 if rejected {
                     Text("That is not an agent address from Poki on an iPad.").foregroundStyle(.red)
                 } else {
-                    Text("On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free.")
+                    Text("On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on the iPad asks once to allow this iPhone. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free.")
                 }
             }
             if let saved {
