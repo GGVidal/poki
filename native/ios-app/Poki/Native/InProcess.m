@@ -2979,3 +2979,42 @@ static NSString *PKDaemonReply(NSTimeInterval seconds, void (^send)(void (^)(NSE
 }
 
 @end
+
+#if POKI_EXPERIMENTS
+// Experimental (issue #656), background steps only: the daemon session and AX client Poki holds,
+// for PKBackground. Kept apart from every other experiment's code in this file.
+@implementation PKInProcess (Background)
+- (nullable id)backgroundSession {
+    PKOutcome *refused;
+    uint64_t generation = 0;
+    return [self current:&generation outcome:&refused];
+}
+/// The newest pid Poki has seen for a bundle in this session (from its front-app lookups), or 0.
+- (int)backgroundPIDForBundle:(NSString *)bundle {
+    int found = 0;
+    @synchronized (self) {
+        for (NSNumber *pid in _bundleByPID) if ([_bundleByPID[pid] isEqualToString:bundle] && pid.intValue > found) found = pid.intValue;
+    }
+    return found;
+}
+/// The tree of an app by pid, front or not, with the same bounded request as a front read.
+- (nullable id)backgroundSnapshotForPID:(int)pid code:(NSString **)code {
+    PKOutcome *refused;
+    uint64_t generation = 0;
+    id session = [self current:&generation outcome:&refused];
+    if (!session) { if (code) *code = refused.code ?: @"no_session"; return nil; }
+    id ax = [self accessibilityFor:generation];
+    Class elementClass = NSClassFromString(@"XCAccessibilityElement");
+    SEL make = NSSelectorFromString(@"elementWithProcessIdentifier:");
+    if (![elementClass respondsToSelector:make]) { if (code) *code = @"no_element_api"; return nil; }
+    id element = ((id (*)(id, SEL, int))objc_msgSend)(elementClass, make, pid);
+    return PKRequestSnapshotWithin(10, ax, element, 64, 2000, code);
+}
+- (nullable id)backgroundAccessibility {
+    PKOutcome *refused;
+    uint64_t generation = 0;
+    id session = [self current:&generation outcome:&refused];
+    return session ? [self accessibilityFor:generation] : nil;
+}
+@end
+#endif

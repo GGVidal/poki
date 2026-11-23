@@ -1,0 +1,18 @@
+# Experimental build for prototypes (iPad workspace #689, background work #656). Never an alpha, beta,
+# pre-alpha or release build: no workflow builds it, and it has its own bundle id and name so it never
+# replaces or shares data with Poki. Generate with: xcodegen generate --spec native/ios-app/project-lab.yml
+include: project.yml
+name: PokiLab
+settings:
+  base:
+    POKI_BUNDLE_ID: nz.zheha.poki.lab
+    POKI_APP_GROUP: group.nz.zheha.poki.lab
+    POKI_DISPLAY_NAME: Poki Lab
+targets:
+  Poki:
+    settings:
+      base:
+        # POKI_EXPERIMENTS compiles in the prototype code; Poki's own projects never set it.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) POKI_APP POKI_EXPERIMENTS
+        # The same switch for the Objective-C side (Poki/Native/PKBackground.m).
+        GCC_PREPROCESSOR_DEFINITIONS: $(inherited) POKI_EXPERIMENTS=1

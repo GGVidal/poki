@@ -300,6 +300,17 @@ final class InProcessWDA: HTTPTransport, @unchecked Sendable {
                 return .null
             },
         ]
+        #if POKI_EXPERIMENTS
+        // Experimental (issue #656), Poki Lab only: steps in an app kept in the background.
+        routes["POST /poki/background"] = { body, _ in BackgroundRoute.answer(body) }
+        if let read = routes["GET /wda/activeAppInfo"] {
+            routes["GET /wda/activeAppInfo"] = { body, element in
+                let info = try read(body, element)
+                if let bundle = info["bundleId"]?.string, let pid = info["pid"]?.int { PKBackground.shared().remember(bundle, pid: Int32(pid)) }
+                return info
+            }
+        }
+        #endif
         // The phone side's own request it gave up on (a pid that has not answered), which testmanagerd
         // still serves: LocalRunner sends nothing that needs testmanagerd until it is through.
         lanes = LocalRunner(serve: { [unowned self] request in

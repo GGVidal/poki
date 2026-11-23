@@ -59,6 +59,9 @@ public struct CoreConfig: Sendable {
     /// host turns it off (the app's Testing Options).
     public var quickRead: @Sendable () -> Bool = { true }
     public var screenHistory: ScreenHistorySource?
+    /// Experimental (issue #656): lists the background tool while it answers true. Nil in every
+    /// build but Poki Lab's, where it reads an off-by-default switch.
+    public var background: (@Sendable () -> Bool)?
 
     public init(runnerURL: URL = URL(string: "http://127.0.0.1:8100")!, sensitive: SensitivityRules = SensitivityRules(), approvalWait: Double = 115, toolDeadline: Double = 25, actionCap: Double = 6, readTimeout: Double = 4, busyWait: Double = 2, runnerWait: Double = 15, treeFormat: String = "xml", ownApps: [String] = ["nz.zheha.poki"], accessibilityDeadline: Double = 2, taskGap: Double = 300, humanize: Bool? = nil, screenHistory: ScreenHistorySource? = nil) {
         self.accessibilityDeadline = accessibilityDeadline
@@ -620,15 +623,15 @@ public final class PokiCore: @unchecked Sendable {
     /// The tools as MCP lists them (name, description, inputSchema), as a JSON array, and the
     /// instructions MCP clients get, for a model loop inside the app.
     public static var toolCatalogJSON: String { toolCatalogJSON(includeScreenHistory: false) }
-    public static func toolCatalogJSON(includeScreenHistory: Bool) -> String {
-        JSON.array(includeScreenHistory ? tools + [screenHistoryTool] : tools).serialized()
+    public static func toolCatalogJSON(includeScreenHistory: Bool, includeBackground: Bool = false) -> String {
+        JSON.array((includeScreenHistory ? tools + [screenHistoryTool] : tools) + (includeBackground ? [backgroundTool] : [])).serialized()
     }
     public static var toolInstructions: String { toolInstructions(includeScreenHistory: false) }
-    public static func toolInstructions(includeScreenHistory: Bool) -> String {
-        includeScreenHistory ? instructions + " " + screenHistoryInstructions : instructions
+    public static func toolInstructions(includeScreenHistory: Bool, includeBackground: Bool = false) -> String {
+        (includeScreenHistory ? instructions + " " + screenHistoryInstructions : instructions) + (includeBackground ? " " + backgroundInstructions : "")
     }
     var isScreenHistoryEnabled: Bool { config.screenHistory?.isEnabled() == true }
-    var listedTools: [JSON] { isScreenHistoryEnabled ? Self.tools + [Self.screenHistoryTool] : Self.tools }
+    var listedTools: [JSON] { (isScreenHistoryEnabled ? Self.tools + [Self.screenHistoryTool] : Self.tools) + (isBackgroundEnabled ? [Self.backgroundTool] : []) }
 
     /// A cancelled call answers at once, while the action it had sent may still be running on the
     /// phone. True once the runner is through with it, false if it is not within `timeout`.
@@ -678,6 +681,7 @@ public final class PokiCore: @unchecked Sendable {
     func call(_ name: String, _ args: JSON, session: String? = nil, answerBy: Double? = nil, local: Bool = false, expectedApps: Set<String>? = nil, conversation: String? = nil, byOwnersVoice: Bool = false, localTask: String? = nil) async -> ToolResult {
         if name == "status" { return status() }
         if name == "screen_history" { return await screenHistoryCall(args) }
+        if name == "background" { return await backgroundCall(args) }
         if let tool = hostTools.value.first(where: { $0.name == name }) {
             // Outside the gate: the app's tool makes its own look and do calls, one at a time as any.
             let answer = await tool.run(args.serialized(), session, answerBy.map { max(0, $0 - now() - 3) })

@@ -19,7 +19,7 @@ enum Harness {
     }()
 
     static var instructions: String {
-        [system, PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed), WebTools.instructions].joined(separator: "\n\n")
+        [system, PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed, includeBackground: backgroundOn), WebTools.instructions].joined(separator: "\n\n")
     }
 
     static let splitViewInstructions = """
@@ -127,8 +127,17 @@ enum Harness {
     /// PokiCore's catalog: look, do and status.
     static let phoneTools: [ToolSpec] = catalogTools(includeScreenHistory: false)
 
+    /// Experimental (issue #656): Poki Lab's background tool, while its switch is on.
+    static var backgroundOn: Bool {
+        #if POKI_EXPERIMENTS
+        return BackgroundRoute.isOn
+        #else
+        return false
+        #endif
+    }
+
     private static func catalogTools(includeScreenHistory: Bool) -> [ToolSpec] {
-        guard let data = PokiCore.toolCatalogJSON(includeScreenHistory: includeScreenHistory).data(using: .utf8),
+        guard let data = PokiCore.toolCatalogJSON(includeScreenHistory: includeScreenHistory, includeBackground: backgroundOn).data(using: .utf8),
               let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
         return list.compactMap { tool in
             guard let name = tool["name"] as? String, let description = tool["description"] as? String, let schema = tool["inputSchema"] as? [String: Any] else { return nil }
