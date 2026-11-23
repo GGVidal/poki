@@ -1,0 +1,56 @@
+// swift-interface-format-version: 1.0
+// swift-module-flags: -target arm64-apple-macos27.0 -enable-library-evolution -swift-version 5 -module-name UniversalHID
+//
+// Hand-written subset of Apple's private UniversalHID module (CoreDevice 699.2's nested
+// UniversalHID.framework, version 90.1). Matched against its demangled exports; checked by
+// ../../check-symbols.sh. Only value types that are created and passed back to CoreDevice.
+// These three structs are @frozen in Apple's binary (passed in registers, not indirectly):
+// HIDUsage.init(page:usage:) is `bfi w0, w1, #16, #16` (page low half, usage high half),
+// HIDReport.init(data:) returns its two Data registers unchanged, and HIDServiceProperties
+// getters take (x0 = serviceID, x1 = storage NSMutableDictionary). Declaring them resilient
+// crashed inside NSDictionary.makeIterator.
+import Foundation
+import Swift
+
+@frozen public struct HIDUsage {
+  @usableFromInline internal var _page: Swift.UInt16
+  @usableFromInline internal var _usage: Swift.UInt16
+  public init(page: Swift.Int, usage: Swift.Int)
+  public var page: Swift.Int { get }
+  public var usage: Swift.Int { get }
+}
+
+@frozen public struct HIDReport {
+  @usableFromInline internal var _data: Foundation.Data
+  public init(data: Foundation.Data)
+  public var data: Foundation.Data { get }
+}
+
+@frozen public struct HIDServiceProperties {
+  public var serviceID: Swift.UInt64
+  public var storage: Foundation.NSMutableDictionary
+  public init(usages: [UniversalHID.HIDUsage]) throws
+  public init(serviceID: Swift.UInt64, properties: [Swift.String : Any]) throws
+  public var reportDescriptor: Foundation.Data? { get set }
+  public var dictionaryRepresentation: [Swift.String : Any] { get }
+}
+
+@frozen public struct ReportID {
+  public var rawValue: Swift.UInt8
+}
+
+public struct HIDReportDescriptor {
+  public var data: Foundation.Data { get }
+}
+
+public struct PointerReport {
+  public static var descriptor: UniversalHID.HIDReportDescriptor { get }
+  public static var reportID: UniversalHID.ReportID { get }
+  public static var initialReportBitCount: Swift.Int { get }
+}
+
+public struct KeyboardReport {
+  public static var descriptor: UniversalHID.HIDReportDescriptor { get }
+  public static var reportID: UniversalHID.ReportID { get }
+  public static var initialReportBitCount: Swift.Int { get }
+}

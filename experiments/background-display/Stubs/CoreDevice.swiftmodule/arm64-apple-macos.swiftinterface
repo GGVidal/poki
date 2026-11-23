@@ -16,6 +16,7 @@
 import CoreGraphics
 import Foundation
 import Swift
+import UniversalHID
 import _Concurrency
 
 public struct Capability {
@@ -109,7 +110,22 @@ extension CoreDevice.CapabilityStaticMember where T == CoreDevice.HIDDeviceCapab
   public static var pointer: CoreDevice.CapabilityStaticMember<CoreDevice.PointerHIDCapability> { get }
 }
 
+public struct HIDKeyboardUsageCode {
+  public static var keyboardA: CoreDevice.HIDKeyboardUsageCode { get }
+  public static var keyboardB: CoreDevice.HIDKeyboardUsageCode { get }
+  public static var keyboardC: CoreDevice.HIDKeyboardUsageCode { get }
+  public static var keyboardDeleteOrBackspace: CoreDevice.HIDKeyboardUsageCode { get }
+}
+
+public enum HIDButtonState {
+  case up
+  case down
+  public init?(rawValue: Swift.UInt8)
+  public var rawValue: Swift.UInt8 { get }
+}
+
 public protocol HIDKeyboard : CoreDevice.DeviceCapabilityProtocol {
+  func send(key: CoreDevice.HIDKeyboardUsageCode, state: CoreDevice.HIDButtonState) throws
   func sendBarrier()
 }
 
@@ -222,4 +238,31 @@ extension CoreDevice.RemoteDevice {
 
 public enum DeviceOrientation {
   case unknown
+}
+
+// UniversalHIDService (the device's "Universal HID Service Pool"): generic virtual HID
+// services built from HIDServiceProperties (usages and/or a report descriptor), then fed
+// raw reports. CoreDeviceError lives in CoreDeviceUtilities under module name CoreDevice.
+public struct CoreDeviceError : Swift.Error {
+}
+
+public protocol UniversalHIDService : CoreDevice.DeviceCapabilityProtocol {
+  func createService(properties: UniversalHID.HIDServiceProperties) async throws(CoreDevice.CoreDeviceError) -> Swift.UInt64
+  func send(report: UniversalHID.HIDReport, to: Swift.UInt64) throws(CoreDevice.CoreDeviceError)
+  func removeService(serviceID: Swift.UInt64) async throws(CoreDevice.CoreDeviceError)
+  func sendBarrier()
+}
+
+extension CoreDevice.UniversalHIDService {
+  public func createService(usages: [UniversalHID.HIDUsage]) async throws(CoreDevice.CoreDeviceError) -> Swift.UInt64
+}
+
+public struct UniversalHIDServiceCapability : CoreDevice.DeviceCapability {
+  public typealias ProtocolType = any CoreDevice.UniversalHIDService
+  public typealias ImplType = Swift.Never
+  public static var capability: CoreDevice.Capability { get }
+}
+
+extension CoreDevice.CapabilityStaticMember where T : CoreDevice.DeviceCapability {
+  public static var universalHidService: CoreDevice.CapabilityStaticMember<CoreDevice.UniversalHIDServiceCapability> { get }
 }

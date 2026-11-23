@@ -9,12 +9,13 @@ BIN=.build/bgdisplay
 EXPORTS=$(mktemp)
 for f in "$PF/CoreDevice.framework/Versions/A/CoreDevice" \
          "$PF/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities" \
-         "$PF/CoreDevice.framework/Versions/A/Frameworks/CoreDeviceMediaStreamSupport.framework/Versions/A/CoreDeviceMediaStreamSupport"; do
+         "$PF/CoreDevice.framework/Versions/A/Frameworks/CoreDeviceMediaStreamSupport.framework/Versions/A/CoreDeviceMediaStreamSupport" \
+         "$PF/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID"; do
   nm -gU "$f" | awk '{print $3}' >> "$EXPORTS"
 done
 sort -u -o "$EXPORTS" "$EXPORTS"
 missing=0; total=0
-for s in $(nm -u "$BIN" | grep -E '^_\$s(10CoreDevice|28CoreDeviceMediaStreamSupport|19CoreDeviceProtocols)'); do
+for s in $(nm -u "$BIN" | grep -E '^_\$s(10CoreDevice|28CoreDeviceMediaStreamSupport|19CoreDeviceProtocols|12UniversalHID)'); do
   total=$((total+1))
   grep -qxF "$s" "$EXPORTS" || { echo "MISSING $(echo "$s" | xcrun swift-demangle)"; missing=$((missing+1)); }
 done

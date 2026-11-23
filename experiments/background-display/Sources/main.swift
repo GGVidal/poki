@@ -6,6 +6,7 @@
 
 import CoreDevice
 import CoreDeviceMediaStreamSupport
+import UniversalHID
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -539,11 +540,164 @@ struct Main {
           try await pointer?.send(movedTo: CGPoint(x: 0.5, y: 0.5)); pointer?.sendBarrier(); log("pointer acquired and moved")
         }
         print("attached \(parts.joined(separator: "+")), holding \(hold) s"); fflush(stdout)
+        if let kb = keyboard, args.flags["type-abc"] != nil {
+          // control test of CoreDevice's own keyboard path: types "abc" after 3 s
+          try? await Task.sleep(nanoseconds: 3_000_000_000)
+          for k in [HIDKeyboardUsageCode.keyboardA, .keyboardB, .keyboardC] {
+            do { try kb.send(key: k, state: .down); kb.sendBarrier(); usleep(40_000); try kb.send(key: k, state: .up); kb.sendBarrier(); usleep(40_000) }
+            catch { log("keyboard send failed: \(errorText(error))") }
+          }
+          print("typed abc"); fflush(stdout)
+        }
+        if let kb = keyboard, let n = args.flags["backspace"].flatMap({ Int($0) }) {
+          try? await Task.sleep(nanoseconds: 1_000_000_000)
+          for _ in 0..<n { try? kb.send(key: .keyboardDeleteOrBackspace, state: .down); kb.sendBarrier(); usleep(40_000); try? kb.send(key: .keyboardDeleteOrBackspace, state: .up); kb.sendBarrier(); usleep(40_000) }
+          print("backspaced \(n)"); fflush(stdout)
+        }
         try? await Task.sleep(nanoseconds: hold * 1_000_000_000)
         _ = (keyboard, pointer, assertion)
         print("released")
       } catch {
         log("hid-attach failed: \(errorText(error))"); exit(3)
+      }
+    case "touch":
+      // Standalone digitizer on the device (no display stream): stdin "t x y [target]",
+      // "s x1 y1 x2 y2 [target]" (normalized), "w s", "q". Target defaults to mainScreen.
+      let dev = await Device.find(args.flags["device"])
+      do {
+        let assertion = try await Device.assertion(dev, "bgdisplay touch")
+        let dig = try await dev.getImplementation(for: .hid.digitizer)
+        print("digitizer acquired"); fflush(stdout)
+        while let line = readLine() {
+          let w = line.split(separator: " ").map(String.init)
+          guard let c = w.first else { continue }
+          if c == "q" { break }
+          do {
+            switch c {
+            case "t":
+              let t = Device.target(w.count > 3 ? w[3] : "main"); let pt = DigitizerPoint(x: Double(w[1])!, y: Double(w[2])!)
+              try dig.send(pointOne: pt, pointTwo: nil, eventType: .start, edge: .none, target: t); dig.sendBarrier()
+              try await Task.sleep(nanoseconds: 80_000_000)
+              try dig.send(pointOne: pt, pointTwo: nil, eventType: .end, edge: .none, target: t); dig.sendBarrier()
+            case "s":
+              let t = Device.target(w.count > 5 ? w[5] : "main")
+              let a = (Double(w[1])!, Double(w[2])!), b = (Double(w[3])!, Double(w[4])!)
+              try dig.send(pointOne: DigitizerPoint(x: a.0, y: a.1), pointTwo: nil, eventType: .start, edge: .none, target: t); dig.sendBarrier()
+              for i in 1...15 {
+                let f = Double(i) / 15; try await Task.sleep(nanoseconds: 16_000_000)
+                try dig.send(pointOne: DigitizerPoint(x: a.0 + (b.0 - a.0) * f, y: a.1 + (b.1 - a.1) * f), pointTwo: nil, eventType: .position, edge: .none, target: t); dig.sendBarrier()
+              }
+              try dig.send(pointOne: DigitizerPoint(x: b.0, y: b.1), pointTwo: nil, eventType: .end, edge: .none, target: t); dig.sendBarrier()
+            case "w": try await Task.sleep(nanoseconds: UInt64((Double(w[1]) ?? 1) * 1e9))
+            default: log("unknown \(line)")
+            }
+            print("ok \(line)"); fflush(stdout)
+          } catch { print("error \(line): \(errorText(error))"); fflush(stdout) }
+        }
+        _ = assertion
+      } catch { log("touch failed: \(errorText(error))"); exit(3) }
+    case "uhid-desc":
+      // UniversalHID's own report layouts that dtuhidd decodes ("No gesture for report ID"):
+      func hex(_ d: Data) -> String { d.map { String(format: "%02X", $0) }.joined(separator: ",") }
+      print("pointer reportID=\(PointerReport.reportID.rawValue) bits=\(PointerReport.initialReportBitCount) descriptor=\(hex(PointerReport.descriptor.data))")
+      print("keyboard reportID=\(KeyboardReport.reportID.rawValue) bits=\(KeyboardReport.initialReportBitCount) descriptor=\(hex(KeyboardReport.descriptor.data))")
+    case "hid-mouse":
+      // Step 4: a generic mouse through UniversalHIDService.createService(properties:).
+      // --kind relative (buttons,dx,dy) | absolute (buttons, X u16le, Y u16le, 0...32767) |
+      // usages (createService(usages:) with page 1 usage 2, CoreDevice's own descriptor).
+      // Reads commands on stdin: "m dx dy" (relative), "a x y" (absolute, 0...1),
+      // "c" click, "d"/"u" button down/up, "w s" wait s seconds, "q" remove and exit.
+      let dev = await Device.find(args.flags["device"])
+      let kind = args.flags["kind"] ?? "relative"
+      let relative: [UInt8] = [0x05,0x01,0x09,0x02,0xA1,0x01,0x09,0x01,0xA1,0x00,0x05,0x09,0x19,0x01,0x29,0x03,0x15,0x00,0x25,0x01,0x95,0x03,0x75,0x01,0x81,0x02,0x95,0x01,0x75,0x05,0x81,0x03,0x05,0x01,0x09,0x30,0x09,0x31,0x15,0x81,0x25,0x7F,0x75,0x08,0x95,0x02,0x81,0x06,0xC0,0xC0]
+      let absolute: [UInt8] = [0x05,0x01,0x09,0x02,0xA1,0x01,0x09,0x01,0xA1,0x00,0x05,0x09,0x19,0x01,0x29,0x03,0x15,0x00,0x25,0x01,0x95,0x03,0x75,0x01,0x81,0x02,0x95,0x01,0x75,0x05,0x81,0x03,0x05,0x01,0x09,0x30,0x09,0x31,0x15,0x00,0x26,0xFF,0x7F,0x75,0x10,0x95,0x02,0x81,0x02,0xC0,0xC0]
+      do {
+        let assertion = try await Device.assertion(dev, "bgdisplay hid-mouse")
+        let pool = try await dev.getImplementation(for: .universalHidService)
+        // Boot keyboard (report = modifiers, reserved, 6 key usages), for typing tests.
+        let keyboard: [UInt8] = [0x05,0x01,0x09,0x06,0xA1,0x01,0x05,0x07,0x19,0xE0,0x29,0xE7,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x08,0x81,0x02,0x95,0x01,0x75,0x08,0x81,0x01,0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x65,0x05,0x07,0x19,0x00,0x29,0x65,0x81,0x00,0xC0]
+        let usages = [HIDUsage(page: 1, usage: kind == "keyboard" ? 6 : 2)]
+        var props = try HIDServiceProperties(usages: usages)
+        if kind != "usages" { props.reportDescriptor = Data(kind == "absolute" ? absolute : kind == "keyboard" ? keyboard : relative) }
+        // Service ids follow CoreDevice.HIDServiceID: keyboards 0x200+n (main 0x200), pointers
+        // 0x300+n (main 0x300), read from CoreDeviceUtilities' HIDServiceID.keyboard/pointer.
+        if let sid = args.flags["sid"].flatMap({ UInt64($0.replacingOccurrences(of: "0x", with: ""), radix: 16) }) { props.serviceID = sid }
+        if let hex = args.flags["descriptor"] { props.reportDescriptor = Data(hex.split(separator: ",").compactMap { UInt8($0, radix: 16) }) }
+        // --set key=value[,key=value]: extra service properties (ints when numeric, true/false, else strings)
+        if let extra = args.flags["set"] {
+          for kv in extra.split(separator: ",") {
+            let p = kv.split(separator: "=", maxSplits: 1).map(String.init); guard p.count == 2 else { continue }
+            let v: Any = Int(p[1]).map { $0 as Any } ?? (p[1] == "true" ? true as Any : p[1] == "false" ? false as Any : p[1] as Any)
+            props.storage[p[0]] = v
+          }
+        }
+        log("properties: \(props.dictionaryRepresentation)")
+        let sid: UInt64
+        do { sid = try await pool.createService(properties: props) } catch { log("createService failed: \(errorText(error))"); exit(3) }
+        print("created service \(sid) kind=\(kind)"); fflush(stdout)
+        var buttons: UInt8 = 0
+        func send(_ bytes: [UInt8]) {
+          do { try pool.send(report: HIDReport(data: Data(bytes)), to: sid); pool.sendBarrier() }
+          catch { log("send failed: \(errorText(error))") }
+        }
+        func rel(_ dx: Int, _ dy: Int) {
+          var x = dx, y = dy
+          repeat {
+            let sx = max(-127, min(127, x)), sy = max(-127, min(127, y))
+            send([buttons, UInt8(bitPattern: Int8(sx)), UInt8(bitPattern: Int8(sy))]); x -= sx; y -= sy
+          } while x != 0 || y != 0
+        }
+        var lastAbs = (0.5, 0.5)
+        func abs(_ fx: Double, _ fy: Double) {
+          lastAbs = (fx, fy)
+          let x = UInt16(max(0, min(32767, fx * 32767))), y = UInt16(max(0, min(32767, fy * 32767)))
+          send([buttons, UInt8(x & 0xff), UInt8(x >> 8), UInt8(y & 0xff), UInt8(y >> 8)])
+        }
+        func again() { if kind == "absolute" { abs(lastAbs.0, lastAbs.1) } else { rel(0, 0) } }
+        while let line = readLine() {
+          let w = line.split(separator: " ").map(String.init)
+          guard let c = w.first else { continue }
+          switch c {
+          case "m": rel(Int(w[1]) ?? 0, Int(w[2]) ?? 0)
+          case "a": abs(Double(w[1]) ?? 0.5, Double(w[2]) ?? 0.5)
+          case "d": buttons = 1; again()
+          case "u": buttons = 0; again()
+          case "c": buttons = 1; again(); usleep(80_000); buttons = 0; again()
+          case "w": try? await Task.sleep(nanoseconds: UInt64((Double(w[1]) ?? 1) * 1e9))
+          case "k":
+            // type ASCII text: a-z, A-Z, 0-9, space, . , - (boot keyboard usages)
+            for ch in line.dropFirst(2) {
+              var mod: UInt8 = 0; var code: UInt8 = 0
+              switch ch {
+              case "a"..."z": code = 4 + UInt8(ch.asciiValue! - 97)
+              case "A"..."Z": code = 4 + UInt8(ch.asciiValue! - 65); mod = 2
+              case "1"..."9": code = 30 + UInt8(ch.asciiValue! - 49)
+              case "0": code = 39
+              case " ": code = 44
+              case ".": code = 55
+              case ",": code = 54
+              case "-": code = 45
+              default: continue
+              }
+              send([mod, 0, code, 0, 0, 0, 0, 0]); usleep(30_000); send([0, 0, 0, 0, 0, 0, 0, 0]); usleep(30_000)
+            }
+          case "K":
+            // named key: enter, tab, esc, bs, cmd-h (Home), cmd-space
+            let named: [String: (UInt8, UInt8)] = ["enter": (0, 40), "tab": (0, 43), "esc": (0, 41), "bs": (0, 42), "cmd-h": (8, 11), "cmd-space": (8, 44), "globe-c": (0, 0)]
+            if let (m, k) = named[w.count > 1 ? w[1] : ""] { send([m, 0, k, 0, 0, 0, 0, 0]); usleep(60_000); send([0, 0, 0, 0, 0, 0, 0, 0]) }
+          case "r":
+            // raw report bytes in hex, e.g. "r 00 00 04 00 00 00 00 00"
+            send(w.dropFirst().compactMap { UInt8($0, radix: 16) })
+          case "q": break
+          default: log("unknown \(line)")
+          }
+          if c == "q" { break }
+          print("ok \(line)"); fflush(stdout)
+        }
+        do { try await pool.removeService(serviceID: sid); print("removed service \(sid)") } catch { log("removeService failed: \(errorText(error))") }
+        _ = assertion
+      } catch {
+        log("hid-mouse failed: \(errorText(error))"); exit(3)
       }
     case "displays":
       for (id, uid, name, size) in secondaryDisplays(udid: requireUDID(args)) { print("displayId=\(id) uniqueId=\(uid) name=\(name) size=\(size)") }
