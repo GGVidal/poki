@@ -31,6 +31,7 @@ enum Coverage {
             NSLayoutConstraint.activate([sceneLabel.topAnchor.constraint(equalTo: window.safeAreaLayoutGuide.topAnchor), sceneLabel.leadingAnchor.constraint(equalTo: window.leadingAnchor, constant: 4)])
             NSLayoutConstraint.activate([label.topAnchor.constraint(equalTo: window.safeAreaLayoutGuide.topAnchor), label.trailingAnchor.constraint(equalTo: window.trailingAnchor, constant: -4)])
         }
+        KickProbe.install(root: root)
         return root
     }
 }
@@ -100,7 +101,7 @@ final class CtxDelegate: NSObject, UIContextMenuInteractionDelegate {
 
 final class DetailController: UIViewController {
     override func viewDidLoad() {
-        super.viewDidLoad(); title = "Detail"; view.backgroundColor = .systemBackground
+        super.viewDidLoad(); title = "Detail"; view.backgroundColor = .systemBackground; DetailTable.install(in: self)
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "DetailItem", style: .plain, target: self, action: #selector(item))
         navigationItem.rightBarButtonItem?.accessibilityIdentifier = "cov.detailitem"
     }
@@ -190,4 +191,53 @@ final class WebCoverageController: UIViewController, WKScriptMessageHandler {
         web.loadHTMLString(html, baseURL: nil)
     }
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) { Fix.log("\(m.body)") }
+}
+
+final class DetailTable: NSObject, UITableViewDataSource {
+    static let shared = DetailTable()
+    static func install(in vc: UIViewController) {
+        let t = UITableView(frame: .zero, style: .plain); t.accessibilityIdentifier = "cov.detailtable"
+        t.dataSource = shared; t.register(UITableViewCell.self, forCellReuseIdentifier: "c")
+        t.translatesAutoresizingMaskIntoConstraints = false; vc.view.addSubview(t)
+        NSLayoutConstraint.activate([t.topAnchor.constraint(equalTo: vc.view.safeAreaLayoutGuide.topAnchor, constant: 40), t.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor), t.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor), t.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor)])
+    }
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { 40 }
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let c = tableView.dequeueReusableCell(withIdentifier: "c", for: indexPath)
+        c.textLabel?.text = "Detail row \(indexPath.row)"; c.accessibilityIdentifier = "DetailRow \(indexPath.row)"; return c
+    }
+}
+
+// Diagnostic only (launch argument -kick <mode>): after the scene enters the background, report the navigation
+// state through Fix.log, then run one in-app layout call so the test can tell what a pending pop is waiting for.
+enum KickProbe {
+    static var token: NSObjectProtocol?
+    static func install(root: UITabBarController) {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-kick"), i + 1 < args.count else { return }
+        let mode = args[i + 1]
+        token = NotificationCenter.default.addObserver(forName: UIScene.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            func nav() -> UINavigationController? { root.selectedViewController as? UINavigationController }
+            func state(_ tag: String) {
+                guard let n = nav() else { Fix.log("K \(tag) no nav"); return }
+                let d = (n.value(forKey: "needsDeferredTransition") as? NSNumber)?.intValue ?? -1
+                Fix.log("K \(tag) \(mode) count \(n.viewControllers.count) navNL \(n.view.layer.needsLayout() ? 1 : 0) barNL \(n.navigationBar.layer.needsLayout() ? 1 : 0) deferred \(d) coord \(n.transitionCoordinator == nil ? 0 : 1)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { state("t5") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                guard let n = nav() else { return }
+                switch mode {
+                case "navView": n.view.layoutIfNeeded()
+                case "navBar": n.navigationBar.layoutIfNeeded()
+                case "table": n.topViewController?.view.subviews.first(where: { $0 is UITableView })?.layoutIfNeeded()
+                case "window": n.view.window?.layoutIfNeeded()
+                case "flush": CATransaction.flush()
+                case "needs": n.view.window?.setNeedsLayout()
+                default: break
+                }
+                state("t8kick")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 11) { state("t11") }
+        }
+    }
 }

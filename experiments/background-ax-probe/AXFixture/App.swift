@@ -269,7 +269,7 @@ final class ControlsController: LoggingController, UITableViewDataSource, UITabl
         NSLog("FIXLOG trace keyJ state=%d hidden=%d key=%d activation=%d layerCtx=%@ ctxId=%u point=%@", UIApplication.shared.applicationState.rawValue, w?.isHidden == true ? 1 : 0, w?.isKeyWindow == true ? 1 : 0, w?.windowScene?.activationState.rawValue ?? -9, w?.layer.value(forKey: "context") == nil ? "nil" : "yes", (w?.value(forKey: "_contextId") as? UInt32) ?? 0, NSCoder.string(for: b.accessibilityActivationPoint))
         b.perform(NSSelectorFromString("_keyboardActivate"))
     }
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) { Fix.log("pressesBegan \(presses.first?.key?.characters ?? "?")"); super.pressesBegan(presses, with: event) }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) { Fix.log("pressesBegan type=\(presses.first?.type.rawValue ?? -1) key=\(presses.first?.key?.characters ?? "-")"); super.pressesBegan(presses, with: event) }
     @objc func bar() { Fix.log("barButton -> push level 2"); navigationController?.pushViewController(LevelTwoController(), animated: true) }
     @objc func plain() { Fix.log("button"); NSLog("FIXLOG stack %@", Thread.callStackSymbols.prefix(40).joined(separator: " | ")) }
     @objc func pushNext() { Fix.log("push.requested"); navigationController?.pushViewController(LevelTwoController(), animated: true) }

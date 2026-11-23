@@ -12,10 +12,11 @@ Poki operates an app that stays in the background while the owner keeps using th
 - Background Calculator read and operated while Settings stayed in front: 28 of 28 presses landed and were read back.
 - The same while the owner used other apps at the same time.
 - Third-party apps can be read, text can be typed, lists scroll, and an app launched hidden can be attached.
+- The navigation back button works in a background app (0.2 s, Settings in front): an escape action on the navigation bar, then one audit read through testmanagerd so the app lays out.
 
 ## Open
 
-- Back buttons and tab bars have no background action yet (action 2025 crashed apps, so the unknown-action sweep is simulator only).
+- Not yet delivered in the background: plain UIButton, switch, stepper, table and collection rows, tab bar, button menus, Return and web content. Action 2025 crashed apps, so the unknown-action sweep is simulator only.
 - Some screen changes take about 60 s to show in the background tree.
 - Tap-only controls lose their render context once the scene is suspended. See RUN.md for the gate and what was tried.
 

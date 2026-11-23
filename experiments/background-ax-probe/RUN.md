@@ -450,3 +450,19 @@ an outside way into `_keyboardActivate`, which only the switch's FKA key command
   `UISwitchAccessibility _fkaSwitchOn/_fkaSwitchOff` and `UIStepperAccessibility` key-command plus/minus. `_enqueueHIDEvent:` is called only by
   `_keyboardActivate` and `_UIRemoteViewControllerLegacyImpl __trampolineButtonPressData:`. So there's no outside path to an in-process tap
   for buttons, cells or tabs.
+
+## Background back button (Nov 22 2026, 2 pm to 5:50 pm ET)
+
+Our fixture (`local.pokimcp.axfixture`) on the UIKit tab with Detail pushed, kept running in the background by the testmanagerd background assertion, with Settings in front throughout.
+
+- Escape (action 2013) on the fixture's navigation bar is accepted in the background, but the pop is held as a deferred transition until the navigation controller's view lays out. Without a layout pass the fixture stays on Detail.
+- Reading parameterized attribute 95005 on the application element with `{"AXAuditClippingTest": {"AXAuditShouldRunTestOption": true}}` runs the system accessibility audit's layout pass (`_axAuditCheckDynamicTextSupport:andClippingIssues:spinRunloop:` lays out the frontmost view controller's view), and that releases the held pop.
+- In the simulator the direct `AXUIElementCopyParameterizedAttributeValue` call from the test runner works. On the phone it is refused: the runner gets permission denied for the `com.apple.iphone.axserver` port (error -25215).
+- The route that works on both is the testmanagerd request `_XCT_fetchParameterizedAttributeForElement:attributes:parameter:reply:` with an NSNumber attribute. On the phone (iPhone 17 Pro, iOS 27.3) it answered in 0.2 s with error 13 `kAXErrorNoValue` (no clipping issues found), the pop completed within a second, Settings stayed in front, and the test session kept answering.
+- The string-named request `_XCT_fetchParameterizedAttribute:forElement:parameter:reply:` cannot carry 95005: testmanagerd maps the string through the named `kAXXC...` table, which has no audit entry, so it becomes "(null)". An NSNumber sent to that request is dropped by XPC decoding.
+- The DynamicText option (`AXAuditDynamicTextSupportTest`) also pops, but its reply never reaches the runner (30 s timeout while testmanagerd logs the value in about 0.6 s).
+- No persistent side effect found: frames unchanged after the audit, no crash reports, testmanagerd pid unchanged.
+- Action 2010 (press) on a UIButton, switch, stepper, tab bar button and menu button still fails in the background (`kAXErrorFailure`), and the audit pass changes nothing there, since nothing is queued.
+- Closed routes this session: in-process UIPress via actions 4000 to 4007 (no event without a window context; works only in the foreground); XCTest `performAccessibilityAudit` (error -902 "Invalid target app": `-[AXAuditAutomationSupport _runAudit]` in testmanagerd only accepts apps in the focused applications list, attribute 1102).
+
+The phone runs installed only the fixture and its test runner; both were uninstalled after each run.

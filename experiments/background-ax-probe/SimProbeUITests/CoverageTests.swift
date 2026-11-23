@@ -323,3 +323,111 @@ extension SimFixtureTests {
         say("FB | Settings after: \(settingsState())")
     }
 }
+
+extension SimFixtureTests {
+    // Tight turn: fire activation (daemon launch, no wait), poll element-at-point until it is the target's,
+    // tap, then fire the return activation immediately (optionally without waiting for the handler).
+    func testTT_tightTurn() {
+        background = true
+        _ = PBHelper.setReduceMotion(true)
+        fixture.launchArguments = []; fixture.launch(); sleep(2)
+        guard let bf = find(snap(), { $0.label == "Plain button" && $0.elementType == .button })?.frame else { say("TT | no button"); return }
+        let p = CGPoint(x: bf.midX, y: bf.midY)
+        let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10); sleep(2)
+        _ = PBHelper.requestBackgroundAssertion(forPID: pid)
+        say("TT | pid at point while Settings in front: \(PBHelper.pid(at: p)) (fixture \(pid))")
+        for i in 1...10 {
+            let before = lastEvent()
+            let t0 = Date()
+            let fx = fixture
+            DispatchQueue.global().async { fx.activate() }
+            var polls = 0; var seen = -1
+            while Date().timeIntervalSince(t0) < 8 { polls += 1; seen = Int(PBHelper.pid(at: p)); if seen == Int(pid) { break }; usleep(15_000) }
+            let t1 = Date()
+            let r = PBHelper.synthTap(at: p, timeout: 3)
+            let t2 = Date()
+            let st = settings
+            DispatchQueue.global().async { st.activate() }
+            let t3 = Date()
+            sleep(2)
+            say("TT | run \(i) | ready after \(ms(t0, t1)) ms (\(polls) polls, pid \(seen)) | tap \(r) \(ms(t1, t2)) ms | return fired \(ms(t2, t3)) ms | handler: \(lastEvent() == before ? "none" : lastEvent())")
+            sleep(1)
+        }
+        _ = PBHelper.setReduceMotion(false)
+    }
+}
+
+extension SimFixtureTests {
+    func patient(_ name: String, check: () -> String) {
+        var last = 0
+        for t in [5, 30, 60, 120] { sleep(UInt32(t - last)); last = t; say("PT | \(name) | +\(t)s | \(check())") }
+    }
+    func testPT_back() {
+        covLaunch(tab: "UIKit", presenter: "cov.push", bg: true)
+        let before = lastEvent()
+        tryAct("back: 2013 on nav bar", find(snap()) { $0.elementType == .navigationBar }, 2013)
+        patient("back via escape") { "lastEvent=\(lastEvent()) changed=\(lastEvent() != before) nav=\(find(snap()) { $0.elementType == .navigationBar }?.identifier ?? "nil")" }
+    }
+    func testPT_swiftUIMenu() {
+        covLaunch(tab: "SwiftUI", bg: true)
+        tryAct("SwiftUI Menu open (2010)", find(snap()) { $0.label == "SUIMenu" }, 2010)
+        var fired = false
+        patient("SwiftUI menu item") {
+            if !fired, let item = find(snap(), { $0.label == "SUIMenuItem" }) {
+                var err: NSString?; let ok = PBHelper.pressSnapshot(item, action: 2010, value: nil, error: &err); usleep(800_000); fired = true
+                return "item found, 2010 \(ok ? "ok" : "fail") lastEvent=\(lastEvent())"
+            }
+            return "item \(fired ? "pressed earlier" : "not found") lastEvent=\(lastEvent())"
+        }
+    }
+    func testPT_return() {
+        covLaunch(tab: "UIKit", bg: true)
+        guard let f = find(snap(), { $0.identifier == "cov.field" }) else { say("PT | no field"); return }
+        var err: NSString?
+        _ = PBHelper.setAttribute("XC_kAXXCAttributeValue", value: "hello" as NSString, onSnapshot: f, error: &err)
+        let before = lastEvent()
+        tryAct("field: 2054", find(snap()) { $0.identifier == "cov.field" }, 2054)
+        patient("Return via 2054") { "lastEvent=\(lastEvent()) changed=\(lastEvent() != before)" }
+    }
+}
+
+extension SimFixtureTests {
+    func sendUsage(_ page: UInt, _ usage: UInt, _ input: String = "") -> String {
+        guard let app = snap() else { return "no app" }
+        var rs: [String] = []
+        for down in [true, false] { var e: NSString?; rs.append(PBHelper.pressSnapshot(app, action: 2034, value: PBHelper.keyEventUsagePage(page, usage: usage, input: input, down: down), error: &e) ? "ok" : "fail"); usleep(120_000) }
+        return rs.joined(separator: "/")
+    }
+    // SP: Select presses. Focus (5305 + 5310 + 2044) on a control, then key events carrying consumer / generic-desktop usages.
+    func selectPressRoute(_ bg: Bool) {
+        background = bg
+        fixture.launchArguments = ["-FullKeyboardAccessUsesSimulatedKeyboardForAutomation", "YES"]
+        fixture.launch(); sleep(2)
+        let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        if bg { _ = PBHelper.requestBackgroundAssertion(forPID: pid); settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10); sleep(1) }
+        let fb = bg ? String(frontSummary().prefix(40)) : "-"
+        let usages: [(String, UInt, UInt, String)] = [
+            ("consumer MenuPick 0x41", 0x0C, 0x41, ""), ("consumer Select? 0x80", 0x0C, 0x80, ""), ("consumer Menu 0x40", 0x0C, 0x40, ""),
+            ("consumer PlayPause 0xCD", 0x0C, 0xCD, ""), ("generic-desktop Select 0x3E", 0x01, 0x3E, ""), ("generic-desktop SystemMenuSelect 0x89", 0x01, 0x89, ""),
+            ("keyboard Enter 0x58", 0x07, 0x58, "\r"), ("keyboard Select 0x77", 0x07, 0x77, ""),
+        ]
+        let targets: [(String, (XCUIElementSnapshot) -> Bool)] = [
+            ("plain button", { $0.label == "Plain button" && $0.elementType == .button }),
+            ("table cell", { $0.elementType == .cell }),
+            ("tab Second", { $0.label == "Second" && $0.elementType == .button }),
+        ]
+        for (tn, tp) in targets {
+            for (un, page, usage, input) in usages {
+                guard let e = find(snap(), tp) else { say("SP | \(tn) | not found"); break }
+                let f = fkaFocus(e); usleep(500_000)
+                let before = lastEvent(); let r = sendUsage(page, usage, input); usleep(1_000_000)
+                say("SP | \(tn) | focus \(f) | \(un) \(r) | handler: \(lastEvent() == before ? "none" : lastEvent())")
+                if lastEvent().contains("button") || lastEvent().contains("row") || lastEvent().contains("tab") || lastEvent().contains("Second") { break }
+            }
+        }
+        if bg { say("SP | front before: \(fb) | after: \(String(frontSummary().prefix(40)))") }
+    }
+    func testSP_foreground() { selectPressRoute(false) }
+    func testSP_background() { selectPressRoute(true) }
+}
