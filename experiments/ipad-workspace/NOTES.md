@@ -35,6 +35,17 @@ installed from the Mac Studio at 9:34 am ET; never an alpha or beta build.
   Wireless displays appear to be mirror only on iPadOS. A wired display or an HDMI dummy plug is the
   only known route to an extended desktop, and the LabDisplay layer still needs one to be tested.
   SpringBoard's own log line for display 3 is unread (needs the owner's `sudo log collect`).
+- **Why it mirrors (iPad log, 10:00 am ET).** The CoreDevice display is a FigVirtualDisplay
+  (AirPlay machinery). backboardd tags it "(AirPlay)", sees MirroringMode 0, and clones the LCD to it.
+  SpringBoardFoundation `-[SBExternalDisplayDefaults displaySupportsExtendedDisplayMode:]` lets a
+  display that is not wired extend only when the SpringBoard default `allowWirelessDisplays` is YES
+  (internal prototype setting; see also `SBExtendedDisplayOverrideSupportForAirPlayAndDontFileRadars`).
+  No Developer setting, profile key, feature flag or devicectl command sets it. Writing it would be a
+  system modification and was not done.
+- **AirPlay to the Mac Studio (10:14 am ET)** behaves the same: display 4, 3840x2160, wireless,
+  mirrored, no UIScreen, no picture.
+- **HID.** dtuhidd decodes UniversalHID's own KeyboardReport/PointerReport types by report id and
+  drops boot-protocol reports; sending those types is the next HID step.
 - **Earlier reading.** Keyboard and pointer presence is not enough; the virtual display itself may be
   the wall. Next: the display service's other modes and options, SpringBoard's log for display 3, and
   whether Poki Lab sees a UIScreen or scene session for display 3 so it could put its own window there.
