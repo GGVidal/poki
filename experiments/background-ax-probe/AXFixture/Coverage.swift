@@ -32,6 +32,7 @@ enum Coverage {
             NSLayoutConstraint.activate([label.topAnchor.constraint(equalTo: window.safeAreaLayoutGuide.topAnchor), label.trailingAnchor.constraint(equalTo: window.trailingAnchor, constant: -4)])
         }
         KickProbe.install(root: root)
+        KeyDump.install(root: root)
         return root
     }
 }
@@ -46,11 +47,13 @@ final class UIKitCoverageController: UIViewController, UISearchBarDelegate, UIPi
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "UIKit"; view.backgroundColor = .systemBackground
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "BarItem", primaryAction: UIAction { _ in Fix.log("baritem") })
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "BarItem", primaryAction: UIAction { _ in Fix.log("baritem"); fixStack("baritem") })
         navigationItem.rightBarButtonItem?.accessibilityIdentifier = "cov.baritem"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "BarMenu", menu: UIMenu(children: [UIAction(title: "BarMenu One") { _ in Fix.log("bar menu one") }, UIAction(title: "BarMenu Two") { _ in Fix.log("bar menu two") }]))
+        navigationItem.leftBarButtonItem?.accessibilityIdentifier = "cov.barmenu"
 
         var cfg = UIButton.Configuration.filled(); cfg.title = "Configured"
-        let configured = UIButton(configuration: cfg, primaryAction: UIAction { _ in Fix.log("configured button") }); configured.accessibilityIdentifier = "cov.configured"
+        let configured = UIButton(configuration: cfg, primaryAction: UIAction { _ in Fix.log("configured button"); fixStack("configured") }); configured.accessibilityIdentifier = "cov.configured"
         let actionBtn = UIButton(type: .system); actionBtn.setTitle("UIAction button", for: .normal); actionBtn.addAction(UIAction { _ in Fix.log("uiaction button") }, for: .primaryActionTriggered); actionBtn.accessibilityIdentifier = "cov.uiaction"
         let taBtn = UIButton(type: .system); taBtn.setTitle("Target button", for: .normal); taBtn.addTarget(self, action: #selector(targetTapped), for: .touchUpInside); taBtn.accessibilityIdentifier = "cov.target"
         let sw = UISwitch(); sw.accessibilityIdentifier = "cov.switch"; sw.addAction(UIAction { [weak sw] _ in Fix.log("switch \(sw?.isOn ?? false)") }, for: .valueChanged)
@@ -75,10 +78,10 @@ final class UIKitCoverageController: UIViewController, UISearchBarDelegate, UIPi
         view.addSubview(stack)
         NSLayoutConstraint.activate([stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14), stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12)])
     }
-    @objc func targetTapped() { Fix.log("target button") }
+    @objc func targetTapped() { Fix.log("target button"); fixStack("target") }
     func present(style: UIAlertController.Style) {
         let a = UIAlertController(title: style == .alert ? "CovAlert" : "CovSheet", message: nil, preferredStyle: style)
-        a.addAction(UIAlertAction(title: "AlertOK", style: .default) { _ in Fix.log("alert OK") })
+        a.addAction(UIAlertAction(title: "AlertOK", style: .default) { _ in Fix.log("alert OK"); fixStack("alertOK") })
         a.addAction(UIAlertAction(title: "AlertOther", style: .default) { _ in Fix.log("alert Other") })
         a.addAction(UIAlertAction(title: "AlertCancel", style: .cancel) { _ in Fix.log("alert Cancel") })
         present(a, animated: false)
@@ -119,6 +122,7 @@ final class ListsCoverageController: UIViewController, UICollectionViewDelegate,
         let reg = UICollectionView.CellRegistration<UICollectionViewListCell, Int> { cell, _, item in
             var c = cell.defaultContentConfiguration(); c.text = "ListCell \(item)"; cell.contentConfiguration = c
             if item == 1 { cell.accessories = [.detail(actionHandler: { Fix.log("cell accessory detail") })] }
+            if item == 2 { let sw = UISwitch(); sw.addAction(UIAction { [weak sw] _ in Fix.log("list cell switch \(sw?.isOn ?? false)") }, for: .valueChanged); cell.accessories = [.customView(configuration: .init(customView: sw, placement: .trailing()))] }
         }
         dataSource = UICollectionViewDiffableDataSource(collectionView: cv) { cv, ip, item in cv.dequeueConfiguredReusableCell(using: reg, for: ip, item: item) }
         var snap = NSDiffableDataSourceSnapshot<Int, Int>(); snap.appendSections([0]); snap.appendItems([0, 1, 2]); dataSource.apply(snap)
@@ -132,9 +136,23 @@ final class ListsCoverageController: UIViewController, UICollectionViewDelegate,
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "c", for: indexPath)
         var c = cell.defaultContentConfiguration(); c.text = "TableCell \(indexPath.row)"; c.secondaryText = "configured"; cell.contentConfiguration = c
+        cell.accessoryView = nil; cell.accessoryType = .none
+        if indexPath.row == 0 { let sw = UISwitch(); sw.addAction(UIAction { [weak sw] _ in Fix.log("cell switch \(sw?.isOn ?? false)") }, for: .valueChanged); cell.accessoryView = sw }
+        if indexPath.row == 1 { cell.accessoryType = .detailButton }
         return cell
     }
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) { Fix.log("table select \(indexPath.row)") }
+    func tableView(_ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) { Fix.log("table accessory \(indexPath.row)") }
+    func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        UIContextMenuConfiguration(actionProvider: { _ in UIMenu(children: [UIAction(title: "Row Copy") { _ in Fix.log("row ctx copy \(indexPath.row)") }, UIAction(title: "Row Share") { _ in Fix.log("row ctx share \(indexPath.row)") }]) })
+    }
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        UISwipeActionsConfiguration(actions: [UIContextualAction(style: .destructive, title: "Delete") { _, _, done in Fix.log("swipe delete \(indexPath.row)"); done(false) }, UIContextualAction(style: .normal, title: "Flag") { _, _, done in Fix.log("swipe flag \(indexPath.row)"); done(true) }])
+    }
+    func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
+        let i = indexPaths.first?.item ?? -1
+        return UIContextMenuConfiguration(actionProvider: { _ in UIMenu(children: [UIAction(title: "Ctx Copy") { _ in Fix.log("ctx copy \(i)") }, UIAction(title: "Ctx Share") { _ in Fix.log("ctx share \(i)") }]) })
+    }
 }
 
 struct SwiftUICoverage: View {
@@ -151,12 +169,13 @@ struct SwiftUICoverage: View {
         NavigationStack {
             List {
                 Button("SUIButton") { Fix.log("swiftui button") }.accessibilityIdentifier("sui.button")
+                Text("SUITapRow").onTapGesture { Fix.log("swiftui tap row") }.accessibilityIdentifier("sui.taprow")
                 Toggle("SUIToggle", isOn: $on).accessibilityIdentifier("sui.toggle").onChange(of: on) { _, v in Fix.log("swiftui toggle \(v)") }
                 Stepper("SUIStepper \(steps)", value: $steps).accessibilityIdentifier("sui.stepper").onChange(of: steps) { _, v in Fix.log("swiftui stepper \(v)") }
                 Slider(value: $level).accessibilityIdentifier("sui.slider").onChange(of: level) { _, v in Fix.log("swiftui slider \(String(format: "%.2f", v))") }
                 Picker("SUISegment", selection: $choice) { Text("P0").tag(0); Text("P1").tag(1); Text("P2").tag(2) }.pickerStyle(.segmented).accessibilityIdentifier("sui.segment").onChange(of: choice) { _, v in Fix.log("swiftui segment \(v)") }
                 Picker("SUIMenuPicker", selection: $menuChoice) { Text("M0").tag(0); Text("M1").tag(1) }.pickerStyle(.menu).accessibilityIdentifier("sui.menupicker").onChange(of: menuChoice) { _, v in Fix.log("swiftui menu picker \(v)") }
-                Menu("SUIMenu") { Button("SUIMenuItem") { Fix.log("swiftui menu item") } }.accessibilityIdentifier("sui.menu")
+                Menu("SUIMenu") { Button("Alpha item") { Fix.log("swiftui menu alpha") }; Button("Bravo item") { Fix.log("swiftui menu bravo") } }.accessibilityIdentifier("sui.menu")
                 Button("SUIShowSheet") { showSheet = true }.accessibilityIdentifier("sui.sheet")
                 Button("SUIShowAlert") { showAlert = true }.accessibilityIdentifier("sui.alert")
                 TextField("SUIField", text: $text).accessibilityIdentifier("sui.field").onSubmit { Fix.log("swiftui onSubmit '\(text)'") }
@@ -183,10 +202,14 @@ final class WebCoverageController: UIViewController, WKScriptMessageHandler {
         <html><head><meta name=viewport content="width=device-width"><script>function L(m){window.webkit.messageHandlers.log.postMessage(m)}</script></head>
         <body style="font-size:20px">
         <p><a href="#target" onclick="L('web link')">WebLink</a></p>
-        <p><button onclick="L('web button')">WebButton</button></p>
+        <p><button onclick="L('web button');this.textContent='WebButton clicked '+(++window.n||(window.n=1))">WebButton</button></p>
         <p><label><input type=checkbox onchange="L('web checkbox '+this.checked)">WebCheck</label></p>
         <form onsubmit="L('web submit '+document.getElementById('q').value);return false"><input id=q aria-label="WebInput" onchange="L('web input '+this.value)"><input type=submit value="WebSubmit"></form>
-        <p id=target>end</p></body></html>
+        <p><select aria-label="WebSelect" onchange="L('web select '+this.value)"><option>S0</option><option>S1</option></select></p>
+        <p><button onclick="L('web add');var b=document.createElement('button');b.textContent='NewButton';b.onclick=function(){L('web new button');this.textContent='NewButton clicked'};document.body.appendChild(b)">AddButton</button></p>
+        <p><a href="data:text/html,<button>Page2Button</button>" onclick="L('web page2 link')">Page2Link</a></p>
+        <div style="height:3000px"></div>
+        <p id=target>end</p><script>window.onscroll=function(){clearTimeout(window.st);window.st=setTimeout(function(){L('web scrollY '+Math.round(window.scrollY))},200)}</script></body></html>
         """
         web.loadHTMLString(html, baseURL: nil)
     }
@@ -238,6 +261,45 @@ enum KickProbe {
                 state("t8kick")
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 11) { state("t11") }
+        }
+    }
+}
+
+func fixStack(_ name: String) {
+    let frames = Thread.callStackSymbols.map { l -> String in
+        let parts = l.split(separator: " ", omittingEmptySubsequences: true)
+        return parts.count > 3 ? parts[3...].joined(separator: " ").components(separatedBy: " + ").first ?? l : l
+    }
+    NSLog("STACK %@ %@", name, frames.joined(separator: " < "))
+}
+
+// Diagnostic only (launch argument -dumpkeys): push Detail, then log the keyCommands along the responder chain.
+enum KeyDump {
+    static func desc(_ r: AnyObject?) -> String {
+        guard let r = r as? UIResponder else { return "nil" }
+        let cmds = (r.keyCommands ?? []).map { c in "\(c.input ?? "?")+\(c.modifierFlags.rawValue)->\(c.action.map { NSStringFromSelector($0) } ?? "-") [\(c.discoverabilityTitle ?? c.title)]" }
+        return "\(type(of: r)): \(cmds.isEmpty ? "none" : cmds.joined(separator: ", "))"
+    }
+    static func all<T: UIView>(_ v: UIView, _ t: T.Type) -> T? { if let x = v as? T { return x }; for c in v.subviews { if let x = all(c, t) { return x } }; return nil }
+    static func install(root: UITabBarController) {
+        guard ProcessInfo.processInfo.arguments.contains("-dumpkeys") else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            (root.selectedViewController as? UINavigationController)?.pushViewController(DetailController(), animated: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            let nav = root.selectedViewController as? UINavigationController
+            let top = nav?.topViewController
+            let uikit = nav?.viewControllers.first
+            let table = top.flatMap { all($0.view, UITableView.self) }
+            let button = uikit.flatMap { all($0.view, UIButton.self) }
+            let sw = uikit.flatMap { all($0.view, UISwitch.self) }
+            let win = root.view.window
+            var lines = ["tabbar " + desc(root), "nav " + desc(nav), "top " + desc(top), "table " + desc(table), "button " + desc(button), "switch " + desc(sw), "window " + desc(win), "app " + desc(UIApplication.shared)]
+            var r: UIResponder? = button; var i = 0
+            while let x = r { lines.append("chain\(i) " + desc(x)); r = x.next; i += 1 }
+            let app = UIApplication.shared as NSObject
+            if app.responds(to: NSSelectorFromString("_keyCommands")) { lines.append("app._keyCommands \(String(describing: app.value(forKey: "_keyCommands")).prefix(600))") } else { lines.append("app._keyCommands: no selector") }
+            for l in lines { NSLog("KEYS %@", l) }
         }
     }
 }

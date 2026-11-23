@@ -283,12 +283,79 @@
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     ((void (*)(id, SEL, id, id, id, void (^)(id, NSError *)))objc_msgSend)(proxy, s, el, @(attr), param, ^(id value, NSError *error) {
         if (error) res = [NSString stringWithFormat:@"err %@", error];
-        else res = [NSString stringWithFormat:@"ok class %@ len %lu", value ? NSStringFromClass([value class]) : @"nil", (unsigned long)[[value description] length]];
+        else res = [NSString stringWithFormat:@"ok class %@ len %lu val %@", value ? NSStringFromClass([value class]) : @"nil", (unsigned long)[[value description] length], [value isKindOfClass:NSNumber.class] ? value : @"-"];
         dispatch_semaphore_signal(sem);
     });
     if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC))) return @"timeout";
     return res;
 }
+
++ (NSString *)rawAttribute:(NSInteger)attr onSnapshot:(id)snap {
+    id el = [snap valueForKey:@"accessibilityElement"];
+    SEL axs = NSSelectorFromString(@"AXUIElement");
+    if (![el respondsToSelector:axs]) return @"no AXUIElement";
+    const void *ref = (__bridge const void *)((id (*)(id, SEL))objc_msgSend)(el, axs);
+    typedef int (*C)(const void *, long, const void **);
+    C f = (C)dlsym(RTLD_DEFAULT, "AXUIElementCopyAttributeValue");
+    if (!ref || !f) return @"no ref/symbol";
+    const void *out = NULL; int e = f(ref, (long)attr, &out);
+    NSString *d = out ? [(__bridge id)out description] : @"nil";
+    return [NSString stringWithFormat:@"err %d %@", e, d.length > 80 ? [NSString stringWithFormat:@"len %lu", (unsigned long)d.length] : d];
+}
+
++ (NSString *)fbsOpen:(NSString *)bundleID optionKeys:(NSArray<NSString *> *)keys {
+    dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
+    Class c = NSClassFromString(@"FBSSystemService"); if (!c) return @"no FBSSystemService";
+    id svc = ((id (*)(id, SEL))objc_msgSend)(c, NSSelectorFromString(@"sharedService")); if (!svc) return @"no sharedService";
+    NSMutableDictionary *opts = [NSMutableDictionary dictionary]; NSMutableArray *names = [NSMutableArray array];
+    for (NSString *k in keys) { NSString * __strong *p = (NSString * __strong *)dlsym(RTLD_DEFAULT, k.UTF8String); if (p && *p) { opts[*p] = @YES; [names addObject:*p]; } else [names addObject:[k stringByAppendingString:@"=missing"]]; }
+    __block NSString *res = @"timeout"; dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    ((void (*)(id, SEL, id, id, void (^)(NSError *)))objc_msgSend)(svc, NSSelectorFromString(@"openApplication:options:withResult:"), bundleID, opts, ^(NSError *e) { res = e ? [NSString stringWithFormat:@"error %ld %@", (long)e.code, e.localizedDescription] : @"ok"; dispatch_semaphore_signal(sem); });
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+    return [NSString stringWithFormat:@"%@ keys %@", res, names];
+}
+
++ (id)axRef:(id)snap {
+    id el = [snap valueForKey:@"accessibilityElement"]; SEL axs = NSSelectorFromString(@"AXUIElement");
+    return [el respondsToSelector:axs] ? ((id (*)(id, SEL))objc_msgSend)(el, axs) : nil;
+}
++ (id)axCopy:(id)ref attr:(NSInteger)attr err:(int *)err {
+    typedef int (*C)(const void *, long, const void **); C f = (C)dlsym(RTLD_DEFAULT, "AXUIElementCopyAttributeValue");
+    const void *out = NULL; int e = f((__bridge const void *)ref, (long)attr, &out); if (err) *err = e;
+    return out ? (__bridge_transfer id)out : nil;
+}
++ (int)axPerform:(id)ref action:(NSInteger)action {
+    [self loadAXU];
+    id el = ((id (*)(id, SEL, id))objc_msgSend)(NSClassFromString(@"AXElement"), NSSelectorFromString(@"elementWithAXUIElement:"), ref);
+    if (!el) return -1;
+    return ((BOOL (*)(id, SEL, int, id))objc_msgSend)(el, NSSelectorFromString(@"performAction:withValue:"), (int)action, nil) ? 0 : 1;
+}
++ (int)axSet:(id)ref attr:(NSInteger)attr value:(id)value {
+    typedef int (*S)(const void *, long, const void *); S f = (S)dlsym(RTLD_DEFAULT, "AXUIElementSetAttributeValue");
+    return f ? f((__bridge const void *)ref, (long)attr, (__bridge const void *)value) : -1;
+}
++ (id)axAppElement:(int)pid {
+    typedef const void *(*F)(int); F f = (F)dlsym(RTLD_DEFAULT, "_AXUIElementCreateAppElementWithPid");
+    const void *r = f ? f(pid) : NULL; return r ? (__bridge_transfer id)r : nil;
+}
++ (int)axPerformValue:(id)ref action:(NSInteger)action value:(id)value {
+    [self loadAXU];
+    id el = ((id (*)(id, SEL, id))objc_msgSend)(NSClassFromString(@"AXElement"), NSSelectorFromString(@"elementWithAXUIElement:"), ref);
+    if (!el) return -1;
+    return ((BOOL (*)(id, SEL, int, id))objc_msgSend)(el, NSSelectorFromString(@"performAction:withValue:"), (int)action, value) ? 0 : 1;
+}
++ (id)daemonAttributes:(NSArray<NSString *> *)names onSnapshot:(id)snap error:(NSString **)error {
+    id ax = [self ax]; id element = nil;
+    @try { element = [snap valueForKey:@"accessibilityElement"]; } @catch (__unused NSException *x) {}
+    SEL s = NSSelectorFromString(@"attributesForElement:attributes:error:");
+    if (!element || ![ax respondsToSelector:s]) { if (error) *error = @"no element or selector"; return nil; }
+    NSError *err = nil; id r = nil;
+    @try { r = ((id (*)(id, SEL, id, id, NSError **))objc_msgSend)(ax, s, element, names, &err); }
+    @catch (NSException *x) { if (error) *error = [NSString stringWithFormat:@"exception %@", x.reason]; return nil; }
+    if (error) *error = err ? err.localizedDescription : @"none";
+    return r;
+}
++ (NSString *)axLabel:(id)ref { int e = 0; id v = [self axCopy:ref attr:2001 err:&e]; return v ? [v description] : [NSString stringWithFormat:@"(err %d)", e]; }
 
 + (NSString *)setAXTimeout:(double)t {
     id ax = [self ax]; SEL s = NSSelectorFromString(@"setAXTimeout:error:");

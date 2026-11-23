@@ -21,6 +21,16 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable id)paramAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(nullable id)param error:(NSError * _Nullable * _Nullable)err;
 + (NSString *)rawParamAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(nullable id)param;
 + (NSString *)setAXTimeout:(double)t;
++ (nullable id)axRef:(id)snap;
++ (nullable id)axCopy:(id)ref attr:(NSInteger)attr err:(int *)err;
++ (int)axPerform:(id)ref action:(NSInteger)action;
++ (int)axSet:(id)ref attr:(NSInteger)attr value:(id)value;
++ (NSString *)axLabel:(id)ref;
++ (nullable id)daemonAttributes:(NSArray<NSString *> *)names onSnapshot:(id)snap error:(NSString * _Nullable * _Nullable)error;
++ (int)axPerformValue:(id)ref action:(NSInteger)action value:(nullable id)value;
++ (nullable id)axAppElement:(int)pid;
++ (NSString *)fbsOpen:(NSString *)bundleID optionKeys:(NSArray<NSString *> *)keys;
++ (NSString *)rawAttribute:(NSInteger)attr onSnapshot:(id)snap;
 + (NSString *)daemonParamAttribute:(NSInteger)attr onSnapshot:(id)snap parameter:(nullable id)param;
 + (nullable id)paramAttributeString:(NSString *)attr onSnapshot:(id)snap parameter:(nullable id)param error:(NSError * _Nullable * _Nullable)err;
 + (BOOL)pressSnapshot:(id)snapshot action:(NSInteger)action error:(NSString * _Nullable * _Nullable)error;

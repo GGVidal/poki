@@ -123,8 +123,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDelegate {
     var window: UIWindow?
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+        NSLog("FIXLOG trace willConnect activation=%d appState=%d", scene.activationState.rawValue, UIApplication.shared.applicationState.rawValue)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            let w = self?.window
+            let reasons = (scene.value(forKey: "_effectiveSettings") as AnyObject?).flatMap { ($0 as AnyObject).value(forKey: "deactivationReasons") } ?? "?"
+            let fg = (scene.value(forKey: "_effectiveSettings") as AnyObject?).flatMap { ($0 as AnyObject).value(forKey: "isForeground") } ?? "?"
+            NSLog("FIXLOG trace +3s activation=%d appState=%d foreground=%@ reasons=%@ window=%@ hidden=%d key=%d contextId=%u", scene.activationState.rawValue, UIApplication.shared.applicationState.rawValue, "\(fg)", "\(reasons)", w == nil ? "nil" : "yes", w?.isHidden == true ? 1 : 0, w?.isKeyWindow == true ? 1 : 0, (w?.value(forKey: "_contextId") as? UInt32) ?? 0)
+        }
         guard let scene = scene as? UIWindowScene else { return }
-        let w = UIWindow(windowScene: scene)
+        let w = LogWindow(windowScene: scene)
         let args = ProcessInfo.processInfo.arguments
         if args.contains("-keepWin") { w.setValue(true, forKey: "keepContextInBackground"); NSLog("FIXLOG trace keepWin set") }
         if args.contains("-keepScene") {
@@ -339,4 +346,13 @@ struct SwiftUIScreens: View {
             Text("Inner B").onAppear { Fix.log("swiftui.innerB.appear") }.tabItem { Label("Inner B", systemImage: "b.circle") }.tag(1)
         }.onChange(of: tab) { _, v in Fix.log("swiftui.tab \(v)") }
     }
+}
+
+// Diagnostic: log every event and press that reaches the window, with the app state.
+final class LogWindow: UIWindow {
+    override func sendEvent(_ event: UIEvent) {
+        if event.type != .touches || ProcessInfo.processInfo.arguments.contains("-logTouches") { NSLog("FIXLOG ev window.sendEvent type=%d subtype=%d state=%d", event.type.rawValue, event.subtype.rawValue, UIApplication.shared.applicationState.rawValue) }
+        super.sendEvent(event)
+    }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) { NSLog("FIXLOG ev window.pressesBegan type=%d key=%@ state=%d", presses.first?.type.rawValue ?? -1, presses.first?.key?.charactersIgnoringModifiers ?? "-", UIApplication.shared.applicationState.rawValue); super.pressesBegan(presses, with: event) }
 }

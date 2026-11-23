@@ -1,0 +1,8 @@
+[package]
+name = "tmdremote"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+idevice = { version = "=0.1.68", default-features = false, features = ["dvt", "aws-lc"] }
+tokio = { version = "1", features = ["full"] }
+plist = "1"

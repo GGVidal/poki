@@ -517,3 +517,14 @@ Our fixture (`local.pokimcp.axfixture`) on the UIKit tab with Detail pushed, kep
 - Closed routes this session: in-process UIPress via actions 4000 to 4007 (no event without a window context; works only in the foreground); XCTest `performAccessibilityAudit` (error -902 "Invalid target app": `-[AXAuditAutomationSupport _runAudit]` in testmanagerd only accepts apps in the focused applications list, attribute 1102).
 
 The phone runs installed only the fixture and its test runner; both were uninstalled after each run.
+
+### Later checks (5:50 pm to 6:20 pm ET)
+
+- The back route also completed on Contacts in the simulator, an app we did not write (contact page back to the list with Settings in front). The audit call took 5.4 s there.
+- A bar button item fires in the background because UINavigationBar's accessibility calls the item's action directly: `-[UINavigationBarAccessibility_UIViewAccessibilityAdditions accessibilityActivate]` → `-[UINavigationBar _accessibility_triggerBarButtonItem:]` → `-[UIBarButtonItem _triggerActionForEvent:fallbackSender:]` → `-[UIAction performWithSender:target:]` (stack recorded in the fixture log). A plain UIButton has no accessibility activation, and 2010 fails on it even in the foreground.
+- Background key events through 2034 changed nothing for Cmd+1/2/3, Ctrl+Tab, Cmd+[ and Escape, because modifiers are dropped, and the only system key command is Cmd+[ (`_performBackKeyCommand:`) on UINavigationController.
+- Setting the value (2006) in the background sets a text field's text but fires no handler on the switch or stepper.
+- Keeping the WebContent, GPU and Networking processes awake with background assertions does not keep web elements in the accessibility tree.
+- The window context id reads 0 in the background and stays 0 after 5310, 5313, snapshots, attribute reads and every audit option, so the in-process press has no event to land on.
+- The Contrast and InaccessibleElement audit options behave like DynamicText: the reply never arrives (30 s timeout).
+- A mistaken pid filter once sent background assertion requests for host Mac WebKit pids from the simulator. Pid lists are now limited to children of the simulator's launchd_sim.
