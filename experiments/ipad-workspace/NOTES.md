@@ -18,6 +18,15 @@ request into `main`.
 - **Relay end to end on Linux.** The same link client against the real relay Worker and
   `deploy/cf-relay/test/phone-sim.mjs`: OAuth, two calls on one session, and a wrong secret refused.
 
+- **`do` through the link.** A `do` launching Settings on the iPad went through and Settings opened,
+  but the read after it timed out on the loaded simulator, so the call answered an error. The do
+  path's read deadline needs a look.
+- **Display mode safety on the simulator (7:24 am ET).** Workspace Display found display 2
+  (720x480) beside the main one. Check Displays got no picture from it. With it chosen, tree,
+  screenshot and Home were refused and nothing reached the main display; Off restored normal use.
+  Eight screenshots of both Settings pages (en and zh-Hans, light and dark) are on the Mac under
+  `experiments/ipad-workspace/shots/`.
+
 ## Written, not proven
 
 - **iPad workspace display mode** (`InProcess.m`, `PKInProcess (LabDisplay)`) and Settings, Workspace
@@ -40,7 +49,10 @@ iPad to a normal monitor works as before.
 
 ## What needs you or a real iPad
 
-1. Push of the Mac's local link probe changes (its guard needs your typed yes; it will be a patch).
+1. The Mac's two local commits (4541ae1e link and display probes, d7a43e13 notes, on top of 7ea6d625)
+   and evidence wait for your typed yes in the Mac session; a patch is at
+   `~/Developer/poki-ipad-workspace.patch`. The branch on GitHub has one newer commit (these notes),
+   so the Mac merges before it pushes; nobody force-pushes.
 2. The on-device check in `README.md`: real iPad, Stage Manager, a display set to Extend, a keyboard
    and pointer. Drag an app to the display, run Check Displays, choose the display, then `look` and
    one `do` tap from the linked iPhone.
