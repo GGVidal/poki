@@ -20,6 +20,7 @@ PokiExternal.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
 Poki/Info.plist
 Poki/Poki.entitlements
 Poki/PokiLocal.entitlements
+Poki/PokiLabDevice.entitlements
 PokiWidgets/Info.plist
 PokiWidgets/PokiWidgets.entitlements
 PokiTunnel/Info.plist

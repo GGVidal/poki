@@ -11,8 +11,13 @@ settings:
     POKI_DISPLAY_NAME: Poki Lab
 targets:
   Poki:
+    # No app-group entitlement: that is what would need an explicit App ID. `:REPLACE` keeps
+    # XcodeGen from merging these with project-base.yml's values instead of replacing them.
+    entitlements:REPLACE:
+      path: Poki/PokiLabDevice.entitlements
+      properties: {}
     # Included arrays are replaced, not appended: the same list as project-base.yml without PokiWidgets.
-    dependencies:
+    dependencies:REPLACE:
       - package: PokiCore
       - package: WebRTC
       - package: PiSwift
@@ -24,8 +29,6 @@ targets:
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) POKI_APP POKI_EXPERIMENTS
         GCC_PREPROCESSOR_DEFINITIONS: $(inherited) POKI_EXPERIMENTS=1
         OTHER_SWIFT_FLAGS: $(inherited) -Xcc -DPOKI_EXPERIMENTS=1
-        # No entitlements file: the app-group entitlement is what needs an explicit App ID.
-        CODE_SIGN_ENTITLEMENTS: ""
 schemes:
   Poki:
     build:
