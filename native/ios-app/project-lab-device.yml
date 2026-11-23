@@ -1,0 +1,35 @@
+# Experimental Poki Lab for a test device signed with a wildcard development profile (issue #689):
+# no packet tunnel, no widget extension and no app group, so no explicit App ID is needed. Live
+# Activities do not show in this build. Never an alpha, beta, pre-alpha or release build.
+# Generate with: xcodegen generate --spec native/ios-app/project-lab-device.yml
+include: project-base.yml
+name: PokiLabDevice
+settings:
+  base:
+    POKI_BUNDLE_ID: nz.zheha.poki.lab
+    POKI_APP_GROUP: ""
+    POKI_DISPLAY_NAME: Poki Lab
+targets:
+  Poki:
+    # Included arrays are replaced, not appended: the same list as project-base.yml without PokiWidgets.
+    dependencies:
+      - package: PokiCore
+      - package: WebRTC
+      - package: PiSwift
+        product: PiSwiftAgent
+      - package: PiSwift
+        product: PiSwiftAI
+    settings:
+      base:
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) POKI_APP POKI_EXPERIMENTS
+        GCC_PREPROCESSOR_DEFINITIONS: $(inherited) POKI_EXPERIMENTS=1
+        OTHER_SWIFT_FLAGS: $(inherited) -Xcc -DPOKI_EXPERIMENTS=1
+        # No entitlements file: the app-group entitlement is what needs an explicit App ID.
+        CODE_SIGN_ENTITLEMENTS: ""
+schemes:
+  Poki:
+    build:
+      targets:
+        Poki: all
+        PokiWidgets: none
+        PokiTests: [test]
