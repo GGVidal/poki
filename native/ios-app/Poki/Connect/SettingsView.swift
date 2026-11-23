@@ -33,7 +33,7 @@ enum SettingsRoute: Hashable {
     case memoryPage(MemoryPage)
     #if POKI_EXPERIMENTS
     /// Poki Lab only: the link to Poki on the owner's iPad (issue #689).
-    case workspaceLink
+    case workspaceLink, workspaceDisplay
     #endif
 }
 
@@ -56,6 +56,7 @@ struct SettingsDestination: View {
         case .activityPreview: ActivityPreview()
         #if POKI_EXPERIMENTS
         case .workspaceLink: WorkspaceLinkView(back: pop)
+        case .workspaceDisplay: WorkspaceDisplayView(back: pop)
         #endif
         }
     }
@@ -118,6 +119,9 @@ struct SettingsHome: View {
                     LabeledContent("iPad Workspace") {
                         Text(WorkspaceLinkStore.address?.host ?? AppLocalization.text(LocalizedStringResource("Not Set")))
                     }
+                }
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    NavigationLink("Workspace Display", value: SettingsRoute.workspaceDisplay)
                 }
             } footer: {
                 Text("Experimental. Lets Poki on this iPhone use apps on your iPad without taking over either screen.")

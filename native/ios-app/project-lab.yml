@@ -14,3 +14,6 @@ targets:
       base:
         # POKI_EXPERIMENTS compiles in the prototype code; Poki's own projects never set it.
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) POKI_APP POKI_EXPERIMENTS
+        # The same for the Objective-C driver (Poki/Native) and for Swift's view of its header.
+        GCC_PREPROCESSOR_DEFINITIONS: $(inherited) POKI_EXPERIMENTS=1
+        OTHER_SWIFT_FLAGS: $(inherited) -Xcc -DPOKI_EXPERIMENTS=1

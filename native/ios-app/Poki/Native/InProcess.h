@@ -147,4 +147,21 @@ FOUNDATION_EXPORT CGPoint PKWorkspaceLauncherPoint(NSDictionary<NSString *, NSAr
 - (NSDictionary<NSString *, id> *)separateSessionTrialAt:(CGPoint)point hold:(double)hold;
 @end
 
+#if POKI_EXPERIMENTS
+/// Poki Lab only (issue #689, unverified on hardware): an iPad workspace on a second display. While
+/// labDisplayID is set, screenshots and touches go to that display and nowhere else, the tree read is
+/// refused (PokiCore reads the picture), and hardware buttons and launches are refused, since they act
+/// on the owner's screen. The main display can never be chosen. nil: Poki works as always.
+@interface PKInProcess (LabDisplay)
+@property (nonatomic, nullable) NSNumber *labDisplayID;
+/// Every display XCTest sees: id, main, width, height.
+- (NSArray<NSDictionary<NSString *, id> *> *)labDisplays;
+- (nullable id)labScreenWithID:(NSNumber *)displayID;
+- (PKDisplayGeometry)labDisplayGeometry;
+- (nullable NSData *)labDisplayScreenshot:(NSString *_Nullable *_Nullable)code;
+/// For the owner's check on a real iPad: each display, and for the others whether a picture comes back and is all black.
+- (NSDictionary<NSString *, id> *)labDisplayCheck;
+@end
+#endif
+
 NS_ASSUME_NONNULL_END

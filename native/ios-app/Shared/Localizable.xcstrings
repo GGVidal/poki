@@ -1,6 +1,116 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Workspace Display" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Workspace Display"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作区显示器"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作區顯示器"
+          }
+        }
+      }
+    },
+    "Display %lld %lld × %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Display %1$lld %2$lld × %3$lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示器 %1$lld %2$lld × %3$lld"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "顯示器 %1$lld %2$lld × %3$lld"
+          }
+        }
+      }
+    },
+    "Experimental. Poki works only on the display you choose here and never on this iPad’s own screen. A display you connect is left alone until you choose it." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Poki works only on the display you choose here and never on this iPad’s own screen. A display you connect is left alone until you choose it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验功能。Poki 只在你在此选择的显示器上工作，从不使用这台 iPad 自己的屏幕。你连接的显示器在你选择之前不受影响。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "實驗功能。Poki 只在你在此選擇的顯示器上工作，從不使用這台 iPad 自己的螢幕。你連接的顯示器在你選擇之前不受影響。"
+          }
+        }
+      }
+    },
+    "Check Displays" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Displays"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查显示器"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "檢查顯示器"
+          }
+        }
+      }
+    },
+    "Shows each display Poki can see and whether it shows a picture. Share the result with the Poki team." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shows each display Poki can see and whether it shows a picture. Share the result with the Poki team."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "列出 Poki 能看到的每台显示器以及它是否显示画面。请把结果分享给 Poki 团队。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "列出 Poki 能看到的每台顯示器以及它是否顯示畫面。請把結果分享給 Poki 團隊。"
+          }
+        }
+      }
+    },
     "iPad Workspace" : {
       "localizations" : {
         "en" : {

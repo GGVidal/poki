@@ -1634,6 +1634,21 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
     }
     id record;
     NSNumber *recordDisplay = nil;
+#if POKI_EXPERIMENTS
+    NSNumber *labDisplay = self.labDisplayID;
+    if (labDisplay) {
+        // Poki Lab, iPad workspace (#689): touches go to the workspace display or nowhere.
+        if (![self labScreenWithID:labDisplay]) return [PKOutcome delivery:PKDeliveryNotSent code:@"workspace_display_unavailable" detail:@"the workspace display is gone; nothing was sent to the main display"];
+        SEL selector = @selector(initWithName:displayID:interfaceOrientation:);
+        if (!PKInstanceSignature(recordClass, selector, "@", @[@"@", @"Q", @"q"]) &&
+            !PKInstanceSignature(recordClass, selector, "@", @[@"@", @"q", @"q"])) {
+            return [PKOutcome delivery:PKDeliveryNotSent code:@"target_display_input_unavailable" detail:nil];
+        }
+        recordDisplay = labDisplay;
+        geometry = self.labDisplayGeometry;
+        record = [[recordClass alloc] initWithName:@"Poki touch" displayID:labDisplay.unsignedLongLongValue interfaceOrientation:UIInterfaceOrientationPortrait];
+    } else
+#endif
     if (geometry.routesDisplay) {
         id screen = PKAutomationScreen(geometry);
         BOOL confirmed;
@@ -1794,6 +1809,10 @@ static BOOL PKSameWorkspace(PKWorkspace *a, PKWorkspace *b) {
 }
 
 - (nullable NSData *)screenshot:(NSString **)code refreshViewport:(BOOL)refreshViewport observation:(NSDictionary **)observation {
+#if POKI_EXPERIMENTS
+    // Poki Lab, iPad workspace (#689, unverified on hardware): the workspace display only, never the main one.
+    if (self.labDisplayID) return [self labDisplayScreenshot:code];
+#endif
     @try {
         NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
         PKWorkspace *selected = self.selectedWorkspace;
@@ -2377,6 +2396,9 @@ static const int PKFrontKey = -1;
 // Geometry is queried from the main thread as well as inside foreground discovery. Keep
 // this accessor free of XCTest I/O; the read and input entry points renew the observation.
 - (PKDisplayGeometry)displayGeometry {
+#if POKI_EXPERIMENTS
+    if (self.labDisplayID) return self.labDisplayGeometry;
+#endif
     PKDisplayGeometry scene = self.sceneDisplayGeometry;
     if (!PKIsDuo() || !CGRectIsNull(scene.peer)) return scene;
     if ([self isPokiSceneVisible]) return PKDuoPanelForScene(scene);
@@ -2533,6 +2555,9 @@ static const int PKFrontKey = -1;
 }
 
 - (PKDisplayGeometry)readDisplayGeometry {
+#if POKI_EXPERIMENTS
+    if (self.labDisplayID) return self.labDisplayGeometry;
+#endif
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270100
     if (PKIsDuo()) {
         if (self.hasSelectedPane || self.hasDuoCompanionTask || self.isPokiSceneVisible) return self.displayGeometry;
@@ -2683,6 +2708,11 @@ CGPoint PKWorkspaceLauncherPoint(NSDictionary<NSString *, NSArray<NSValue *> *> 
 }
 
 - (nullable NSString *)sourceXML:(NSDictionary **)focused maxDepth:(NSInteger)maxDepth maxChildren:(NSInteger)maxChildren code:(NSString **)code {
+#if POKI_EXPERIMENTS
+    // Which app owns the workspace display, and in which coordinates its tree comes, is not yet known
+    // on hardware: no tree, so PokiCore reads the workspace picture instead.
+    if (self.labDisplayID) { if (code) *code = @"workspace_tree_unverified"; return nil; }
+#endif
     @try {
         NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
         id ax;
@@ -2780,6 +2810,9 @@ CGPoint PKWorkspaceLauncherPoint(NSDictionary<NSString *, NSArray<NSValue *> *> 
 }
 
 - (nullable NSString *)press:(NSString *)name {
+#if POKI_EXPERIMENTS
+    if (self.labDisplayID) return @"not sent: a hardware button acts on the owner's screen, not the workspace display";
+#endif
     if (self.hasDuoCompanionTask) return @"not sent: a hardware button would leave the task's pane";
     [self forgetFront];
     @try {
@@ -2821,6 +2854,11 @@ static NSString *PKDaemonReply(NSTimeInterval seconds, void (^send)(void (^)(NSE
 /// (or starts it), terminate ends it. XCUIApplication itself refuses to exist outside a UI test bundle.
 /// Launch and activate return once the app is in front.
 - (nullable NSString *)app:(NSString *)bundle action:(NSString *)action {
+#if POKI_EXPERIMENTS
+    // iOS offers no launch onto a chosen display: a launch would land on the owner's screen.
+    if (self.labDisplayID && ![action isEqualToString:@"terminate"])
+        return @"not sent: iOS launches apps on the owner's screen; move the app to the workspace display with Stage Manager first";
+#endif
     PKWorkspace *selected = self.selectedWorkspace;
     if (self.hasDuoCompanion || (selected && (selected.leftPID == getpid() || selected.rightPID == getpid()))) {
         NSDictionary *front = nil;
@@ -2979,3 +3017,108 @@ static NSString *PKDaemonReply(NSTimeInterval seconds, void (^send)(void (^)(NSE
 }
 
 @end
+
+#if POKI_EXPERIMENTS
+#pragma mark - Poki Lab: iPad workspace display (#689, unverified on hardware)
+
+@interface PKInProcess (LabPrivate)
+- (nullable NSData *)daemonJPEGForScreen:(id)screen;
+- (void)forgetFront;
+@end
+
+static BOOL PKLabImageIsBlack(UIImage *image);
+
+@implementation PKInProcess (LabDisplay)
+
+static NSNumber *PKLabDisplayChoice;
+
+- (nullable NSNumber *)labDisplayID { @synchronized (PKInProcess.class) { return PKLabDisplayChoice; } }
+
+- (void)setLabDisplayID:(nullable NSNumber *)displayID {
+    @synchronized (PKInProcess.class) { PKLabDisplayChoice = displayID; }
+    [self forgetFront];
+}
+
+- (nullable id)labScreenWithID:(NSNumber *)displayID {
+    Class type = NSClassFromString(@"XCUIScreen");
+    id main = [type mainScreen];
+    long long mainID = [main respondsToSelector:@selector(displayID)] ? [main displayID] : -1;
+    if (displayID.longLongValue == mainID) return nil;
+    NSArray *screens = [type respondsToSelector:@selector(screens)] ? [(id)type screens] : @[];
+    for (id screen in screens) {
+        if ([screen respondsToSelector:@selector(displayID)] && [screen displayID] == displayID.longLongValue) return screen;
+    }
+    return nil;
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)labDisplays {
+    Class type = NSClassFromString(@"XCUIScreen");
+    id main = [type mainScreen];
+    long long mainID = [main respondsToSelector:@selector(displayID)] ? [main displayID] : -1;
+    NSArray *screens = [type respondsToSelector:@selector(screens)] ? [(id)type screens] : @[];
+    NSMutableArray *out = [NSMutableArray array];
+    for (id screen in screens) {
+        if (![screen respondsToSelector:@selector(displayID)]) continue;
+        CGRect bounds = [screen respondsToSelector:@selector(bounds)] ? [screen bounds] : CGRectZero;
+        [out addObject:@{@"id": @([screen displayID]), @"main": @([screen displayID] == mainID),
+                         @"width": @(bounds.size.width), @"height": @(bounds.size.height)}];
+    }
+    return out;
+}
+
+/// The workspace display as PokiCore sees a screen: its XCTest bounds, unrotated. Whether these are
+/// points or pixels on a real external display is one of the things the on-device check reports.
+- (PKDisplayGeometry)labDisplayGeometry {
+    id screen = self.labDisplayID ? [self labScreenWithID:self.labDisplayID] : nil;
+    CGRect bounds = screen && [screen respondsToSelector:@selector(bounds)] ? [screen bounds] : CGRectZero;
+    bounds.origin = CGPointZero;
+    return (PKDisplayGeometry){bounds, CGRectNull, bounds.size, CGAffineTransformIdentity, UIInterfaceOrientationPortrait, NO, NO, 0};
+}
+
+- (nullable NSData *)labDisplayScreenshot:(NSString **)code {
+    id screen = [self labScreenWithID:self.labDisplayID];
+    if (!screen) { if (code) *code = @"workspace_display_unavailable"; return nil; }
+    NSData *jpeg = [self daemonJPEGForScreen:screen];
+    if (!jpeg && code) *code = @"workspace_display_no_picture";
+    return jpeg;
+}
+
+/// For the owner's check on a real iPad: every display XCTest sees, and for each one that is not the
+/// main display, whether a picture comes back and whether it is all black (no extended desktop).
+- (NSDictionary<NSString *, id> *)labDisplayCheck {
+    NSMutableArray *displays = [NSMutableArray array];
+    for (NSDictionary *display in self.labDisplays) {
+        NSMutableDictionary *row = [display mutableCopy];
+        if (![display[@"main"] boolValue]) {
+            id screen = [self labScreenWithID:display[@"id"]];
+            NSData *jpeg = screen ? [self daemonJPEGForScreen:screen] : nil;
+            row[@"pictureBytes"] = @(jpeg.length);
+            UIImage *image = jpeg ? [UIImage imageWithData:jpeg] : nil;
+            if (image) {
+                row[@"pictureWidth"] = @(image.size.width * image.scale);
+                row[@"pictureHeight"] = @(image.size.height * image.scale);
+                row[@"allBlack"] = @(PKLabImageIsBlack(image));
+            }
+        }
+        [displays addObject:row];
+    }
+    return @{@"displays": displays, @"selected": self.labDisplayID ?: [NSNull null]};
+}
+
+static BOOL PKLabImageIsBlack(UIImage *image) {
+    CGImageRef cg = image.CGImage;
+    if (!cg) return YES;
+    size_t w = 32, h = 32;
+    uint8_t pixels[32 * 32 * 4] = {0};
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(pixels, w, h, 8, w * 4, space, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(space);
+    if (!context) return YES;
+    CGContextDrawImage(context, CGRectMake(0, 0, w, h), cg);
+    CGContextRelease(context);
+    for (size_t i = 0; i < w * h * 4; i += 4) if (pixels[i] > 12 || pixels[i + 1] > 12 || pixels[i + 2] > 12) return NO;
+    return YES;
+}
+
+@end
+#endif
