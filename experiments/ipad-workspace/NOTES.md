@@ -4,6 +4,28 @@ Experimental (issue #689). Poki Lab build only (`native/ios-app/project-lab.yml`
 `nz.zheha.poki.lab`). Nothing here reaches alpha, beta, pre-alpha or a release, and there is no pull
 request into `main`.
 
+## Real iPad, Nov 23 2026, 9:30 to 9:57 am ET (Mac Studio)
+
+iPad Pro 13-inch (M5), iPadOS 27.0. Poki Lab (`project-lab-device.yml`, bundle `nz.zheha.poki.lab`)
+installed from the Mac Studio at 9:34 am ET; never an alpha or beta build.
+
+- **Virtual display.** The CoreDevice display service gives display 3 "Wireless", 1920x1088. A screen
+  mirroring icon appears in the status bar. Captures of it are solid black (max pixel 0) in every case
+  below, and Display & Brightness shows no section for it.
+- **Software keyboard.** CoreDevice's own keyboard capability types text but does not count as a
+  hardware keyboard. A generic boot keyboard made with UniversalHID `createService(properties:)`
+  (page 1, usage 6) does count (the Hardware Keyboard row appears and the on-screen keyboard hides),
+  but its reports never take effect.
+- **Software mouse.** CoreDevice's pointer capability is refused on iPadOS 27.0. A generic relative
+  boot mouse through `createService` (page 1, usage 2) makes Trackpad & Mouse appear in Settings, but
+  its reports never move anything and no cursor shows. UniversalHID's strings ("no active virtual
+  service; dropping events", `HIDVirtualServicePool.enabledDeviceTypes`) suggest the services are
+  published but never activated, and the CoreDevice protocol has no enable call.
+- **Stage Manager** turned on, display recreated after both generic devices existed: still black.
+- **Reading so far.** Keyboard and pointer presence is not enough; the virtual display itself may be
+  the wall. Next: the display service's other modes and options, SpringBoard's log for display 3, and
+  whether Poki Lab sees a UIScreen or scene session for display 3 so it could put its own window there.
+
 ## Works, shown on simulators
 
 - **iPhone to iPad link through your relay.** Two Poki Lab simulators on the Mac (iPad as host,
