@@ -626,3 +626,8 @@ counts control events in background state (`bg=` all events, `bgCtl=` controls).
   sheet Cancel, alert text field 2006: fail on device (they fire on the simulator); compact date picker 2010 fail, 2004 no change.
 - Back: 2013 on the navigation bar or bar item accepted with no pop in background; the pop happened only when the app came
   back to the front ("back popped" at +2.3 s in the foreground).
+- Rerun 14:28-14:33 ET (`testDEVRERUN`, assertion granted every time, FKA off): alert default/destructive and sheet Cancel 2010
+  fail with kAXErrorFailure even within the first second while the fixture is still foreground (state 4) and after 5 s (state 3);
+  bar item 2010, page control 2004, segment 2010, SwiftUI Button/Toggle 2010 and Slider 2004 fire in background; UITextField 2006
+  and custom action 2021 fail; back 2013 ok without pop, and the 95005 clipping kick returns an XCTDaemonErrorDomain error.
+  Fixture-recorded timings: inactive phase 679 ms, didEnterBackground → _prepareForSuspend 268 ms.

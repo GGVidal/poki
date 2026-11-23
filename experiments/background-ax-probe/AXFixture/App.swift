@@ -8,6 +8,14 @@ import UIKit
 enum Fix {
     static var count = 0
     static weak var label: UILabel?
+    // RAW 81 device timings, readable through accessibility without a device log.
+    static weak var timingLabel: UILabel?
+    static var tResign = 0.0, tBackground = 0.0, tSuspend = 0.0
+    static func ms() -> Double { Date().timeIntervalSince(t0) * 1000 }
+    static func timing() {
+        let v = String(format: "inactive %.0f ms; bg->suspend %.0f ms", tBackground - tResign, tSuspend - tBackground)
+        timingLabel?.accessibilityLabel = "timing \(v)"; timingLabel?.accessibilityValue = v
+    }
     static weak var focusLabel: UILabel?
     static weak var sceneLabel: UILabel?
     static weak var plainButton: UIButton?
@@ -126,7 +134,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 let orig = unsafeBitCast(method_getImplementation(m), to: F.self)
                 let blk: @convention(block) (AnyObject) -> Void = { obj in
                     let st = UIApplication.shared.applicationState.rawValue
-                    NSLog("FIXLOG bracket %@ begin state=%d", name, st); orig(obj, sel)
+                    NSLog("FIXLOG bracket %@ begin state=%d", name, st); if name == "_prepareForSuspend" { Fix.tSuspend = Fix.ms(); Fix.timing() }; orig(obj, sel)
                     let w = (obj as? UIWindowScene)?.windows.first
                     let ctx = (w?.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
                     NSLog("FIXLOG bracket %@ end ctx=%u", name, ctx)
@@ -181,9 +189,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControlle
         window = w
     }
     func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) { Fix.log("tab.didSelect \(viewController.tabBarItem.title ?? "")") }
-    func sceneDidEnterBackground(_ scene: UIScene) { Fix.log("scene.didEnterBackground"); logWindow("didEnterBackground") }
+    func sceneDidEnterBackground(_ scene: UIScene) { Fix.tBackground = Fix.ms(); Fix.log("scene.didEnterBackground"); logWindow("didEnterBackground") }
     func sceneDidBecomeActive(_ scene: UIScene) { logWindow("didBecomeActive") }
-    func sceneWillResignActive(_ scene: UIScene) { logWindow("willResignActive") }
+    func sceneWillResignActive(_ scene: UIScene) { Fix.tResign = Fix.ms(); logWindow("willResignActive") }
     var windowTimer: Timer?
     func logWindow(_ tag: String) {
         guard let w = window else { return }

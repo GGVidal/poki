@@ -79,7 +79,8 @@ final class UIKitCoverageController: UIViewController, UISearchBarDelegate, UIPi
         let pushBtn = UIButton(type: .system); pushBtn.setTitle("Push detail", for: .normal); pushBtn.accessibilityIdentifier = "cov.push"; pushBtn.addAction(UIAction { [weak self] _ in self?.navigationController?.pushViewController(DetailController(), animated: false) }, for: .primaryActionTriggered)
 
         let row1 = UIStackView(arrangedSubviews: [sw, stepper, page]); row1.spacing = 12
-        let stack = UIStackView(arrangedSubviews: [configured, actionBtn, taBtn, row1, date, picker, search, field, menuBtn, ctx, alertBtn, alert2Btn, sheetBtn, pushBtn])
+        let timing = UILabel(); timing.text = "timing"; timing.isAccessibilityElement = true; timing.accessibilityIdentifier = "cov.timing"; Fix.timingLabel = timing
+        let stack = UIStackView(arrangedSubviews: [timing, configured, actionBtn, taBtn, row1, date, picker, search, field, menuBtn, ctx, alertBtn, alert2Btn, sheetBtn, pushBtn])
         stack.axis = .vertical; stack.spacing = 6; stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14), stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12)])

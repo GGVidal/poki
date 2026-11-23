@@ -361,3 +361,62 @@ final class ToolkitTests: XCTestCase {
         app.terminate()
     }
 }
+
+extension SimFixtureTests {
+    // Single device rerun: every any-time class with the full AX error string, assertion result and fixture state,
+    // alert timing (≤1 s vs after 5 s), back with the 95005 kick, and the fixture's own bracket timings.
+    func testDEVRERUN() {
+        func st() -> String { "fixture state \(fixture.state.rawValue)" }
+        func t(_ name: String, _ e: XCUIElementSnapshot?, _ id: Int, _ v: Any? = nil) {
+            guard let e else { say("DR | \(name) | not found | \(st())"); return }
+            let b = lastEvent(); var err: NSString?
+            let ok = PBHelper.pressSnapshot(e, action: id, value: v, error: &err); usleep(900_000)
+            say("DR | \(name) | \(id) \(ok ? "ok" : "fail") | err \(err ?? "-") | frame \(e.frame) enabled \(e.isEnabled) | \(st()) | before \(b) after \(lastEvent())")
+        }
+        func bg(_ presenter: String? = nil, tab: String? = nil, args: [String] = ["-coverage"]) -> String {
+            background = true; fixture.launchArguments = args; fixture.launch(); sleep(2)
+            if let tab { fixture.buttons[tab].firstMatch.tap(); sleep(1) }
+            if let p = presenter { fixture.descendants(matching: .any)[p].firstMatch.tap(); sleep(1) }
+            let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+            let a = PBHelper.requestBackgroundAssertion(forPID: pid)
+            settings.activate(); _ = settings.wait(for: .runningForeground, timeout: 10)
+            return "assertion \(a.map { "\($0)" } ?? "nil")"
+        }
+        // alerts: 2010 within the first second vs after 5 s
+        for wait in [0, 5] {
+            say("DR | alert2 delete wait \(wait) | \(bg("cov.alert2"))"); sleep(UInt32(wait))
+            t("alert field 2006 (wait \(wait))", find(snap()) { $0.identifier == "cov.alertfield" }, 2006, "bgtext" as NSString)
+            t("alert Delete 2010 (wait \(wait))", find(snap()) { $0.label == "AlertDelete" }, 2010)
+            fixture.terminate(); sleep(1)
+            say("DR | alert2 submit wait \(wait) | \(bg("cov.alert2"))"); sleep(UInt32(wait))
+            t("alert Submit 2010 (wait \(wait))", find(snap()) { $0.label == "AlertSubmit" }, 2010)
+            fixture.terminate(); sleep(1)
+            say("DR | sheet wait \(wait) | \(bg("cov.sheet"))"); sleep(UInt32(wait))
+            t("sheet Cancel 2010 (wait \(wait))", find(snap()) { $0.label == "AlertCancel" }, 2010)
+            fixture.terminate(); sleep(1)
+        }
+        // UIKit coverage screen: bar item, page control, text set value, then back + kick, timings
+        say("DR | uikit | \(bg())"); sleep(1)
+        say("DR | timings \(find(snap()) { $0.identifier == "cov.timing" }?.label ?? "nil")")
+        t("bar item 2010", find(snap()) { $0.identifier == "cov.baritem" }, 2010)
+        t("page control 2004", find(snap()) { $0.identifier == "cov.page" }, 2004)
+        t("text field 2006", find(snap()) { $0.identifier == "cov.field" }, 2006, "bgvalue" as NSString)
+        fixture.terminate(); sleep(1)
+        say("DR | back | \(bg("cov.push"))"); sleep(1)
+        t("back 2013 on nav bar", find(snap()) { $0.elementType == .navigationBar }, 2013)
+        if let a = snap() { let r = PBHelper.daemonParamAttribute(95005, onSnapshot: a, parameter: ["AXAuditClippingTest": ["AXAuditShouldRunTestOption": true]] as NSDictionary); sleep(2); say("DR | back kick 95005 \(r.prefix(40)) | last \(lastEvent()) | detail item still \(find(snap()) { $0.identifier == "cov.detailitem" } != nil)") }
+        fixture.terminate(); sleep(1)
+        // SwiftUI tab
+        say("DR | swiftui | \(bg(tab: "SwiftUI"))"); sleep(1)
+        t("SwiftUI button 2010", find(snap()) { $0.identifier == "sui.button" }, 2010)
+        t("SwiftUI toggle 2010", find(snap()) { $0.identifier == "sui.toggle" }, 2010)
+        t("SwiftUI slider 2004", find(snap()) { $0.identifier == "sui.slider" }, 2004)
+        fixture.terminate(); sleep(1)
+        // default UI: segmented and custom action
+        say("DR | default | \(bg(args: []))"); sleep(1)
+        t("segment Two 2010", find(find(snap()) { $0.elementType == .segmentedControl }) { $0.label == "Two" }, 2010)
+        t("custom action 2021", find(snap()) { $0.identifier == "probeTarget" }, 2021, "Custom one" as NSString)
+        say("DR | front \(String(frontSummary().prefix(30)))")
+        fixture.terminate()
+    }
+}
