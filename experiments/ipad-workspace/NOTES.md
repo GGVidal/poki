@@ -51,7 +51,7 @@ iPad to a normal monitor works as before.
 
 1. The Mac's two local commits (4541ae1e link and display probes, d7a43e13 notes, on top of 7ea6d625)
    and evidence wait for your typed yes in the Mac session; a patch is at
-   `~/Developer/poki-ipad-workspace.patch`. The branch on GitHub has one newer commit (these notes),
+   `~/Developer/poki-ipad-workspace.patch`. The branch on GitHub has two newer commits (these notes),
    so the Mac merges before it pushes; nobody force-pushes.
 2. The on-device check in `README.md`: real iPad, Stage Manager, a display set to Extend, a keyboard
    and pointer. Drag an app to the display, run Check Displays, choose the display, then `look` and
