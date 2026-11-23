@@ -113,16 +113,27 @@ private struct WatchVoiceRemoteView: View {
     }
 
     private var mainVoiceScreen: some View {
-        ZStack {
-            WatchDesignTokens.screenBackground
+        let glow = mode.ambientGlow
+        let pulseBoost = (mode == .speaking || mode == .listening) ? Double(model.remoteMeterLevel) / 255.0 : 0
+
+        return ZStack {
+            WatchOLEDBackground(
+                center: glow.center,
+                innerColor: glow.inner,
+                midColor: glow.mid,
+                endRadiusFraction: glow.endFraction,
+                pulseBoost: pulseBoost
+            )
 
             VStack(spacing: 0) {
                 HStack {
                     topLeadingStatus(forSecondary: false)
                     Spacer()
                 }
-                .frame(height: 18)
-                .padding(.horizontal, 2)
+                .frame(height: 20)
+                .padding(.horizontal, 4)
+
+                Spacer(minLength: 2)
 
                 WatchVoiceOrbView(
                     mode: mode,
@@ -138,7 +149,6 @@ private struct WatchVoiceRemoteView: View {
                         showingVoiceTask = true
                     } : nil
                 )
-                .padding(.top, 7)
 
                 Spacer(minLength: 4)
 
@@ -149,7 +159,7 @@ private struct WatchVoiceRemoteView: View {
                     onEnd: { model.remoteEndAction() }
                 )
             }
-            .padding(.top, 17)
+            .padding(.top, WatchDesignTokens.screenTopPadding)
             .padding(.horizontal, WatchDesignTokens.screenHorizontalPadding)
             .padding(.bottom, WatchDesignTokens.screenBottomPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -157,42 +167,60 @@ private struct WatchVoiceRemoteView: View {
     }
 
     private var secondaryHubPage: some View {
-        VStack(spacing: 0) {
-            HStack {
-                topLeadingStatus(forSecondary: true)
-                Spacer()
-            }
-            .frame(height: 18)
-            .padding(.top, 16)
-            .padding(.horizontal, WatchDesignTokens.screenHorizontalPadding + 2)
+        ZStack {
+            WatchOLEDBackground(
+                center: UnitPoint(x: 0.5, y: 0.0),
+                innerColor: Color(hex: 0x0077FD, opacity: 0x2E / 255.0),
+                midColor: nil,
+                endRadiusFraction: 0.58
+            )
 
-            WatchVoiceSecondaryHubView(model: model)
+            VStack(spacing: 0) {
+                HStack {
+                    topLeadingStatus(forSecondary: true)
+                    Spacer()
+                }
+                .frame(height: 20)
+                .padding(.top, WatchDesignTokens.screenTopPadding)
+                .padding(.horizontal, WatchDesignTokens.screenHorizontalPadding + 4)
+
+                WatchVoiceSecondaryHubView(model: model)
+            }
         }
-        .background(WatchDesignTokens.screenBackground)
     }
 
     private func topLeadingStatus(forSecondary: Bool) -> some View {
         let dotColor: Color
         let labelColor: Color
+        let fillColor: Color
+        let borderColor: Color
         let labelText: LocalizedStringResource
 
         if forSecondary {
             dotColor = WatchDesignTokens.statusGreen
             labelColor = WatchDesignTokens.statusPokiLabel
+            fillColor = WatchDesignTokens.topPillNeutralFill
+            borderColor = WatchDesignTokens.topPillNeutralBorder
             labelText = "Poki"
         } else {
             switch mode.topStatus {
             case .connected:
                 dotColor = WatchDesignTokens.statusGreen
                 labelColor = WatchDesignTokens.statusPokiLabel
+                fillColor = WatchDesignTokens.topPillNeutralFill
+                borderColor = WatchDesignTokens.topPillNeutralBorder
                 labelText = "Poki"
             case .attention:
                 dotColor = WatchDesignTokens.statusOrange
-                labelColor = WatchDesignTokens.statusOrange
+                labelColor = WatchDesignTokens.statusAmberLight
+                fillColor = WatchDesignTokens.statusOrangePillFill
+                borderColor = WatchDesignTokens.statusOrangePillBorder
                 labelText = "Poki"
             case .disconnected:
                 dotColor = WatchDesignTokens.statusRed
-                labelColor = WatchDesignTokens.statusRedText
+                labelColor = WatchDesignTokens.statusRedIcon
+                fillColor = WatchDesignTokens.statusRedPillFill
+                borderColor = WatchDesignTokens.statusRedPillBorder
                 labelText = "Not connected"
             }
         }
@@ -201,10 +229,18 @@ private struct WatchVoiceRemoteView: View {
             Circle()
                 .fill(dotColor)
                 .frame(width: WatchDesignTokens.statusDotSize, height: WatchDesignTokens.statusDotSize)
+                .shadow(color: dotColor.opacity(0.8), radius: 3)
             Text(labelText)
                 .font(WatchDesignTokens.topBarFont)
                 .foregroundStyle(labelColor)
                 .lineLimit(1)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(fillColor, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(borderColor, lineWidth: 0.5)
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("watchRemote.topStatus")
@@ -214,7 +250,7 @@ private struct WatchVoiceRemoteView: View {
         switch mode {
         case .unavailable: "Unavailable"
         case .needsSetup: "Not set up"
-        case .idle: "Ready"
+        case .idle: "Poki"
         case .connecting, .waking: "Connecting"
         case .listening: "Listening"
         case .thinking: "Thinking"
@@ -241,7 +277,7 @@ private struct WatchVoiceRemoteView: View {
             if let transportError = model.remoteTransportError {
                 return String(localized: transportError)
             }
-            return String(localized: "Tap to talk or hold to speak")
+            return String(localized: "Tap to talk, hold for a task")
         case .connecting:
             return String(localized: "Checking connection and mic")
         case .waking:
@@ -277,7 +313,7 @@ private struct WatchVoiceRemoteView: View {
         case .needsSetup:
             return .primaryBlue(title: "Continue on iPhone", identifier: "watchRemote.continueOnPhone")
         case .idle:
-            return .caption(text: "Supports Double Tap", color: WatchDesignTokens.hintMuted)
+            return .captionPill(text: "Supports Double Tap")
         case .connecting, .waking, .muted:
             return .endOnly
         case .listening, .thinking, .acting, .speaking:

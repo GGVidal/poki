@@ -2,8 +2,8 @@
 // MIT License, Copyright (c) 2026 Chris Khoo; status badge styling adapted from
 // semantic-craft/iOS-vibebuddy (VibeBuddyApp/Watch/WatchAlertCard.swift, commit 2c2972d7),
 // MIT License, Copyright (c) 2026 Xianwei Zhang.
-// Poki replaces the SF Symbol orb with Poki's bear artwork, ring colors, status badges,
-// and Paper W02-W16 dynamic indicators.
+// Poki replaces the SF Symbol orb with Poki's bear artwork, watchOS 27 Liquid Glass specular
+// ring/glow, 3D status badges, and Paper `p-B-0` dynamic indicators.
 
 import SwiftUI
 
@@ -25,7 +25,7 @@ struct WatchVoiceOrbView: View {
         let art = mode.bearArt
         let indicator = mode.indicator
 
-        VStack(spacing: 6) {
+        VStack(spacing: isActing ? 5 : 6) {
             avatarControl(art: art)
 
             if let indicator {
@@ -34,13 +34,13 @@ struct WatchVoiceOrbView: View {
                     meterLevel: meterLevel,
                     reduceMotion: reduceMotion
                 )
-                .frame(height: WatchDesignTokens.indicatorHeight)
+                .frame(minHeight: WatchDesignTokens.indicatorHeight)
                 .accessibilityIdentifier(indicator == .listeningWave || indicator == .speakingWave ? "watchRemote.meter" : "")
             }
 
             VStack(spacing: indicator == nil ? 3 : 2) {
                 Text(title)
-                    .font(WatchDesignTokens.titleFont)
+                    .font(mode.titleFont)
                     .foregroundStyle(mode.titleColor)
                     .multilineTextAlignment(.center)
                     .lineLimit(1)
@@ -49,7 +49,7 @@ struct WatchVoiceOrbView: View {
 
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(WatchDesignTokens.subtitleFont)
+                        .font(mode.subtitleFont)
                         .foregroundStyle(mode.subtitleColor)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
@@ -58,7 +58,7 @@ struct WatchVoiceOrbView: View {
                         .accessibilityIdentifier(isActing ? "watchRemote.step" : "watchRemote.subtitle")
                 }
             }
-            .padding(.top, indicator == nil ? 8 : 0)
+            .padding(.top, indicator == nil ? 3 : 0)
         }
         .frame(maxWidth: .infinity)
     }
@@ -68,13 +68,34 @@ struct WatchVoiceOrbView: View {
         return false
     }
 
+    private var meterPulse: CGFloat {
+        guard !reduceMotion, mode == .speaking || mode == .listening else { return 0 }
+        return CGFloat(meterLevel) / 255.0
+    }
+
     @ViewBuilder
     private func avatarControl(art: WatchBearArtSpec) -> some View {
+        let glowRadius = art.glowRadius + (mode == .speaking ? meterPulse * 6 : meterPulse * 3)
         let circle = ZStack {
+            if let glowColor = art.glowColor, glowRadius > 0 {
+                Circle()
+                    .fill(glowColor.opacity(0.45 + Double(meterPulse) * 0.25))
+                    .frame(width: art.orbSize * 0.92, height: art.orbSize * 0.92)
+                    .blur(radius: glowRadius * 0.72)
+                    .allowsHitTesting(false)
+            }
+
             Circle()
-                .fill(art.backdrop)
-                .frame(width: WatchDesignTokens.avatarSize, height: WatchDesignTokens.avatarSize)
-                .overlay {
+                .fill(
+                    RadialGradient(
+                        colors: art.gradientStops,
+                        center: UnitPoint(x: 0.32, y: 0.24),
+                        startRadius: 2,
+                        endRadius: art.orbSize * 0.65
+                    )
+                )
+                .frame(width: art.orbSize, height: art.orbSize)
+                .overlay(alignment: .bottom) {
                     Image(art.assetName)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -82,13 +103,28 @@ struct WatchVoiceOrbView: View {
                         .offset(x: art.offsetX, y: art.offsetY)
                         .opacity(art.opacity)
                 }
+                .overlay {
+                    // Subtle top-arc specular reflection matching watchOS 27 Liquid Glass orb.
+                    Circle()
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(art.specularOpacity),
+                                    .white.opacity(0.06),
+                                    .clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
+                        .padding(1)
+                }
                 .clipShape(Circle())
 
-            if let ringColor = art.ringColor {
-                Circle()
-                    .strokeBorder(ringColor, lineWidth: WatchDesignTokens.avatarRingWidth)
-                    .frame(width: WatchDesignTokens.avatarSize, height: WatchDesignTokens.avatarSize)
-            }
+            Circle()
+                .strokeBorder(art.ringColor, lineWidth: art.ringWidth)
+                .frame(width: art.orbSize, height: art.orbSize)
         }
         .overlay(alignment: .bottomTrailing) {
             if let badge = art.badge {
@@ -96,8 +132,9 @@ struct WatchVoiceOrbView: View {
                     .offset(x: WatchDesignTokens.badgeOffset, y: WatchDesignTokens.badgeOffset)
             }
         }
-        .frame(width: WatchDesignTokens.avatarSize, height: WatchDesignTokens.avatarSize)
+        .frame(width: art.orbSize, height: art.orbSize)
         .contentShape(Circle())
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: meterLevel)
 
         if isInteractive {
             let button = Button {
@@ -150,7 +187,24 @@ private struct WatchCornerBadgeView: View {
                 .fill(WatchDesignTokens.screenBackground)
                 .frame(width: WatchDesignTokens.badgeSize, height: WatchDesignTokens.badgeSize)
             Circle()
-                .fill(fillColor)
+                .fill(
+                    LinearGradient(
+                        colors: fillGradient,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay {
+                    Circle()
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.45), .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 0.75
+                        )
+                }
                 .frame(width: innerSize, height: innerSize)
             Image(systemName: symbolName)
                 .font(.system(size: symbolSize, weight: .bold))
@@ -160,11 +214,11 @@ private struct WatchCornerBadgeView: View {
         .accessibilityHidden(true)
     }
 
-    private var fillColor: Color {
+    private var fillGradient: [Color] {
         switch kind {
-        case .error: WatchDesignTokens.statusRed
-        case .setup, .locked: WatchDesignTokens.statusOrange
-        case .muted: WatchDesignTokens.badgeMutedFill
+        case .error: [WatchDesignTokens.statusRedBright, WatchDesignTokens.statusRedDeep]
+        case .setup, .locked: [WatchDesignTokens.statusAmberLight, WatchDesignTokens.statusAmberDeep]
+        case .muted: [WatchDesignTokens.badgeMutedTop, WatchDesignTokens.badgeMutedBottom]
         }
     }
 
@@ -186,10 +240,10 @@ private struct WatchCornerBadgeView: View {
 
     private var symbolSize: CGFloat {
         switch kind {
-        case .error: 12.5
-        case .setup: 12
-        case .locked: 11.5
-        case .muted: 11
+        case .error: 12
+        case .setup: 11.5
+        case .locked: 11
+        case .muted: 10.5
         }
     }
 }
@@ -199,52 +253,116 @@ private struct WatchDynamicIndicatorView: View {
     let meterLevel: UInt8
     let reduceMotion: Bool
 
-    private static let listeningHeights: [CGFloat] = [5, 11, 18, 11, 5]
-    private static let speakingHeights: [CGFloat] = [7, 18, 13, 8, 4]
+    private static let listeningHeights: [CGFloat] = [6, 12, 17, 11, 6]
+    private static let listeningColors: [Color] = [
+        Color(hex: 0x7CC0FF),
+        Color(hex: 0x5AA7FF),
+        Color(hex: 0xA2D4FF),
+        Color(hex: 0x5AA7FF),
+        Color(hex: 0x7CC0FF)
+    ]
+
+    private static let speakingHeights: [CGFloat] = [7, 17, 12, 8, 5]
+    private static let speakingColors: [Color] = [
+        Color(hex: 0x2D8CFF),
+        Color(hex: 0x6DB8FF),
+        Color(hex: 0x2D8CFF),
+        Color(hex: 0x0077FD),
+        Color(hex: 0x0077FD)
+    ]
 
     var body: some View {
         switch kind {
         case .connectingDots:
-            pulsingDots(count: 5, size: 4, spacing: 4, color: WatchDesignTokens.subtitleDefault)
+            pulsingDots(
+                count: 5,
+                size: 4,
+                spacing: 4,
+                color: WatchDesignTokens.skyBlueLight,
+                opacities: [1.0, 0.82, 0.62, 0.42, 0.24],
+                glowActive: false
+            )
         case .thinkingDots:
-            pulsingDots(count: 3, size: 6, spacing: 6, color: .white)
+            pulsingDots(
+                count: 3,
+                size: 6,
+                spacing: 6,
+                color: .white,
+                opacities: [1.0, 0.65, 0.35],
+                glowActive: true
+            )
         case .listeningWave:
-            waveBars(baseHeights: Self.listeningHeights, color: WatchDesignTokens.ringSkyBlue)
+            waveBars(
+                baseHeights: Self.listeningHeights,
+                colors: Self.listeningColors,
+                peakIndex: 2,
+                glowColor: WatchDesignTokens.skyBlue
+            )
         case .speakingWave:
-            waveBars(baseHeights: Self.speakingHeights, color: WatchDesignTokens.ringPokiBlue)
+            waveBars(
+                baseHeights: Self.speakingHeights,
+                colors: Self.speakingColors,
+                peakIndex: 1,
+                glowColor: WatchDesignTokens.pokiBlue
+            )
         case .stepBadge(let text):
             Text(text)
                 .font(WatchDesignTokens.stepBadgeFont)
-                .foregroundStyle(WatchDesignTokens.ringSkyBlue)
+                .foregroundStyle(WatchDesignTokens.skyBlueLight)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 2)
+                .background(Color(hex: 0x5AA7FF, opacity: 0x24 / 255.0), in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(Color(hex: 0x8AC4FF, opacity: 0x55 / 255.0), lineWidth: 0.75)
+                }
                 .accessibilityIdentifier("watchRemote.stepBadge")
         case .endedCheckmark:
-            Image(systemName: "checkmark")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(WatchDesignTokens.checkmarkGray)
-                .accessibilityHidden(true)
+            ZStack {
+                Circle()
+                    .fill(WatchDesignTokens.statusGreenBadgeFill)
+                Circle()
+                    .strokeBorder(WatchDesignTokens.statusGreenBadgeBorder, lineWidth: 0.75)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(WatchDesignTokens.statusGreenCheck)
+            }
+            .frame(width: 22, height: 22)
+            .accessibilityHidden(true)
         }
     }
 
     @ViewBuilder
-    private func pulsingDots(count: Int, size: CGFloat, spacing: CGFloat, color: Color) -> some View {
+    private func pulsingDots(
+        count: Int,
+        size: CGFloat,
+        spacing: CGFloat,
+        color: Color,
+        opacities: [Double],
+        glowActive: Bool
+    ) -> some View {
         if reduceMotion {
             HStack(spacing: spacing) {
-                ForEach(0..<count, id: \.self) { _ in
+                ForEach(0..<count, id: \.self) { index in
                     Circle()
                         .fill(color)
                         .frame(width: size, height: size)
+                        .opacity(opacities[index % opacities.count])
                 }
             }
             .accessibilityHidden(true)
         } else {
-            TimelineView(.periodic(from: .now, by: 0.35)) { context in
-                let step = Int(context.date.timeIntervalSinceReferenceDate / 0.35) % count
+            TimelineView(.periodic(from: .now, by: 0.32)) { context in
+                let step = Int(context.date.timeIntervalSinceReferenceDate / 0.32) % count
                 HStack(spacing: spacing) {
                     ForEach(0..<count, id: \.self) { index in
+                        let distance = (index - step + count) % count
+                        let alpha = opacities[distance % opacities.count]
                         Circle()
                             .fill(color)
                             .frame(width: size, height: size)
-                            .opacity(index == step ? 1.0 : 0.78)
+                            .opacity(alpha)
+                            .shadow(color: glowActive && distance == 0 ? color.opacity(0.8) : .clear, radius: 4)
                     }
                 }
             }
@@ -252,14 +370,20 @@ private struct WatchDynamicIndicatorView: View {
         }
     }
 
-    private func waveBars(baseHeights: [CGFloat], color: Color) -> some View {
-        let scale: Double = meterLevel == 0 ? 1.0 : (0.72 + 0.28 * (Double(meterLevel) / 255.0))
-        return HStack(spacing: 3) {
+    private func waveBars(
+        baseHeights: [CGFloat],
+        colors: [Color],
+        peakIndex: Int,
+        glowColor: Color
+    ) -> some View {
+        let scale: Double = meterLevel == 0 ? 1.0 : (0.72 + 0.32 * (Double(meterLevel) / 255.0))
+        return HStack(spacing: 3.5) {
             ForEach(baseHeights.indices, id: \.self) { index in
-                let height = max(4, min(18, baseHeights[index] * scale))
+                let height = max(4, min(17, baseHeights[index] * scale))
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(color)
+                    .fill(colors[index])
                     .frame(width: 4, height: height)
+                    .shadow(color: index == peakIndex ? glowColor.opacity(0.8) : .clear, radius: 5)
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: meterLevel)

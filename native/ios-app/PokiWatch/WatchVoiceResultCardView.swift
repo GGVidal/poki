@@ -1,7 +1,8 @@
 // Adapted from semantic-craft/iOS-vibebuddy (VibeBuddyApp/Watch/WatchAlertCard.swift and
 // WatchRootView.swift, commit 2c2972d7), MIT License, Copyright (c) 2026 Xianwei Zhang.
-// Poki adapts the watch card presentation and secondary paging structure to Paper W13A
-// while preserving one-shot Voice Task, task history, and multi-chunk result loading.
+// Poki adapts the watch card presentation, secondary hub (W17), and Voice Task (W18) to Paper
+// `p-B-0` watchOS 27 Liquid Glass styling while preserving one-shot Voice Task, task history,
+// and multi-chunk result loading.
 
 import SwiftUI
 
@@ -16,22 +17,32 @@ struct WatchVoiceResultView: View {
         model.results.first(where: { $0.id == id })
     }
 
+    private var isBlocked: Bool {
+        update?.phase == .blocked
+    }
+
     var body: some View {
         ZStack {
-            WatchDesignTokens.screenBackground
-                .ignoresSafeArea()
+            WatchOLEDBackground(
+                center: UnitPoint(x: 0.30, y: 0.10),
+                innerColor: isBlocked
+                    ? Color(hex: 0xFF9F0A, opacity: 0x2E / 255.0)
+                    : Color(hex: 0x30D158, opacity: 0x2E / 255.0),
+                midColor: nil,
+                endRadiusFraction: 0.58
+            )
 
-            VStack(spacing: 8) {
+            VStack(spacing: 6) {
                 HStack {
                     resultTopStatus
                     Spacer()
                 }
-                .frame(height: 18)
-                .padding(.horizontal, 2)
+                .frame(height: 20)
+                .padding(.horizontal, 4)
 
                 if let update {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 7) {
+                        VStack(alignment: .leading, spacing: 6) {
                             if update.fullTextBytes != nil {
                                 if loadFailed {
                                     Text("Couldn’t load the full result.")
@@ -55,26 +66,52 @@ struct WatchVoiceResultView: View {
                                     .font(WatchDesignTokens.resultHeadlineFont)
                                     .foregroundStyle(WatchDesignTokens.titleWhite)
                                     .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityIdentifier("watchResult.headline")
                                 if let detail = parts.body {
                                     Text(detail)
                                         .font(WatchDesignTokens.resultBodyFont)
                                         .foregroundStyle(WatchDesignTokens.cardBodyText)
-                                        .lineSpacing(3)
+                                        .lineSpacing(3.5)
                                         .fixedSize(horizontal: false, vertical: true)
+                                        .accessibilityIdentifier("watchResult.body")
                                 }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(WatchDesignTokens.resultCardPadding)
-                        .padding(.bottom, 6)
+                        .padding(.horizontal, WatchDesignTokens.resultCardPaddingH)
+                        .padding(.top, WatchDesignTokens.resultCardPaddingV)
+                        .padding(.bottom, 16)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .scrollIndicators(.visible)
+                    .tint(isBlocked ? WatchDesignTokens.statusOrange : WatchDesignTokens.statusGreen)
                     .background(
-                        WatchDesignTokens.cardFill,
+                        LinearGradient(
+                            colors: [WatchDesignTokens.resultCardTop, WatchDesignTokens.resultCardBottom],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
                         in: RoundedRectangle(cornerRadius: WatchDesignTokens.resultCardCornerRadius, style: .continuous)
                     )
+                    .overlay(alignment: .trailing) {
+                        // Subtle watchOS 27 scroll cue bar matching Paper W13A.
+                        VStack(spacing: 0) {
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(isBlocked ? WatchDesignTokens.statusOrange : WatchDesignTokens.statusGreen)
+                                .frame(width: 2.5, height: 22)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(width: 2.5, height: 52)
+                        .background(Color.white.opacity(0.18), in: Capsule())
+                        .padding(.trailing, 3.5)
+                        .allowsHitTesting(false)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: WatchDesignTokens.resultCardCornerRadius, style: .continuous)
+                            .strokeBorder(WatchDesignTokens.resultCardBorder, lineWidth: 0.75)
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: WatchDesignTokens.resultCardCornerRadius, style: .continuous))
+                    .padding(.top, 2)
                 } else {
                     Text("Result")
                         .font(WatchDesignTokens.resultBodyFont)
@@ -84,18 +121,19 @@ struct WatchVoiceResultView: View {
 
                 HStack {
                     Text("Turn Crown for details")
-                        .font(WatchDesignTokens.subtitleFont)
+                        .font(WatchDesignTokens.resultFooterFont)
                         .foregroundStyle(WatchDesignTokens.hintSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     Spacer(minLength: 4)
                     Text("Saved to history")
-                        .font(WatchDesignTokens.hintFont)
-                        .foregroundStyle(WatchDesignTokens.hintMuted)
+                        .font(WatchDesignTokens.resultFooterFont)
+                        .foregroundStyle(WatchDesignTokens.historyLinkBlue)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 3)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
 
                 Button {
                     model.clearSelectedResult()
@@ -107,14 +145,23 @@ struct WatchVoiceResultView: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: WatchDesignTokens.bottomBarHeight)
                         .background(
-                            WatchDesignTokens.pillNeutralFill,
-                            in: RoundedRectangle(cornerRadius: WatchDesignTokens.pillCornerRadius, style: .continuous)
+                            LinearGradient(
+                                colors: [Color.white.opacity(0x24 / 255.0), Color.white.opacity(0x10 / 255.0)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            in: Capsule()
                         )
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(Color.white.opacity(0x38 / 255.0), lineWidth: 0.75)
+                        }
                 }
                 .buttonStyle(.plain)
+                .watchGlassControl(in: Capsule(), tint: .white.opacity(0.06), interactive: true)
                 .accessibilityIdentifier("watchResult.done")
             }
-            .padding(.top, 17)
+            .padding(.top, WatchDesignTokens.screenTopPadding)
             .padding(.horizontal, WatchDesignTokens.screenHorizontalPadding)
             .padding(.bottom, WatchDesignTokens.screenBottomPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -129,27 +176,30 @@ struct WatchVoiceResultView: View {
     }
 
     private var resultTopStatus: some View {
-        let isBlocked = update?.phase == .blocked
-        let accent = isBlocked ? WatchDesignTokens.statusOrange : WatchDesignTokens.statusGreen
-        let pillFill = isBlocked ? WatchDesignTokens.statusOrange.opacity(0.22) : WatchDesignTokens.statusGreenPill
+        let accent = isBlocked ? WatchDesignTokens.statusAmberLight : WatchDesignTokens.statusGreenLight
+        let iconColor = isBlocked ? WatchDesignTokens.statusOrange : WatchDesignTokens.statusGreen
+        let pillFill = isBlocked ? WatchDesignTokens.statusOrangePillFill : WatchDesignTokens.statusGreenPillFill
+        let pillBorder = isBlocked ? WatchDesignTokens.statusOrangePillBorder : WatchDesignTokens.statusGreenPillBorder
         let title: LocalizedStringResource = update?.phase.title ?? "Task finished"
         let symbol = isBlocked ? "exclamationmark" : "checkmark"
 
-        return HStack(spacing: 5) {
-            ZStack {
-                Circle()
-                    .fill(pillFill)
-                Image(systemName: symbol)
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(accent)
-            }
-            .frame(width: 15, height: 15)
+        return HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(iconColor)
 
             Text(title)
-                .font(WatchDesignTokens.topBarFont)
+                .font(WatchDesignTokens.resultTopBarFont)
                 .foregroundStyle(accent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(pillFill, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(pillBorder, lineWidth: 0.5)
         }
         .accessibilityIdentifier("watchResult.status")
     }
@@ -162,6 +212,33 @@ struct WatchVoiceResultView: View {
         if lines.count == 2 {
             return (lines[0], lines[1])
         }
+        // Single-paragraph fallback: promote a concise leading title or first sentence so
+        // W13A always shows a clear bold headline + body hierarchy even without a newline.
+        if trimmed.count > 18 {
+            let delimiters: [Character] = ["。", "！", "？", "：", "!", "?"]
+            if let cutIndex = trimmed.firstIndex(where: { delimiters.contains($0) }) {
+                let distance = trimmed.distance(from: trimmed.startIndex, to: cutIndex)
+                if distance >= 3, distance <= 24 {
+                    let after = trimmed.index(after: cutIndex)
+                    let remainder = trimmed[after...].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !remainder.isEmpty {
+                        let lead = trimmed[cutIndex] == "："
+                            ? String(trimmed[..<cutIndex])
+                            : String(trimmed[...cutIndex])
+                        return (lead.trimmingCharacters(in: .whitespaces), remainder)
+                    }
+                }
+            }
+            if let dotRange = trimmed.range(of: ". ") {
+                let distance = trimmed.distance(from: trimmed.startIndex, to: dotRange.lowerBound)
+                if distance >= 4, distance <= 44 {
+                    let remainder = trimmed[dotRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !remainder.isEmpty {
+                        return (String(trimmed[..<dotRange.lowerBound]) + ".", remainder)
+                    }
+                }
+            }
+        }
         return (trimmed, nil)
     }
 }
@@ -170,96 +247,164 @@ struct WatchVoiceSecondaryHubView: View {
     let model: WatchVoiceModel
 
     var body: some View {
-        ZStack {
-            WatchDesignTokens.screenBackground
-                .ignoresSafeArea()
-
-            ScrollView {
-                VStack(spacing: 8) {
-                    if let latest = model.results.first {
-                        NavigationLink {
-                            WatchVoiceResultView(model: model, id: latest.id)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 5) {
-                                    Image(systemName: latest.phase.symbol)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(latest.phase == .finished ? WatchDesignTokens.statusGreen : WatchDesignTokens.statusOrange)
-                                    Text(latest.phase.title)
-                                        .font(WatchDesignTokens.buttonFont)
-                                        .foregroundStyle(WatchDesignTokens.titleWhite)
-                                        .lineLimit(1)
-                                }
-                                if let text = latest.text {
-                                    Text(text)
-                                        .font(WatchDesignTokens.resultBodyFont)
-                                        .foregroundStyle(WatchDesignTokens.cardBodyText)
-                                        .lineLimit(2)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(11)
-                            .background(
-                                WatchDesignTokens.cardFill,
-                                in: RoundedRectangle(cornerRadius: WatchDesignTokens.resultCardCornerRadius, style: .continuous)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("watchRemote.latestResult")
-                    }
-
-                    if !model.results.isEmpty {
-                        NavigationLink {
-                            WatchVoiceHistoryView(model: model)
-                        } label: {
-                            hubRow(title: "Task history", symbol: "clock.arrow.circlepath", showBadge: false)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("watchRemote.history")
-                    }
-
+        ScrollView {
+            VStack(spacing: 7) {
+                if let latest = model.results.first {
                     NavigationLink {
-                        WatchVoiceTaskView(model: model)
+                        WatchVoiceResultView(model: model, id: latest.id)
                     } label: {
-                        hubRow(title: "Voice Task", symbol: "mic.fill", showBadge: model.hasPending)
+                        latestResultCard(latest)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("watchRemote.voiceTask")
+                    .accessibilityIdentifier("watchRemote.latestResult")
                 }
-                .padding(.horizontal, WatchDesignTokens.screenHorizontalPadding)
-                .padding(.top, 6)
-                .padding(.bottom, WatchDesignTokens.screenBottomPadding)
+
+                if !model.results.isEmpty {
+                    NavigationLink {
+                        WatchVoiceHistoryView(model: model)
+                    } label: {
+                        hubRow(
+                            title: "Task history",
+                            symbol: "clock",
+                            isPrimaryBlue: false,
+                            showBadge: false
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("watchRemote.history")
+                }
+
+                NavigationLink {
+                    WatchVoiceTaskView(model: model)
+                } label: {
+                    hubRow(
+                        title: "Voice Task",
+                        symbol: "mic.fill",
+                        isPrimaryBlue: true,
+                        showBadge: model.hasPending
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("watchRemote.voiceTask")
             }
+            .padding(.horizontal, WatchDesignTokens.screenHorizontalPadding - 1)
+            .padding(.top, 7)
+            .padding(.bottom, WatchDesignTokens.screenBottomPadding)
         }
     }
 
-    private func hubRow(title: LocalizedStringResource, symbol: String, showBadge: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(WatchDesignTokens.ringSkyBlue)
-                .frame(width: 18)
+    private func latestResultCard(_ latest: WatchVoiceUpdate) -> some View {
+        let isFinished = latest.phase == .finished
+        let accent = isFinished ? WatchDesignTokens.statusGreenLight : WatchDesignTokens.statusAmberLight
+        let iconColor = isFinished ? WatchDesignTokens.statusGreen : WatchDesignTokens.statusOrange
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                ZStack {
+                    Circle()
+                        .fill(iconColor.opacity(0.22))
+                    Image(systemName: isFinished ? "checkmark" : "exclamationmark")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundStyle(iconColor)
+                }
+                .frame(width: 14, height: 14)
+
+                Text(latest.phase.title)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .lineLimit(1)
+            }
+            if let text = latest.text {
+                let parts = WatchVoiceResultView.splitHeadlineAndBody(text)
+                Text(parts.headline)
+                    .font(WatchDesignTokens.hubCardPreviewFont)
+                    .foregroundStyle(WatchDesignTokens.titleWhite)
+                    .lineSpacing(2)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
+        .background(
+            LinearGradient(
+                colors: [WatchDesignTokens.hubLatestTop, WatchDesignTokens.hubLatestBottom],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: WatchDesignTokens.hubCardCornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: WatchDesignTokens.hubCardCornerRadius, style: .continuous)
+                .strokeBorder(WatchDesignTokens.resultCardBorder, lineWidth: 0.75)
+        }
+    }
+
+    private func hubRow(
+        title: LocalizedStringResource,
+        symbol: String,
+        isPrimaryBlue: Bool,
+        showBadge: Bool
+    ) -> some View {
+        let bgColors = isPrimaryBlue
+            ? [WatchDesignTokens.hubBlueRowTop, WatchDesignTokens.hubBlueRowBottom]
+            : [WatchDesignTokens.hubRowTop, WatchDesignTokens.hubRowBottom]
+        let borderColor = isPrimaryBlue
+            ? WatchDesignTokens.hubBlueRowBorder
+            : WatchDesignTokens.resultCardBorder
+        let badgeFill = isPrimaryBlue
+            ? Color(hex: 0x0077FD, opacity: 0x73 / 255.0)
+            : Color(hex: 0x5AA7FF, opacity: 0x33 / 255.0)
+        let badgeBorder = isPrimaryBlue
+            ? Color(hex: 0x9ACFFF, opacity: 0xB3 / 255.0)
+            : Color(hex: 0x8AC4FF, opacity: 0x80 / 255.0)
+        let iconColor: Color = isPrimaryBlue ? .white : WatchDesignTokens.skyBlueLight
+
+        return HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(badgeFill)
+                Circle()
+                    .strokeBorder(badgeBorder, lineWidth: 0.75)
+                Image(systemName: symbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(iconColor)
+            }
+            .frame(width: 22, height: 22)
+
             Text(title)
-                .font(WatchDesignTokens.buttonFont)
+                .font(WatchDesignTokens.hubCardTitleFont)
                 .foregroundStyle(WatchDesignTokens.titleWhite)
                 .lineLimit(1)
+
             Spacer(minLength: 4)
+
             if showBadge {
                 Circle()
-                    .fill(WatchDesignTokens.pillBlueFill)
+                    .fill(WatchDesignTokens.pokiBlue)
                     .frame(width: 7, height: 7)
             }
+
             Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(WatchDesignTokens.hintSecondary)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(isPrimaryBlue ? 0.72 : 0.55))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 11)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity)
         .background(
-            WatchDesignTokens.cardFill,
-            in: RoundedRectangle(cornerRadius: WatchDesignTokens.resultCardCornerRadius, style: .continuous)
+            LinearGradient(
+                colors: bgColors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: WatchDesignTokens.hubCardCornerRadius, style: .continuous)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: WatchDesignTokens.hubCardCornerRadius, style: .continuous)
+                .strokeBorder(borderColor, lineWidth: 0.75)
+        }
     }
 }
 
@@ -267,27 +412,52 @@ struct WatchVoiceHistoryView: View {
     let model: WatchVoiceModel
 
     var body: some View {
-        List(model.results) { update in
-            NavigationLink {
-                WatchVoiceResultView(model: model, id: update.id)
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label(update.phase.title, systemImage: update.phase.symbol)
-                        .font(WatchDesignTokens.buttonFont)
-                    if let text = update.text {
-                        Text(text)
-                            .font(WatchDesignTokens.resultBodyFont)
-                            .foregroundStyle(WatchDesignTokens.subtitleDefault)
-                            .lineLimit(2)
-                    }
+        Group {
+            if model.results.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(WatchDesignTokens.skyBlueLight)
+                    Text("No tasks yet")
+                        .font(WatchDesignTokens.resultBodyFont)
+                        .foregroundStyle(WatchDesignTokens.subtitleDefault)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(model.results) { update in
+                    NavigationLink {
+                        WatchVoiceResultView(model: model, id: update.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(update.phase.title, systemImage: update.phase.symbol)
+                                .font(WatchDesignTokens.buttonFont)
+                                .foregroundStyle(update.phase == .finished ? WatchDesignTokens.statusGreenLight : WatchDesignTokens.statusAmberLight)
+                            if let text = update.text {
+                                Text(text)
+                                    .font(WatchDesignTokens.resultBodyFont)
+                                    .foregroundStyle(WatchDesignTokens.cardBodyText)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: WatchDesignTokens.hubCardCornerRadius, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [WatchDesignTokens.hubLatestTop, WatchDesignTokens.hubLatestBottom],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: WatchDesignTokens.hubCardCornerRadius, style: .continuous)
+                                    .strokeBorder(WatchDesignTokens.resultCardBorder, lineWidth: 0.75)
+                            }
+                    )
+                }
+                .scrollContentBackground(.hidden)
             }
-            .listRowBackground(
-                RoundedRectangle(cornerRadius: WatchDesignTokens.resultCardCornerRadius, style: .continuous)
-                    .fill(WatchDesignTokens.cardFill)
-            )
         }
-        .scrollContentBackground(.hidden)
         .background(WatchDesignTokens.screenBackground.ignoresSafeArea())
         .navigationTitle("Task history")
     }
@@ -295,98 +465,255 @@ struct WatchVoiceHistoryView: View {
 
 struct WatchVoiceTaskView: View {
     let model: WatchVoiceModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
-            WatchDesignTokens.screenBackground
-                .ignoresSafeArea()
+            WatchOLEDBackground(
+                center: UnitPoint(x: 0.5, y: 0.42),
+                innerColor: model.recording
+                    ? Color(hex: 0xFF453A, opacity: 0x42 / 255.0)
+                    : Color(hex: 0x0077FD, opacity: 0x42 / 255.0),
+                midColor: nil,
+                endRadiusFraction: 0.68
+            )
 
-            ScrollView {
-                VStack(spacing: 12) {
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(Color.white.opacity(0x16 / 255.0), in: Circle())
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(Color.white.opacity(0x2E / 255.0), lineWidth: 0.5)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .watchGlassControl(in: Circle(), tint: .white.opacity(0.05), interactive: true)
+                    .accessibilityLabel("Back")
+
+                    Text("Voice Task")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(WatchDesignTokens.skyBlueLight)
+                        .lineLimit(1)
+
+                    Spacer()
+                }
+                .frame(height: 22)
+                .padding(.horizontal, 2)
+
+                Spacer(minLength: 6)
+
+                VStack(spacing: 8) {
                     if model.microphone == .undetermined {
-                        Button("Enable microphone", systemImage: "mic") {
+                        Button {
                             Task { await model.requestMicrophone() }
+                        } label: {
+                            Label("Enable microphone", systemImage: "mic.fill")
+                                .font(WatchDesignTokens.buttonFont)
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: WatchDesignTokens.bottomBarHeight)
+                                .background(
+                                    LinearGradient(
+                                        colors: [WatchDesignTokens.pokiBlueTop, WatchDesignTokens.pokiBlueBottom],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    in: Capsule()
+                                )
+                                .overlay {
+                                    Capsule()
+                                        .strokeBorder(WatchDesignTokens.glassBlueBorder, lineWidth: 0.75)
+                                }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(WatchDesignTokens.pillBlueFill)
+                        .buttonStyle(.plain)
+                        .watchGlassControl(in: Capsule(), tint: WatchDesignTokens.pokiBlue.opacity(0.75), interactive: true)
                     } else if model.microphone == .denied {
-                        Label("Allow Poki’s microphone in Watch Settings.", systemImage: "mic.slash")
-                            .font(.footnote)
-                            .foregroundStyle(WatchDesignTokens.subtitleDefault)
+                        VStack(spacing: 6) {
+                            Image(systemName: "mic.slash.fill")
+                                .font(.system(size: 24, weight: .semibold))
+                                .foregroundStyle(WatchDesignTokens.statusAmberLight)
+                            Text("Allow Poki’s microphone in Watch Settings.")
+                                .font(WatchDesignTokens.compactSubtitleFont)
+                                .foregroundStyle(WatchDesignTokens.subtitleDefault)
+                                .multilineTextAlignment(.center)
+                        }
                     } else if !model.hasPending {
                         recordControl
                     }
+
                     if let update = model.update {
                         Label(update.phase.title, systemImage: update.phase.symbol)
-                            .font(.headline)
+                            .font(WatchDesignTokens.compactTitleFont)
+                            .foregroundStyle(.white)
                     } else if model.hasPending {
                         Label("Sending recording…", systemImage: "arrow.up.circle")
-                            .font(.headline)
+                            .font(WatchDesignTokens.compactTitleFont)
+                            .foregroundStyle(WatchDesignTokens.skyBlueLight)
                     }
+
                     if let problem = model.problem {
                         Text(problem)
-                            .font(.footnote)
+                            .font(WatchDesignTokens.compactSubtitleFont)
                             .foregroundStyle(WatchDesignTokens.subtitleDefault)
                             .multilineTextAlignment(.center)
+                            .lineLimit(2)
                     }
+
                     if model.hasPending, !model.sending {
-                        Button(model.update == nil ? "Retry delivery" : "Check iPhone") { model.sync() }
-                            .buttonStyle(.borderedProminent)
-                            .tint(WatchDesignTokens.pillBlueFill)
-                    }
-                    if let latest = model.results.first, !model.hasPending, !model.recording {
-                        NavigationLink {
-                            WatchVoiceResultView(model: model, id: latest.id)
+                        Button {
+                            model.sync()
                         } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Label(latest.phase.title, systemImage: latest.phase.symbol)
-                                    .font(.footnote.weight(.semibold))
-                                if let text = latest.text {
-                                    Text(text).font(.caption2).lineLimit(2)
-                                }
-                            }
+                            Text(model.update == nil ? "Retry delivery" : "Check iPhone")
+                                .font(WatchDesignTokens.buttonFont)
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: WatchDesignTokens.secondaryBottomBarHeight)
+                                .background(
+                                    LinearGradient(
+                                        colors: [WatchDesignTokens.pokiBlueTop, WatchDesignTokens.pokiBlueBottom],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    in: Capsule()
+                                )
                         }
-                    }
-                    if !model.results.isEmpty, !model.recording {
-                        NavigationLink("Task history") {
-                            WatchVoiceHistoryView(model: model)
-                        }
+                        .buttonStyle(.plain)
+                        .watchGlassControl(in: Capsule(), tint: WatchDesignTokens.pokiBlue.opacity(0.75), interactive: true)
                     }
                 }
-                .padding(.horizontal, 4)
+
+                Spacer(minLength: 8)
+
+                if !model.recording {
+                    NavigationLink {
+                        WatchVoiceHistoryView(model: model)
+                    } label: {
+                        Text("View task history")
+                            .font(WatchDesignTokens.secondaryButtonFont)
+                            .foregroundStyle(.white.opacity(0xEC / 255.0))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: WatchDesignTokens.secondaryBottomBarHeight)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(0x20 / 255.0), Color.white.opacity(0x10 / 255.0)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                in: Capsule()
+                            )
+                            .overlay {
+                                Capsule()
+                                    .strokeBorder(Color.white.opacity(0x36 / 255.0), lineWidth: 0.75)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .watchGlassControl(in: Capsule(), tint: .white.opacity(0.05), interactive: true)
+                    .accessibilityIdentifier("watchVoice.history")
+                }
             }
+            .padding(.top, WatchDesignTokens.screenTopPadding)
+            .padding(.horizontal, WatchDesignTokens.screenHorizontalPadding)
+            .padding(.bottom, WatchDesignTokens.screenBottomPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle("Voice Task")
+        .ignoresSafeArea()
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             if model.microphone == .granted { await model.requestNotifications() }
         }
     }
 
     private var recordControl: some View {
-        VStack(spacing: 7) {
-            Image(systemName: model.recording ? "waveform" : "mic.fill")
-                .font(.system(size: 29, weight: .semibold))
-                .foregroundStyle(model.recording ? .white : WatchDesignTokens.ringSkyBlue)
-                .frame(width: 64, height: 64)
-                .background(model.recording ? WatchDesignTokens.statusRed : WatchDesignTokens.avatarBackdropPokiBlue, in: Circle())
-                .overlay {
-                    Circle()
-                        .strokeBorder(model.recording ? WatchDesignTokens.statusRed : WatchDesignTokens.ringSkyBlue, lineWidth: 2)
-                }
-                .contentShape(Circle())
-                .onLongPressGesture(minimumDuration: 15, maximumDistance: 45, perform: {}) { pressing in
-                    if pressing { model.startRecording() } else { model.stopRecording() }
-                }
-                .accessibilityLabel(model.recording ? "Send recording" : "Record a task")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction {
-                    if model.recording { model.stopRecording() } else { model.startRecording() }
-                }
-                .accessibilityIdentifier("watchVoice.record")
-            Text(model.recording ? "Listening… Release to send" : "Hold to speak")
-                .font(.footnote)
-                .foregroundStyle(WatchDesignTokens.subtitleDefault)
-                .multilineTextAlignment(.center)
+        let isRecording = model.recording
+        let orbSize: CGFloat = 86
+        let gradientStops = isRecording
+            ? [
+                Color(hex: 0xFF6B63, opacity: 0x85 / 255.0),
+                Color(hex: 0xFF453A, opacity: 0x48 / 255.0),
+                Color(hex: 0x26080A, opacity: 0xE6 / 255.0)
+            ]
+            : [
+                Color(hex: 0x5AA7FF, opacity: 0x73 / 255.0),
+                Color(hex: 0x0077FD, opacity: 0x38 / 255.0),
+                Color(hex: 0x081226, opacity: 0xE6 / 255.0)
+            ]
+        let ringColor = isRecording
+            ? Color(hex: 0xFF7B72, opacity: 0xE0 / 255.0)
+            : Color(hex: 0x8AC4FF, opacity: 0xD9 / 255.0)
+        let glowColor = isRecording
+            ? Color(hex: 0xFF453A, opacity: 0x73 / 255.0)
+            : Color(hex: 0x0077FD, opacity: 0x73 / 255.0)
+
+        return VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(glowColor.opacity(0.45))
+                    .frame(width: orbSize * 0.9, height: orbSize * 0.9)
+                    .blur(radius: 16)
+                    .allowsHitTesting(false)
+
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: gradientStops,
+                            center: UnitPoint(x: 0.32, y: 0.24),
+                            startRadius: 2,
+                            endRadius: orbSize * 0.65
+                        )
+                    )
+                    .frame(width: orbSize, height: orbSize)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [.white.opacity(0.55), .white.opacity(0.06), .clear],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: 1
+                            )
+                            .padding(1)
+                    }
+                    .overlay {
+                        Circle()
+                            .strokeBorder(ringColor, lineWidth: 1.5)
+                    }
+                    .overlay {
+                        Image(systemName: isRecording ? "waveform" : "mic.fill")
+                            .font(.system(size: 31, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+            }
+            .frame(width: orbSize, height: orbSize)
+            .contentShape(Circle())
+            .onLongPressGesture(minimumDuration: 15, maximumDistance: 45, perform: {}) { pressing in
+                if pressing { model.startRecording() } else { model.stopRecording() }
+            }
+            .accessibilityLabel(isRecording ? "Send recording" : "Record a task")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                if isRecording { model.stopRecording() } else { model.startRecording() }
+            }
+            .accessibilityIdentifier("watchVoice.record")
+
+            VStack(spacing: 2) {
+                Text(isRecording ? "Listening…" : "Hold to speak")
+                    .font(WatchDesignTokens.compactTitleFont)
+                    .foregroundStyle(.white)
+                Text(isRecording ? "Release to send" : "Release to send to iPhone")
+                    .font(WatchDesignTokens.compactSubtitleFont)
+                    .foregroundStyle(WatchDesignTokens.subtitleDefault)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
         }
     }
 }

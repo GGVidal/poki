@@ -556,7 +556,8 @@ final class WatchVoiceModel: NSObject, WCSessionDelegate {
             for update in updates {
                 let content = UNMutableNotificationContent()
                 content.title = String(localized: update.phase == .finished ? "Poki task finished" : "Poki task needs attention")
-                content.body = String(localized: "Open Poki to see the result.")
+                let preview = update.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                content.body = preview.isEmpty ? String(localized: "Open Poki to see the result.") : String(preview.prefix(120))
                 content.sound = .default
                 let request = UNNotificationRequest(identifier: update.id.uuidString, content: content, trigger: nil)
                 UNUserNotificationCenter.current().add(request)

@@ -342,10 +342,10 @@ def run_checks(args):
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("Ready" in r["text"] for r in rows)
-                and any("Double Tap" in r["text"] or "hold to speak" in r["text"] for r in rows),
+                lambda rows: any("Poki" in r["text"] for r in rows)
+                and any("Double Tap" in r["text"] or "hold for a task" in r["text"] for r in rows),
                 20,
-                "Watch did not reach Ready idle screen",
+                "Watch did not reach Idle screen",
             )
             snap_fg = tap_start_and_wait(
                 args.watch,
@@ -450,11 +450,11 @@ def run_checks(args):
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("Ready" in r["text"] for r in rows),
+                lambda rows: any("Double Tap" in r["text"] or "hold for a task" in r["text"] for r in rows),
                 15,
-                "Watch UI did not return to Ready after End",
+                "Watch UI did not return to Idle after End",
             )
-            print(f"[PASS 2d] End -> Ended -> Ready (seq={snap_idle['sequence']})")
+            print(f"[PASS 2d] End -> Ended -> Idle (seq={snap_idle['sequence']})")
 
             # 3a. Live step text during phone action (-pokiTalkHold acting avoids racing a short step).
             launch_phone(args.phone, hold="acting", background=True)
@@ -560,9 +560,9 @@ def run_checks(args):
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("Ready" in r["text"] for r in rows),
+                lambda rows: any("Double Tap" in r["text"] or "hold for a task" in r["text"] for r in rows),
                 15,
-                "Watch did not settle to Ready before opening secondary hub",
+                "Watch did not settle to Idle before opening secondary hub",
             )
             # Swipe up to Page 1 (secondary hub) to view shared latest result card.
             lines_card = None
@@ -608,7 +608,7 @@ def run_checks(args):
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("Ready" in r["text"] for r in rows)
+                lambda rows: any("Double Tap" in r["text"] or "hold for a task" in r["text"] for r in rows)
                 or any("Listening" in r["text"] for r in rows),
                 15,
                 "Watch did not recover state after relaunch",
@@ -644,18 +644,18 @@ def run_checks(args):
             )
             print("[PASS 3d] Relaunch sync, full history persistence, and #591 Voice Task screen verified")
 
-            # 4. Chinese localization check (Dynamic Island state wording on Watch).
+            # 4. Chinese localization check (Paper p-B-0 status wording & no English leakage on Watch).
             launch_phone(args.phone, hold="listening", background=True, language="zh-Hans", locale="zh_CN")
             launch_watch(args.watch, ocr_bin, session, language="zh-Hans", locale="zh_CN")
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("就绪" in r["text"] for r in rows)
-                and any("空中双击" in r["text"] or "按住说话" in r["text"] for r in rows),
+                lambda rows: any("Poki" in r["text"] for r in rows)
+                and any("空中双击" in r["text"] or "长按发任务" in r["text"] for r in rows),
                 20,
-                "Watch did not render Chinese Ready UI",
+                "Watch did not render Chinese Idle UI",
             )
-            tap_start_and_wait(
+            snap_zh_listen = tap_start_and_wait(
                 args.watch,
                 ocr_bin,
                 session,
@@ -664,7 +664,7 @@ def run_checks(args):
                 25,
                 "Watch did not enter listening in Chinese UI",
                 label="开始",
-            )
+            )["remoteSnapshot"]
             lines_zh, w_zh, h_zh = wait_for_ocr(
                 args.watch,
                 ocr_bin,
@@ -674,18 +674,44 @@ def run_checks(args):
                 "Watch did not render Chinese Listening + Mute UI",
                 save_to=shots / "06-zh-listening.png" if shots else None,
             )
-            if any(button_matches(r["text"], "结束") for r in lines_zh):
-                tap_in_lines(session, lines_zh, w_zh, h_zh, lambda t: button_matches(t, "结束"))
+            tap_in_lines(session, lines_zh, w_zh, h_zh, lambda t: button_matches(t, "静音"))
+            snap_zh_muted = wait_for_file(
+                watch_archive,
+                lambda d: (d.get("remoteSnapshot") or {}).get("state") == "muted"
+                and snapshot_version(d.get("remoteSnapshot")) > snapshot_version(snap_zh_listen),
+                15,
+                "Watch did not transition to muted in Chinese UI",
+                keep_awake_watch=args.watch,
+            )["remoteSnapshot"]
+            lines_zh_muted, w_zh_m, h_zh_m = wait_for_ocr(
+                args.watch,
+                ocr_bin,
+                lambda rows: any("已静音" in r["text"] for r in rows)
+                and any("取消静音" in r["text"] for r in rows),
+                15,
+                "Watch did not render Chinese Muted (已静音) UI",
+            )
+            sleep(0.5)
+            if any(button_matches(r["text"], "结束") for r in lines_zh_muted):
+                tap_in_lines(session, lines_zh_muted, w_zh_m, h_zh_m, lambda t: button_matches(t, "结束"))
             else:
                 tap_label(args.watch, ocr_bin, session, lambda t: button_matches(t, "结束"))
+            wait_for_file(
+                watch_archive,
+                lambda d: (d.get("remoteSnapshot") or {}).get("state") == "idle"
+                and snapshot_version(d.get("remoteSnapshot")) > snapshot_version(snap_zh_muted),
+                15,
+                "Watch did not return to idle after End in Chinese UI",
+                keep_awake_watch=args.watch,
+            )
             wait_for_ocr(
                 args.watch,
                 ocr_bin,
-                lambda rows: any("就绪" in r["text"] for r in rows),
+                lambda rows: any("空中双击" in r["text"] or "长按发任务" in r["text"] for r in rows),
                 15,
-                "Watch did not return to Chinese Ready after End",
+                "Watch did not return to Chinese Idle after End",
             )
-            print("[PASS 4] Chinese localization verified (就绪 -> 正在聆听/静音/结束 -> 就绪)")
+            print("[PASS 4] Chinese localization verified (Poki -> 正在聆听/静音/已静音/结束 -> Poki)")
         finally:
             clear_phone_defaults(args.phone)
             session.stdin.close()
