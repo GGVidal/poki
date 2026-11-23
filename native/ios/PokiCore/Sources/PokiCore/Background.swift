@@ -38,13 +38,54 @@ extension PokiCore {
         if op != "look", op != "back", op != "escape", body["ref"] == nil {
             return ToolResult(text: "error: \(op) needs ref, a number from background look; nothing was sent.", jpeg: nil, isError: true)
         }
+        if config.isPoki(Foreground(bundleID: bundle, name: nil)) {
+            return ToolResult(text: "error: background does not act on Poki itself; nothing was sent.", jpeg: nil, isError: true)
+        }
+        // The approval rules apply as they do to do: a step they flag is never sent from here, it goes
+        // through do, which asks the owner. A step on a number no background look listed is refused.
+        if op != "look" {
+            let target: Element?
+            if let ref = body["ref"]?.int {
+                guard let known = backgroundLooks.value[bundle]?[ref] else {
+                    return ToolResult(text: "error: \(ref) is not in the latest background look of \(bundle); call background {op: \"look\"} first. Nothing was sent.", jpeg: nil, isError: true)
+                }
+                target = op == "custom" ? Element(type: known.type, label: body["name"]?.string, value: nil, identifier: nil, frame: known.frame, depth: 0) : known
+            } else {
+                target = nil
+            }
+            let app = Foreground(bundleID: bundle, name: nil)
+            var why = config.sensitive.reason(touching: target, typing: op == "set", app: app, secureOnScreen: false)
+            if op == "custom", why == nil, let known = body["ref"]?.int.flatMap({ backgroundLooks.value[bundle]?[$0] }) {
+                why = config.sensitive.reason(touching: known, typing: false, app: app, secureOnScreen: false)
+            }
+            if let why {
+                return ToolResult(text: "needs_front: \(op) is \(why), which needs the owner's approval. Nothing was sent. Do it with do {app: \"\(bundle)\", actions: [...]}, which asks the owner.", jpeg: nil, isError: false)
+            }
+        }
+        // One phone call at a time, with look and do.
+        guard await gate.enter(waiting: config.busyWait) else {
+            return ToolResult(text: "busy: another call is still running (\(gate.current ?? "a tool")); nothing was sent. Call again in a moment.", jpeg: nil, isError: true)
+        }
+        gate.current = "background: \(op) in \(bundle)"
+        defer { gate.current = nil; gate.leave() }
         let answer: JSON
         do {
             answer = try await computer.runner.raw("POST", "/poki/background", .object(body), timeout: 30, countsAsMiss: false)
         } catch {
             return ToolResult(text: "background: not answered (\(error)); what was sent is unknown. Use look and do with app \(bundle).", jpeg: nil, isError: true)
         }
-        return Self.backgroundText(op: op, bundle: bundle, answer: answer["value"] ?? answer)
+        let value = answer["value"] ?? answer
+        if let elements = value["elements"]?.array {
+            var byRef: [Int: Element] = [:]
+            for e in elements {
+                guard let ref = e["ref"]?.int else { continue }
+                let f = e["frame"]?.array?.compactMap(\.double) ?? []
+                byRef[ref] = Element(type: e["type"]?.string ?? "Other", label: e["label"]?.string, value: e["value"]?.string, identifier: nil,
+                                     frame: f.count == 4 ? Rect(x: f[0], y: f[1], width: f[2], height: f[3]) : Rect(x: 0, y: 0, width: 0, height: 0), depth: 0)
+            }
+            backgroundLooks.update { $0[bundle] = byRef }
+        }
+        return Self.backgroundText(op: op, bundle: bundle, answer: value)
     }
 
     /// The runner's answer as the model reads it.

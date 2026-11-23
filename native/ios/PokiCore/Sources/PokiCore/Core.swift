@@ -329,7 +329,10 @@ public final class PokiCore: @unchecked Sendable {
     let approvals: Approvals
     private let continuation: AsyncStream<CoreEvent>.Continuation
     public let events: AsyncStream<CoreEvent>
-    private let gate = Gate()
+    let gate = Gate()
+    /// Experimental (issue #656): the elements of each app's latest background look, by number, so
+    /// that a background action is checked against the approval rules as a do would be.
+    let backgroundLooks = LockedBox<[String: [Int: Element]]>([:])
     private let sessions = LockedBox<Set<String>>([])
     /// Each MCP session's client, by the name it gave at initialize (skills and notes say who saved them).
     let clientNames = LockedBox<[String: String]>([:])

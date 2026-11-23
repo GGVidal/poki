@@ -114,3 +114,18 @@ extension InProcessProbe {
     }
 }
 #endif
+
+#if POKI_EXPERIMENTS
+import SwiftUI
+
+/// Poki Lab only: `-pokiShowExperiments 1` opens General › Testing Options' switches over the app at
+/// launch, for screenshots of the experiment's switch without tapping through.
+struct ExperimentsPreview: ViewModifier {
+    @State private var shown = UserDefaults.standard.bool(forKey: "pokiShowExperiments")
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: $shown) {
+            NavigationStack { Form { SpeedTestingSection() }.navigationTitle("Testing Options") }
+        }
+    }
+}
+#endif
