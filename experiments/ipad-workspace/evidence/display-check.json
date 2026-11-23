@@ -1,0 +1,52 @@
+{
+  "after_off" : true,
+  "check" : {
+    "displays" : [
+      {
+        "height" : 2752,
+        "id" : 1,
+        "main" : 1,
+        "width" : 2064
+      },
+      {
+        "height" : 480,
+        "id" : 2,
+        "main" : 0,
+        "pictureBytes" : 0,
+        "width" : 720
+      }
+    ],
+    "selected" : null
+  },
+  "chosen" : 2,
+  "displays" : [
+    {
+      "height" : 2752,
+      "id" : 1,
+      "main" : 1,
+      "width" : 2064
+    },
+    {
+      "height" : 480,
+      "id" : 2,
+      "main" : 0,
+      "width" : 720
+    }
+  ],
+  "home" : {
+    "error" : true,
+    "picture" : 0,
+    "text" : "read: failed (no element tree: the runner refused GET \/source: no element tree: workspace_tree_unverified; a second try within the read's time was refused too; no screenshot: the runner refused GET \/screenshot: no screenshot: workspace_display_no_picture; the host's own path gave none either (0 ms))\nrunner: running\ndid: {\"button\":\"home\"} (not_sent, 3 ms)\nerror: action 1 was not sent: the runner refused POST \/wda\/homescreen: not sent: a hardware button acts on the owner's screen, not the workspace display"
+  },
+  "look" : {
+    "error" : true,
+    "picture" : 0,
+    "text" : "read: failed (no element tree: the runner refused GET \/source: no element tree: workspace_tree_unverified; a second try within the read's time was refused too; no screenshot: the runner refused GET \/screenshot: no screenshot: workspace_display_no_picture; the host's own path gave none either (1 ms))\nrunner: running"
+  },
+  "session" : true,
+  "tap" : {
+    "error" : true,
+    "picture" : 0,
+    "text" : "not_sent: only the phone's owner can approve, by tapping it on the phone themselves; Poki takes no taps or typing inside the Poki app. Nothing was sent. Leave Poki first ({button: \"home\"} or {launch: \"bundle id\"})."
+  }
+}

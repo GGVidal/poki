@@ -1,0 +1,30 @@
+[
+  {
+    "tool" : "status",
+    "seconds" : 19.481200933456421,
+    "picture" : 0,
+    "error" : false,
+    "text" : "runner: running\nrelay: ready as exvlmqypa2n4j6mc5lrb4oa3vnh24pbhblnyqnq5f33emek263fa"
+  },
+  {
+    "tool" : "look",
+    "seconds" : 3.5483120679855347,
+    "text" : "app: Poki   read: 2026-11-23T12:11:28Z (3466 ms)\npoki: Poki is in front, showing the owner's chat with you, so no screen of the task is read yet. Start the task in its app: do {launch: \"bundle id\"}, or do {run: \"name\"} for a saved skill.",
+    "picture" : 0,
+    "error" : false
+  },
+  {
+    "error" : true,
+    "tool" : "do",
+    "seconds" : 24.931997060775757,
+    "picture" : 25862,
+    "text" : "read: failed (no element tree: the runner refused GET \/source: not sent: the app in front has not answered POST \/wda\/apps\/activate for 16 s (its main thread is busy), and the phone serves one such request at a time; nothing is read or touched until it answers, so nothing lands late; a second try within the read's time was refused too; no screenshot: the runner did not answer GET \/screenshot within 4.0 s; the host's own path gave none either (1 ms))\nrunner: running\ndid: {\"launch\":\"com.apple.Preferences\"} (unknown, 9196 ms)\nerror: action 1 may have been delivered: action 1 did not finish within 9.0 s; the actions after it were not sent\nthe screen was read again (1): com.apple.Preferences was not in front yet\nthe screenshot is the one of the read before, 10 s old (no newer one came)\ntook: 21.1 s in all: 0.0 s before the actions (runner start, busy wait, lock check), 9.2 s actions, 11.9 s read"
+  },
+  {
+    "picture" : 25862,
+    "text" : "read: failed (no element tree: the runner refused GET \/source: not sent: the app in front has not answered POST \/wda\/apps\/activate for 25 s (its main thread is busy), and the phone serves one such request at a time; nothing is read or touched until it answers, so nothing lands late; a second try within the read's time was refused too; no screenshot: the runner refused GET \/screenshot: no screenshot: an earlier one has been under way for 10 s; the host's own path gave none either (0 ms))\nrunner: running\nthe screenshot is the one of the read before, 16 s old (no newer one came)",
+    "error" : true,
+    "tool" : "look",
+    "seconds" : 1.8703850507736206
+  }
+]
