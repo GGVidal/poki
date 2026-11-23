@@ -46,6 +46,10 @@ targets:
     type: application
     platform: iOS
     sources: [AXFixture]
+    info:
+      path: AXFixture/Info.plist
+      properties:
+        UIBackgroundModes: [remote-notification]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.pokimcp.axfixture

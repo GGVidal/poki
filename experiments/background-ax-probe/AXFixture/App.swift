@@ -104,9 +104,31 @@ enum Fix {
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
+    // RAW 81 (b): content-available push → background launch/resume path.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        let ctx = (application.connectedScenes.compactMap { ($0 as? UIWindowScene)?.windows.first }.first?.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
+        NSLog("FIXLOG push received state=%d ctx=%u", application.applicationState.rawValue, ctx)
+        completionHandler(.newData)
+    }
     // Diagnostics only (our fixture): which UIKit switch keeps the window context in the background.
     override init() {
         super.init()
+        // RAW 81 detector (our fixture only): log every resume/suspend bracket UIKit runs for a scene.
+        for name in ["_prepareForResume", "_prepareForSuspend"] {
+            let sel = NSSelectorFromString(name)
+            if let m = class_getInstanceMethod(UIWindowScene.self, sel) {
+                typealias F = @convention(c) (AnyObject, Selector) -> Void
+                let orig = unsafeBitCast(method_getImplementation(m), to: F.self)
+                let blk: @convention(block) (AnyObject) -> Void = { obj in
+                    let st = UIApplication.shared.applicationState.rawValue
+                    NSLog("FIXLOG bracket %@ begin state=%d", name, st); orig(obj, sel)
+                    let w = (obj as? UIWindowScene)?.windows.first
+                    let ctx = (w?.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
+                    NSLog("FIXLOG bracket %@ end ctx=%u", name, ctx)
+                }
+                method_setImplementation(m, imp_implementationWithBlock(blk))
+            }
+        }
         if ProcessInfo.processInfo.arguments.contains("-keepAll") {
             let sel = NSSelectorFromString("_setAllWindowsKeepContextInBackground:")
             if let m = class_getClassMethod(UIWindow.self, sel) {

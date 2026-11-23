@@ -56,6 +56,7 @@
 		AE532E1990B3A0FCAB5617E6 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D19CD33B9AC08A2EEFC206F /* App.swift */; };
 		BE9AFBFDD164D5AC1E4CAC3B /* WebPidTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F969EE31C8D7D5C090A04B2 /* WebPidTests.swift */; };
 		C3784F8B7932F764906C9C00 /* IPadDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D59B94CAF0234100FE8A165 /* IPadDisplayTests.swift */; };
+		C95940135B4194BB6CCFF0F0 /* SnapWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48F4A525634A3EEADEBBFD6C /* SnapWindowTests.swift */; };
 		CBA262E583848292BB3A531A /* KeyDeliveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D778354117423F2EDDF719 /* KeyDeliveryTests.swift */; };
 		CEB9B38ED7402CB60C3FC872 /* WebTokenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972F061BC323344CB98E6B97 /* WebTokenTests.swift */; };
 		DBBAF60A5303D7051001058B /* ButtonVariantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B1EF87EA7F68A49362E572C /* ButtonVariantTests.swift */; };
@@ -98,8 +99,10 @@
 		2D59B94CAF0234100FE8A165 /* IPadDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadDisplayTests.swift; sourceTree = "<group>"; };
 		359F39ED8103F56BCB9DE045 /* IPadStageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadStageTests.swift; sourceTree = "<group>"; };
 		37599EC19C7AE84E208CE61C /* RealAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealAppTests.swift; sourceTree = "<group>"; };
+		3EFD414B277C743AE2E95B05 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		4092C064FDEE8F715E2F7B06 /* StockBackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockBackTests.swift; sourceTree = "<group>"; };
 		40BC6D00CA0A1200C73F4FD8 /* KickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KickTests.swift; sourceTree = "<group>"; };
+		48F4A525634A3EEADEBBFD6C /* SnapWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapWindowTests.swift; sourceTree = "<group>"; };
 		4B0A5334875C9594C4A54746 /* SwitcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherTests.swift; sourceTree = "<group>"; };
 		4F340C58D4BA722DE6C9F6D0 /* KeyValueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyValueTests.swift; sourceTree = "<group>"; };
 		582013C40498266366AC1D73 /* AttachedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedTests.swift; sourceTree = "<group>"; };
@@ -209,6 +212,7 @@
 				D804F1DF8ADF133D9FB41BA7 /* ReadAppTests.swift */,
 				37599EC19C7AE84E208CE61C /* RealAppTests.swift */,
 				1A2DAF539945E4181414B2F7 /* SimFixtureTests.swift */,
+				48F4A525634A3EEADEBBFD6C /* SnapWindowTests.swift */,
 				F1C43527B25F0C1BB45BAF14 /* StackTests.swift */,
 				4092C064FDEE8F715E2F7B06 /* StockBackTests.swift */,
 				E74A1781817C3456CB0E3D5D /* SubmitTests.swift */,
@@ -232,6 +236,7 @@
 			children = (
 				2D19CD33B9AC08A2EEFC206F /* App.swift */,
 				B483867E343AEF8EC6596BFB /* Coverage.swift */,
+				3EFD414B277C743AE2E95B05 /* Info.plist */,
 			);
 			path = AXFixture;
 			sourceTree = "<group>";
@@ -491,6 +496,7 @@
 				5527950066950CA6507C0681 /* ReadAppTests.swift in Sources */,
 				7A5C8A41D0124711C032C74E /* RealAppTests.swift in Sources */,
 				81E84D0FC592323DF6ECD9EE /* SimFixtureTests.swift in Sources */,
+				C95940135B4194BB6CCFF0F0 /* SnapWindowTests.swift in Sources */,
 				435F0DD30102F830432924E8 /* StackTests.swift in Sources */,
 				364610335CBAB5DAFBBA57B0 /* StockBackTests.swift in Sources */,
 				FE80BF5975AB6FF7DD90060D /* SubmitTests.swift in Sources */,
@@ -711,6 +717,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AXFixture/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -794,6 +801,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AXFixture/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

@@ -528,3 +528,63 @@ The phone runs installed only the fixture and its test runner; both were uninsta
 - The window context id reads 0 in the background and stays 0 after 5310, 5313, snapshots, attribute reads and every audit option, so the in-process press has no event to land on.
 - The Contrast and InaccessibleElement audit options behave like DynamicText: the reply never arrives (30 s timeout).
 - A mistaken pid filter once sent background assertion requests for host Mac WebKit pids from the simulator. Pid lists are now limited to children of the simulator's launchd_sim.
+
+## RAW 81: background context windows (simulator 27.3, 2026-11-23 ET)
+
+Fixture diagnostics added for this round (our app only): a trait observer logging the window context id
+(`FIXLOG traitChange`), swizzled `-[UIWindowScene _prepareForResume]`/`_prepareForSuspend` logging every resume/suspend
+bracket with the context id (`FIXLOG bracket`), an alert with a destructive button and a text field (`cov.alert2`), and the
+remote-notification background mode. Tests: `SimProbeUITests/SnapWindowTests.swift`.
+
+### Wall 2: AX post path (BackBoard.axbundle, BackBoardHIDEventFoundation/TouchEventProcessor)
+- `-[AXBackBoardGlue postEvent:systemEvent:afterNamedTap:namedTaps:]` → `-[AXBEventManager postEvent:…]`: systemEvent → system
+  app port; otherwise `[AXEventTapManager machPortForPoint:[rep windowLocation]]` (hit test by point), `_normalizeEventForContext:`,
+  `setTaskPort:`, `sendEvent:afterTap:useGSEvent:namedTaps:options:` → ordinary HID digitizer event.
+- backboardd hit-tests the point against the CA contexts on the display (`BKDirectTouchStateHitTester
+  determineHitTestDestinationsForPathCollection:…`). contextId only constrains or annotates; nothing names a destination process.
+- The only per-process routing is the deferring graph (keyboard focus), whose rules SpringBoard sets for the front scene.
+
+### Wall 1: who creates and purges background contexts (UIKitCore)
+- Purge `purgeContextsWithPurgeAction:afterPurgeAction:` ← `_prepareForSuspend`; re-create `createContextsWithTest:creationAction:`
+  ← `_prepareForResume`. Both are called from the lifecycle monitor, `_performSnapshotsWithAction:forScene:completion:`
+  (SpringBoard snapshot action), `_performRefreshForUIScene:` (← the app's own `requestSceneSessionRefresh:`) and the
+  background-event state-restoration update.
+- `UIWindowScene initWithSession:connectionOptions:` passes `[UIWindow _allWindowsKeepContextInBackground]` (a process global,
+  set only by the private class setter) to `_setKeepContextAssociationInBackground:`. No ordinary app or system state sets it.
+- SpringBoard sender side: `-[SBSceneSnapshotRequestor requestSnapshotsForSceneHandle:forUpdate:]` has one caller,
+  `-[SBSceneSnapshotHostComponent scene:didUpdateSettings:]`, on the settings update that backgrounds a scene. Snapshot
+  request actions otherwise come only from the app's own scene client. Switcher cache and manifest code only handle saved images.
+
+### Measured
+- Bracket at background entry: `didEnterBackground` → dual-style snapshot (traitChange style 2 then 1, context live) →
+  `_prepareForSuspend` +120-140 ms → context 0. No other bracket fired for: appearance, content size, increase contrast (simctl ui),
+  orientation, XCTest snapshot read, screen and element screenshots, a second background assertion, hidden open with
+  ActivateSuspended (refused), Home, re-activating Settings. Simulator push: silent refused (1401), alert refused without
+  notification permission (2003).
+- In-process press (AX 4000) on a focused UISwitch, 4 threads, across backgrounding: fired in background state (state=2) in 3 of 5
+  rounds, 7-15 ms after `didEnterBackground`, never after the purge (~90 presses per round). Presses land every 100-117 ms, so one
+  fits. Focus set only during the leave transition (2044 + 4000 from `Settings.activate`) fired 5-6 times per round in state=1
+  (inactive), 0 in state=2.
+- The press needs the Full Keyboard Access system setting ON; with it off nothing fires, even in front (launch argument
+  irrelevant; 5308 does not move focus; 2044 moves it).
+- Appearance flips during background (20 rounds, ~70 presses in flight each): 0/20; no trait change reached the scene.
+- Hold variants (none, assertion, attribute polling, DynamicText audit, SwiftUI presses): context last non-zero 0.79-0.81 s after
+  `Settings.activate()`, purge 0.95-0.97 s, in every variant.
+- Leftovers in background: compact date picker 2010 fail, 2004 no change; alert destructive and default buttons 2010 fire; alert
+  text field 2006 accepted but text stays empty; action sheet 2013 escape fails, its Cancel 2010 fires; UISegmentedControl 2004
+  no change, segment element 2010 fires; 2045 orb gesture on a context-menu target fails in front and background.
+
+### In-app action dispatcher (UIAccessibility `-[NSObject(UIStorage) _iosAccessibilityPerformAction:withValue:fencePort:]`)
+Action blocks first (`_accessibilityHasActionBlockForKey:`, installed only by in-app code), then a 505-entry jump table for
+2001-2505 and a compare chain above 4019. 2001/2002 zoom, 2003 scroll to visible, 2004/2005 increment/decrement, 2006 value,
+2007/2013 escape, 2008/2011 start-stop, 2010 activate, 2012 text operation, 2014 scroll to point, 2015/2016 selection, 2017 find,
+2018 keyplane, 2019/2020 pages, 2021 custom action, 2022 table index jump, 2023 dictation, 2025 announcement, 2026-2032
+autoscroll, 2033 math, 2034 keyboard action, 2035 alt key picker, 2036 secondary activate, 2037/2038 tracking detail,
+2039 scroll rect, 2040 load URL, 2041/2050 user-testing action (empty list for standard controls), 2042 idle runloop monitor,
+2043 animations, 2044 native focus, 2045 orb gesture, 2046 photo label, 2048 URL alternate, 2052-2055/2060/2061/2505 text,
+2054 Return key, 2056/2062 banner timer, 2057 edit menu, 2058 AT focus, 2059 editing HUD, 2064 scroll offset, 2065 paste,
+2066/2067 keyboard show/hide, 2068/2069 scroll top/bottom, 2070-2072; 4020-4023 Maps exploration; 5300 scroll left page;
+5304/5305/5307/5308/5312 focus; 5500/5501 focus ring; 7000 game controller pressButton:; 9000 current gesture.
+UIApplicationAccessibility adds 2049, 4000-4007 (in-process UIPress), scroll, 5021, 5200-5208, 5310/5311/5313.
+No id builds a touch, calls UIControl action sending, selects a row or selects a tab; only UISlider and UISegmentedControl
+accessibility call `sendActionsForControlEvents:` (via increment/decrement).

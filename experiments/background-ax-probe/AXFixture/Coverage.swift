@@ -46,6 +46,11 @@ final class TabLogger: NSObject, UITabBarControllerDelegate {
 final class UIKitCoverageController: UIViewController, UISearchBarDelegate, UIPickerViewDataSource, UIPickerViewDelegate, UITextFieldDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
+        // RAW 81 diagnostic: is the window context live while UIKit applies a trait change in the background?
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (vc: UIViewController, _: UITraitCollection) in
+            let ctx = (vc.view.window?.value(forKey: "_contextId") as? NSNumber)?.uint32Value ?? 0
+            NSLog("FIXLOG traitChange style=%d ctx=%u state=%d", vc.traitCollection.userInterfaceStyle.rawValue, ctx, UIApplication.shared.applicationState.rawValue)
+        }
         title = "UIKit"; view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "BarItem", primaryAction: UIAction { _ in Fix.log("baritem"); fixStack("baritem") })
         navigationItem.rightBarButtonItem?.accessibilityIdentifier = "cov.baritem"
@@ -68,12 +73,13 @@ final class UIKitCoverageController: UIViewController, UISearchBarDelegate, UIPi
         let menuBtn = UIButton(type: .system); menuBtn.setTitle("Menu button", for: .normal); menuBtn.accessibilityIdentifier = "cov.menu"
         menuBtn.menu = UIMenu(children: [UIAction(title: "MenuItemA") { _ in Fix.log("menu item A") }, UIAction(title: "MenuItemB") { _ in Fix.log("menu item B") }]); menuBtn.showsMenuAsPrimaryAction = true
         let ctx = UILabel(); ctx.text = "Context target"; ctx.isUserInteractionEnabled = true; ctx.isAccessibilityElement = true; ctx.accessibilityIdentifier = "cov.context"; ctx.addInteraction(UIContextMenuInteraction(delegate: CtxDelegate.shared))
+        let alert2Btn = UIButton(type: .system); alert2Btn.setTitle("Present alert2", for: .normal); alert2Btn.accessibilityIdentifier = "cov.alert2"; alert2Btn.addAction(UIAction { [weak self] _ in self?.presentAlert2() }, for: .primaryActionTriggered)
         let alertBtn = UIButton(type: .system); alertBtn.setTitle("Present alert", for: .normal); alertBtn.accessibilityIdentifier = "cov.alert"; alertBtn.addAction(UIAction { [weak self] _ in self?.present(style: .alert) }, for: .primaryActionTriggered)
         let sheetBtn = UIButton(type: .system); sheetBtn.setTitle("Present action sheet", for: .normal); sheetBtn.accessibilityIdentifier = "cov.sheet"; sheetBtn.addAction(UIAction { [weak self] _ in self?.present(style: .actionSheet) }, for: .primaryActionTriggered)
         let pushBtn = UIButton(type: .system); pushBtn.setTitle("Push detail", for: .normal); pushBtn.accessibilityIdentifier = "cov.push"; pushBtn.addAction(UIAction { [weak self] _ in self?.navigationController?.pushViewController(DetailController(), animated: false) }, for: .primaryActionTriggered)
 
         let row1 = UIStackView(arrangedSubviews: [sw, stepper, page]); row1.spacing = 12
-        let stack = UIStackView(arrangedSubviews: [configured, actionBtn, taBtn, row1, date, picker, search, field, menuBtn, ctx, alertBtn, sheetBtn, pushBtn])
+        let stack = UIStackView(arrangedSubviews: [configured, actionBtn, taBtn, row1, date, picker, search, field, menuBtn, ctx, alertBtn, alert2Btn, sheetBtn, pushBtn])
         stack.axis = .vertical; stack.spacing = 6; stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14), stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12)])
@@ -84,6 +90,14 @@ final class UIKitCoverageController: UIViewController, UISearchBarDelegate, UIPi
         a.addAction(UIAlertAction(title: "AlertOK", style: .default) { _ in Fix.log("alert OK"); fixStack("alertOK") })
         a.addAction(UIAlertAction(title: "AlertOther", style: .default) { _ in Fix.log("alert Other") })
         a.addAction(UIAlertAction(title: "AlertCancel", style: .cancel) { _ in Fix.log("alert Cancel") })
+        present(a, animated: false)
+    }
+    // RAW 78 leftovers: an alert with a destructive button and a text field.
+    func presentAlert2() {
+        let a = UIAlertController(title: "CovAlert2", message: nil, preferredStyle: .alert)
+        a.addTextField { $0.placeholder = "AlertField"; $0.accessibilityIdentifier = "cov.alertfield" }
+        a.addAction(UIAlertAction(title: "AlertDelete", style: .destructive) { [weak a] _ in Fix.log("alert Delete '\(a?.textFields?.first?.text ?? "")'") })
+        a.addAction(UIAlertAction(title: "AlertSubmit", style: .default) { [weak a] _ in Fix.log("alert Submit '\(a?.textFields?.first?.text ?? "")'") })
         present(a, animated: false)
     }
     func numberOfComponents(in pickerView: UIPickerView) -> Int { 1 }
