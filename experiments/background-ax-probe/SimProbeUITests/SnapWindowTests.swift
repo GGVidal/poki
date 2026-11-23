@@ -228,3 +228,84 @@ extension SimFixtureTests {
         _ = PBHelper.setFullKeyboardAccess(false)
     }
 }
+
+extension SimFixtureTests {
+    // iPad sim, Windowed Apps: fixture window covered by Settings, fixture not key. Does it keep a live context, and do
+    // in-process presses fire (FKA on), with chains and no time limit?
+    func testIPADWINDOWED() {
+        let s = settings; s.launch(); sleep(2)
+        s.staticTexts["Multitasking & Gestures"].firstMatch.tap(); sleep(2)
+        for name in ["Windowed Apps", "Windowed apps"] {
+            let e = s.buttons[name].firstMatch.exists ? s.buttons[name].firstMatch : s.staticTexts[name].firstMatch
+            if e.exists { e.tap(); sleep(2); say("IPW | selected \(name)"); break }
+        }
+        s.terminate(); sleep(1)
+        say("IPW | FKA \(PBHelper.setFullKeyboardAccess(true))")
+        background = true
+        fixture.launchArguments = ["-coverage"]; fixture.launch(); sleep(2)
+        let pid = (fixture.value(forKey: "processID") as? NSNumber)?.int32Value ?? -1
+        say("IPW | fixture frame \(fixture.frame)")
+        s.launch(); _ = s.wait(for: .runningForeground, timeout: 10); sleep(2)
+        // try to maximise Settings over the fixture: double-tap its top edge (window title area)
+        let top = s.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.01)); top.doubleTap(); sleep(2)
+        say("IPW | settings frame \(s.windows.firstMatch.frame) | fixture state \(fixture.state.rawValue) | settings state \(s.state.rawValue) | pid \(pid)")
+        sleep(5)
+        let ctx = snap().map { PBHelper.contextId(ofSnapshot: $0) } ?? 0
+        say("IPW | +7 s fixture ctx \(ctx)")
+        func press(_ id: String, _ what: String) {
+            var e: NSString?
+            let f = fkaFocus(find(snap()) { $0.identifier == id })
+            let b = lastEvent(); let ok = snap().map { PBHelper.pressSnapshot($0, action: 4000, value: nil, error: &e) } ?? false; usleep(900_000)
+            say("IPW | \(what) | focus \(f) | 4000 \(ok) | before \(b) after \(lastEvent()) | ctx \(snap().map { PBHelper.contextId(ofSnapshot: $0) } ?? 0)")
+        }
+        press("cov.switch", "switch")
+        press("cov.configured", "button")
+        press("cov.push", "push (chain step 1)")
+        sleep(1)
+        if let item = find(snap(), { $0.identifier == "cov.detailitem" }) { var e: NSString?; let b = lastEvent(); let ok = PBHelper.pressSnapshot(item, action: 2010, value: nil, error: &e); usleep(800_000); say("IPW | chain step 2 detail bar item 2010 \(ok) | before \(b) after \(lastEvent())") }
+        // any-time AX action for comparison
+        if let ba = find(snap(), { $0.identifier == "cov.baritem" }) { var e: NSString?; let b = lastEvent(); let ok = PBHelper.pressSnapshot(ba, action: 2010, value: nil, error: &e); usleep(800_000); say("IPW | bar item 2010 \(ok) | before \(b) after \(lastEvent())") }
+        let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); att.lifetime = .keepAlways; add(att)
+        say("IPW | front \(String(frontSummary().prefix(40))) | settings state \(s.state.rawValue)")
+        _ = PBHelper.setFullKeyboardAccess(false)
+        fixture.terminate()
+    }
+}
+
+extension SimFixtureTests {
+    // iPad sim, Windowed Apps: fixture window shrunk and moved so only a sliver shows beside Settings (front, key).
+    func testIPADSLIVER() {
+        let s = settings
+        say("IPSL | FKA \(PBHelper.setFullKeyboardAccess(true))")
+        func frames(_ tag: String) { let ff = fixture.state.rawValue >= 2 ? "\(fixture.windows.firstMatch.frame)" : "-"; say("IPSL | \(tag) | fixture \(ff) state \(fixture.state.rawValue) | settings \(s.windows.firstMatch.frame) state \(s.state.rawValue) | ctx \(fixture.state.rawValue >= 2 ? (snap().map { PBHelper.contextId(ofSnapshot: $0) } ?? 0) : 0)") }
+        func drag(_ app: XCUIApplication, from a: CGVector, to b: CGVector) {
+            let w = app.windows.firstMatch
+            w.coordinate(withNormalizedOffset: a).press(forDuration: 0.6, thenDragTo: w.coordinate(withNormalizedOffset: b)); sleep(2)
+        }
+        // 1. Settings: shrink to ~75% width (bottom-right corner drag)
+        s.launch(); sleep(2); drag(s, from: CGVector(dx: 0.995, dy: 0.995), to: CGVector(dx: 0.75, dy: 0.995)); frames("settings shrunk")
+        // 2. fixture: shrink to ~35% width, then move right by its title area so its right part lies beyond Settings
+        background = true; fixture.launchArguments = ["-coverage"]; fixture.launch(); sleep(2)
+        drag(fixture, from: CGVector(dx: 0.995, dy: 0.995), to: CGVector(dx: 0.40, dy: 0.80)); frames("fixture shrunk")
+        drag(fixture, from: CGVector(dx: 0.5, dy: 0.005), to: CGVector(dx: 1.6, dy: 0.005)); frames("fixture moved right")
+        // 3. Settings front and key
+        s.activate(); sleep(3); frames("settings front")
+        func press(_ id: String, _ what: String) {
+            var e: NSString?; let f = fkaFocus(find(snap()) { $0.identifier == id })
+            let b = lastEvent(); let ok = snap().map { PBHelper.pressSnapshot($0, action: 4000, value: nil, error: &e) } ?? false; usleep(900_000)
+            say("IPSL | \(what) | focus \(f) | 4000 \(ok) | before \(b) after \(lastEvent()) | settings state \(s.state.rawValue)")
+        }
+        for k in 0..<4 {
+            press("cov.switch", "t+\(k*20)s switch")
+            press("cov.configured", "t+\(k*20)s button")
+            frames("t+\(k*20)s")
+            sleep(15)
+        }
+        press("cov.push", "chain push")
+        if let item = find(snap(), { $0.identifier == "cov.detailitem" }) { var e: NSString?; let b = lastEvent(); _ = PBHelper.pressSnapshot(item, action: 2010, value: nil, error: &e); usleep(800_000); say("IPSL | chain step 2 detail item 2010 | before \(b) after \(lastEvent())") }
+        let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); att.lifetime = .keepAlways; add(att)
+        frames("end")
+        _ = PBHelper.setFullKeyboardAccess(false)
+        fixture.terminate(); s.terminate()
+    }
+}

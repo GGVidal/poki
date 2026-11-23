@@ -588,3 +588,10 @@ autoscroll, 2033 math, 2034 keyboard action, 2035 alt key picker, 2036 secondary
 UIApplicationAccessibility adds 2049, 4000-4007 (in-process UIPress), scroll, 5021, 5200-5208, 5310/5311/5313.
 No id builds a touch, calls UIControl action sending, selects a row or selects a tab; only UISlider and UISegmentedControl
 accessibility call `sendActionsForControlEvents:` (via increment/decrement).
+
+### iPad simulator, Windowed Apps (27.3, iPad Pro 13" M5, FKA on), 2026-11-23 ET
+- Fixture fully covered by a full-size Settings window: backgrounded (`didEnterBackground` +5.0 s after launch, purge +183 ms),
+  context 0, in-process press 0/3 (switch, button, push). AX bar item 2010 still fires.
+- Fixture window beside a 375-wide Settings window (no overlap; dragging further right stops at the screen edge), Settings
+  front: fixture stays ACTIVE (applicationState 0) with a live context for 90 s; in-process press fired switch 4/4 and button
+  4/4 over 60 s, and push → detail bar item 2010 chained. Sliver, off-screen, minimise and key-window effects not measured.
