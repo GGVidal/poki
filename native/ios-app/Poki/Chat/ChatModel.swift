@@ -1078,6 +1078,10 @@ final class ChatModel {
             if let refusal = selectRoute(.web) { return refusal }
             showBrowser(opening: name == "web_open")
             return await WebTools.perform(name, arguments: call.arguments)
+        #if POKI_EXPERIMENTS
+        case let name where WorkspaceTools.names.contains(name):
+            return await WorkspaceTools.perform(name, arguments: call.arguments)
+        #endif
         case "find_app":
             let found = await InstalledApps.shared.find(name: args["name"] as? String, purpose: args["purpose"] as? String)
             return PokiCore.ToolAnswer(text: found.text, jpeg: nil, isError: found.isError)

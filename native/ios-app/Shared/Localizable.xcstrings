@@ -1,6 +1,229 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "iPad Workspace" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad Workspace"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad 工作区"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad 工作區"
+          }
+        }
+      }
+    },
+    "Paste Address" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paste Address"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴地址"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "貼上地址"
+          }
+        }
+      }
+    },
+    "iPad Agent Address" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad Agent Address"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad 智能体地址"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad 智慧體地址"
+          }
+        }
+      }
+    },
+    "That is not an agent address from Poki on an iPad." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That is not an agent address from Poki on an iPad."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这不是 iPad 上 Poki 的智能体地址。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這不是 iPad 上 Poki 的智慧體地址。"
+          }
+        }
+      }
+    },
+    "On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On the iPad, open Poki Lab, add an agent in Settings and copy its address. Poki on this iPhone can then use apps on the iPad workspace display while both screens stay free."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 iPad 上打开 Poki Lab，在设置中添加智能体并拷贝其地址。之后这台 iPhone 上的 Poki 就能使用 iPad 工作区显示器上的 App，两块屏幕都不受影响。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 iPad 上打開 Poki Lab，在設定中新增智慧體並複製其地址。之後這台 iPhone 上的 Poki 就能使用 iPad 工作區顯示器上的 App，兩個螢幕都不受影響。"
+          }
+        }
+      }
+    },
+    "Linked iPad" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Linked iPad"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已关联的 iPad"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已連結的 iPad"
+          }
+        }
+      }
+    },
+    "Check Link" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Link"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查关联"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "檢查連結"
+          }
+        }
+      }
+    },
+    "The iPad answered" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The iPad answered"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad 已响应"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad 已回應"
+          }
+        }
+      }
+    },
+    "Remove Link" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove Link"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除关联"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除連結"
+          }
+        }
+      }
+    },
+    "Experimental. Lets Poki on this iPhone use apps on your iPad without taking over either screen." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Lets Poki on this iPhone use apps on your iPad without taking over either screen."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验功能。让这台 iPhone 上的 Poki 使用 iPad 上的 App，不占用任何一块屏幕。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "實驗功能。讓這台 iPhone 上的 Poki 使用 iPad 上的 App，不佔用任何一個螢幕。"
+          }
+        }
+      }
+    },
+    "https://poki-relay.you.workers.dev/v1/…/mcp" : {
+      "shouldTranslate" : false
+    },
     "Also uses" : {
       "localizations" : {
         "en" : {

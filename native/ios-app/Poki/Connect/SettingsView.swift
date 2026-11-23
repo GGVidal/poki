@@ -31,6 +31,10 @@ enum SettingsRoute: Hashable {
     case connector(ConnectorSecret), relay, diagnostics, log, activityPreview, memory
     /// A page under Memory: About You, an app, Recent Updates.
     case memoryPage(MemoryPage)
+    #if POKI_EXPERIMENTS
+    /// Poki Lab only: the link to Poki on the owner's iPad (issue #689).
+    case workspaceLink
+    #endif
 }
 
 /// The page for a settings route, in whichever navigation stack pushed it.
@@ -50,6 +54,9 @@ struct SettingsDestination: View {
         case .memory: MemoryView(back: pop)
         case .memoryPage(let page): MemoryDestination(page: page)
         case .activityPreview: ActivityPreview()
+        #if POKI_EXPERIMENTS
+        case .workspaceLink: WorkspaceLinkView(back: pop)
+        #endif
         }
     }
 }
@@ -104,6 +111,18 @@ struct SettingsHome: View {
             } footer: {
                 if model.relayAddress == nil { Text("Set your relay address first: each agent’s address is on your relay.") }
             }
+
+            #if POKI_EXPERIMENTS
+            Section {
+                NavigationLink(value: SettingsRoute.workspaceLink) {
+                    LabeledContent("iPad Workspace") {
+                        Text(WorkspaceLinkStore.address?.host ?? AppLocalization.text(LocalizedStringResource("Not Set")))
+                    }
+                }
+            } footer: {
+                Text("Experimental. Lets Poki on this iPhone use apps on your iPad without taking over either screen.")
+            }
+            #endif
 
             // The in-process path has no Poki Runner to start or stop (ESP-152).
             if model.automationPath == .runner {

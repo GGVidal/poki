@@ -19,7 +19,12 @@ enum Harness {
     }()
 
     static var instructions: String {
+        #if POKI_EXPERIMENTS
+        [system, PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed), WebTools.instructions, WorkspaceTools.instructions]
+            .filter { !$0.isEmpty }.joined(separator: "\n\n")
+        #else
         [system, PokiCore.toolInstructions(includeScreenHistory: HistoryCapture.agentQueryAllowed), WebTools.instructions].joined(separator: "\n\n")
+        #endif
     }
 
     static let splitViewInstructions = """
@@ -105,7 +110,11 @@ enum Harness {
     /// The current permission determines which ones are declared for each request.
     static func toolSpecs(inSplitView: Bool, includeScreenHistory: Bool) -> [ToolSpec] {
         if !inSplitView {
+            #if POKI_EXPERIMENTS
+            return catalogTools(includeScreenHistory: includeScreenHistory) + [findApp] + WebTools.specs + WorkspaceTools.specs + [reportPlan, finishTask]
+            #else
             return catalogTools(includeScreenHistory: includeScreenHistory) + [findApp] + WebTools.specs + [reportPlan, finishTask]
+            #endif
         }
         return [
             ToolSpec(name: "look", description: "Read the app, numbered UI elements and screenshot of the left or right pane. Select a pane explicitly when you first read and whenever moving between apps. Points use the selected screenshot’s own coordinates.",
