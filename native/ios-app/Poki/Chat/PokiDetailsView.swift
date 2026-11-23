@@ -847,6 +847,25 @@ struct AgentsAndRelayView: View {
                      ? "Set your relay first. Each agent gets its own MCP address on it."
                      : "Each agent gets its own MCP address. Add it as a remote MCP server in Claude, Codex or any MCP client. It takes the agent’s name and icon when the agent first connects, unless you renamed it. Swipe to revoke.")
             }
+
+            #if POKI_EXPERIMENTS
+            // Poki Lab only (issue #689): the experimental rows that used to sit in SettingsHome, which the
+            // current Settings no longer shows, so a device build could not reach them.
+            Section {
+                NavigationLink(value: SettingsRoute.workspaceLink) {
+                    LabeledContent("iPad Workspace") {
+                        Text(WorkspaceLinkStore.address?.host ?? AppLocalization.text(LocalizedStringResource("Not Set")))
+                    }
+                }
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    NavigationLink("Workspace Display", value: SettingsRoute.workspaceDisplay)
+                }
+            } header: {
+                SettingsHeader("Experimental")
+            } footer: {
+                Text("Experimental. Lets Poki on this iPhone use apps on your iPad without taking over either screen.")
+            }
+            #endif
         }
         .navigationTitle(AppLocalization.text("Agents"))
         .navigationBarTitleDisplayMode(.inline)

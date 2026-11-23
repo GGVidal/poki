@@ -1,5 +1,6 @@
 #if POKI_EXPERIMENTS
 import SwiftUI
+import UIKit
 
 /// Experimental (issue #689, Poki Lab builds only, unverified on hardware): on iPad, choose a second
 /// display as Poki's workspace. While one is chosen, Poki's reads and touches go there and nowhere
@@ -62,13 +63,38 @@ struct WorkspaceDisplayView: View {
         Self.queue.async { PKInProcess.shared().labDisplayID = id.map { NSNumber(value: $0) } }
     }
 
+    /// What UIKit itself tells this app about displays: every UIScreen, and every scene session and
+    /// connected scene with its role and screen, so an external-display scene for a virtual display
+    /// shows up here if iPadOS offers one.
+    @MainActor static func uikitView() -> [String: Any] {
+        let screens: [[String: Any]] = UIScreen.screens.map { screen in
+            ["bounds": "\(screen.bounds.size.width)x\(screen.bounds.size.height)", "scale": screen.scale,
+             "main": screen == UIScreen.main, "mirrored": screen.mirrored != nil,
+             "maxFPS": screen.maximumFramesPerSecond, "description": String(describing: screen)]
+        }
+        let sessions: [[String: Any]] = UIApplication.shared.openSessions.map { session in
+            var row: [String: Any] = ["role": session.role.rawValue, "id": session.persistentIdentifier]
+            if let scene = session.scene as? UIWindowScene {
+                row["screen"] = "\(scene.screen.bounds.size.width)x\(scene.screen.bounds.size.height)"
+                row["screenIsMain"] = scene.screen == UIScreen.main
+                row["state"] = scene.activationState.rawValue
+            }
+            return row
+        }
+        return ["screens": screens, "openSessions": sessions,
+                "connectedScenes": UIApplication.shared.connectedScenes.count,
+                "supportsMultipleScenes": UIApplication.shared.supportsMultipleScenes]
+    }
+
     private func check() {
         checking = true
         Task {
             let result = await withCheckedContinuation { (c: CheckedContinuation<[String: Any], Never>) in
                 Self.queue.async { c.resume(returning: PKInProcess.shared().labDisplayCheck()) }
             }
-            let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+            var full = result
+            full["uikit"] = Self.uikitView()
+            let data = try? JSONSerialization.data(withJSONObject: full, options: [.prettyPrinted, .sortedKeys])
             report = data.map { String(decoding: $0, as: UTF8.self) } ?? "\(result)"
             checking = false
             await load()
