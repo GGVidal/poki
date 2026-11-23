@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+#if !os(watchOS)
+@testable import Poki
+#endif
 
 @MainActor
 protocol WatchVoiceDeliveryLink: AnyObject {

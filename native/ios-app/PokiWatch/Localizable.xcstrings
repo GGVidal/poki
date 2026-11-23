@@ -667,13 +667,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在聆听…"
+            "value": "正在倾听…"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在聆聽…"
+            "value": "正在傾聽…"
           }
         }
       },
@@ -848,13 +848,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "待设置"
+            "value": "未设置"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "待設定"
+            "value": "未設定"
           }
         }
       }
@@ -1259,13 +1259,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "松开即可发送"
+            "value": "松开发送"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "鬆開即可傳送"
+            "value": "放開傳送"
           }
         }
       },
