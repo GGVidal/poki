@@ -46,6 +46,17 @@ installed from the Mac Studio at 9:34 am ET; never an alpha or beta build.
   mirrored, no UIScreen, no picture.
 - **HID.** dtuhidd decodes UniversalHID's own KeyboardReport/PointerReport types by report id and
   drops boot-protocol reports; sending those types is the next HID step.
+- **Software keyboard works (10:22 am ET).** A `createService` keyboard using UniversalHID's own
+  KeyboardReport layout (report id 1, 232-bit usage bitmap, 31-byte reports) types into Poki Lab with
+  the on-screen keyboard hidden. A PointerReport mouse (report id 5, 17-byte reports) is accepted;
+  the cursor is not yet confirmed.
+- **No other display maker (10:25 am ET).** Only testmanagerd, dtremotedisplayd and dtscreencaptured
+  hold the virtual display entitlements, and all use the same fvfbserv service, which always makes a
+  "wireless" (AirPlay-tagged) display. XCTest frameworks have no display creation call.
+  `EnableTetheredDisplayPortMode` only affects capture and audio routing. The extend predicate needs a
+  property equal to 1 (likely wired transport) or `allowWirelessDisplaysForExtendedDisplayMode`.
+  On stock iPadOS 27.0 the only software lever left is that SpringBoard default, which the owner
+  decides on. Even if set on his iPad, it is not something Poki could ship to users.
 - **Earlier reading.** Keyboard and pointer presence is not enough; the virtual display itself may be
   the wall. Next: the display service's other modes and options, SpringBoard's log for display 3, and
   whether Poki Lab sees a UIScreen or scene session for display 3 so it could put its own window there.
