@@ -9,62 +9,116 @@
 /* Begin PBXBuildFile section */
 		01430E4537516E2888E86003 /* WebCachedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8FD769F7C77CF6A14728E9 /* WebCachedTests.swift */; };
 		015880C32DB8D47BFC7E03B9 /* KeyLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BC6A3CF35DB8E515D09440F /* KeyLaunchTests.swift */; };
+		022193ED922D8A578D1FC147 /* IPadDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D59B94CAF0234100FE8A165 /* IPadDisplayTests.swift */; };
+		02FB3393B04248E4A4AC571F /* OutsideEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA522B6260031CCC7B7DB4D5 /* OutsideEventTests.swift */; };
 		033418B34EF194ECA589EF21 /* BackgroundAXActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A6B8A34D8759B18C298211 /* BackgroundAXActionTests.swift */; };
 		04C33EF3745480E17B709D20 /* AuditAttr3Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C2CFD93CA08922D53AC5F71 /* AuditAttr3Tests.swift */; };
 		08D10CA0CADF39DD022E57AB /* WebAliveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11A0DCA170D700945E30B8CD /* WebAliveTests.swift */; };
 		09482B6D9D52A169463520AA /* KickAllTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68931595AF15ECC4E86A0FD0 /* KickAllTests.swift */; };
+		0A5A4D4F08FEC451723AFD58 /* AnyControlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76BEFED2A784EF495DF48725 /* AnyControlTests.swift */; };
 		0ACBCEABD1E3AE3380497FEC /* AnyControlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76BEFED2A784EF495DF48725 /* AnyControlTests.swift */; };
+		0B857FFA7D73F1FD302ADA23 /* WebDeepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CEED5C40E80374344A6E1C /* WebDeepTests.swift */; };
 		0F4AA7CFDCA664C134262B69 /* CoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18CD3DFFDC0720AB2FD72698 /* CoverageTests.swift */; };
+		0F61D2F65D2F118E3F22681D /* SwiftUIRestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C29C8F48BE1E763C819CF6 /* SwiftUIRestTests.swift */; };
+		1151048E1F7799255F55228C /* CoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18CD3DFFDC0720AB2FD72698 /* CoverageTests.swift */; };
 		123D6004EAF8FEFCAB7FC603 /* AuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C68E3F0DCF929507CE7B86A /* AuditTests.swift */; };
+		1488B1D99AF7D27DA5962B5D /* AuditAttrTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95329EC096AAA437380BC6CA /* AuditAttrTests.swift */; };
 		150915858FFEC97317DC3D3E /* PressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8930A1BCC90C9B83113E71C /* PressTests.swift */; };
 		16F4265869CE582F39904FF9 /* SwiftUIRestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C29C8F48BE1E763C819CF6 /* SwiftUIRestTests.swift */; };
+		17F5B7AAD67BC95C36B022A2 /* ImpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC932D9C8CED793B0AFE66F9 /* ImpTests.swift */; };
 		1B4216B95ACDFEA19BB72C8A /* WebFormMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66F37FF1A3E7C981F56865A6 /* WebFormMenuTests.swift */; };
+		1B4454120881C422D234D73F /* ButtonVariantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B1EF87EA7F68A49362E572C /* ButtonVariantTests.swift */; };
 		1BB994D3070A9A79F73DC8DE /* KickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40BC6D00CA0A1200C73F4FD8 /* KickTests.swift */; };
+		1BE6DD164505A6ED9D8FF4C9 /* WebPidTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F969EE31C8D7D5C090A04B2 /* WebPidTests.swift */; };
 		1CBC26A79611C2953218A883 /* SwitcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B0A5334875C9594C4A54746 /* SwitcherTests.swift */; };
+		1D746F458B27FA6814A33B4A /* RealAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37599EC19C7AE84E208CE61C /* RealAppTests.swift */; };
 		1EA59BB8092E557142035EED /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9856DC405581A81535EA993E /* App.swift */; };
+		25191A3C097D073CF59438A3 /* WebCachedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8FD769F7C77CF6A14728E9 /* WebCachedTests.swift */; };
+		29524365F04A6A03CB7B9E18 /* WebAliveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11A0DCA170D700945E30B8CD /* WebAliveTests.swift */; };
+		2954C471E114BD36D9F06DE3 /* CellActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9EF82FA819E27C0678C9675 /* CellActionTests.swift */; };
+		2B42E9789474B396FAA2F9B6 /* StockBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4092C064FDEE8F715E2F7B06 /* StockBackTests.swift */; };
 		2D38855B2911E3113C947ACC /* CanActTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22EE4CF7DB193B6F0AD49A5E /* CanActTests.swift */; };
 		2F7F3C5F7127EE28C8DADF1D /* AttachedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 582013C40498266366AC1D73 /* AttachedTests.swift */; };
 		303EBA1CB7045BF6FC1D62B8 /* KeyValueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F340C58D4BA722DE6C9F6D0 /* KeyValueTests.swift */; };
+		31BF44E230B3806B4FA096AA /* PhoneBack2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C841D4D8C6E1884832F98B0 /* PhoneBack2Tests.swift */; };
+		33F8C24FF908A1A49EC181EA /* TrustTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 813FEC7D77225DA7CEED8109 /* TrustTests.swift */; };
 		364610335CBAB5DAFBBA57B0 /* StockBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4092C064FDEE8F715E2F7B06 /* StockBackTests.swift */; };
+		3D865B0CC6A2E2E8F3193689 /* BackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99C8365F5774ABB6F65EB505 /* BackTests.swift */; };
 		4079C260336E9A93F740E4F6 /* XCAttrTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC2517ACE3AFDC98C826FD2 /* XCAttrTableTests.swift */; };
 		435F0DD30102F830432924E8 /* StackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1C43527B25F0C1BB45BAF14 /* StackTests.swift */; };
+		439456DFB5FE3C3A4CE63600 /* MenuSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14CDC62BF5EBA7B96ADDC3DC /* MenuSwitchTests.swift */; };
+		45229BC1734108C6E2381658 /* KickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40BC6D00CA0A1200C73F4FD8 /* KickTests.swift */; };
+		4A17F8580C7B97EEE099080C /* IPadStageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359F39ED8103F56BCB9DE045 /* IPadStageTests.swift */; };
 		4C66435A102CFD66F7CD1E7D /* ChamoisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88CF7154AF143BE24FF9E53A /* ChamoisTests.swift */; };
+		52A68434D1C6EEFCE58DDEA7 /* AuditAttr4Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DD58DEE856B1AC482673CF /* AuditAttr4Tests.swift */; };
 		5527950066950CA6507C0681 /* ReadAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D804F1DF8ADF133D9FB41BA7 /* ReadAppTests.swift */; };
+		585460E7DF41E6553DB5E9FE /* AuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C68E3F0DCF929507CE7B86A /* AuditTests.swift */; };
+		58E28EAFA6072E0C472738F1 /* CanActTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22EE4CF7DB193B6F0AD49A5E /* CanActTests.swift */; };
 		591D0502DC036A30C4A27E8D /* PhoneBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65B912D27F8961E609CE1642 /* PhoneBackTests.swift */; };
+		5A3E4554D4A2B5157C04AC83 /* KeyValueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F340C58D4BA722DE6C9F6D0 /* KeyValueTests.swift */; };
+		6115D78C62ED81E7A4BE1230 /* PurgeTimingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 653183CC8419F5A6E597B7A0 /* PurgeTimingTests.swift */; };
+		6208EEBC3AA2550E17CF1562 /* ChamoisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88CF7154AF143BE24FF9E53A /* ChamoisTests.swift */; };
+		62502EE9D5D70EF532277050 /* SubmitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E74A1781817C3456CB0E3D5D /* SubmitTests.swift */; };
 		64D5E482264AEEDD9FF50FB9 /* ContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAFF331DA3B6A541F149FE6D /* ContextTests.swift */; };
+		658A8939A94727E873F381CB /* AuditAttr3Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C2CFD93CA08922D53AC5F71 /* AuditAttr3Tests.swift */; };
 		65DB3D89A53301CE9F844274 /* BackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99C8365F5774ABB6F65EB505 /* BackTests.swift */; };
+		68F52995667B128FB8E0D9CA /* DaemonAttrTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC46A9E27CDF30C1795C4139 /* DaemonAttrTests.swift */; };
 		6F318B8357EB20B248CA81A3 /* DaemonRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB237B378D5FD01C8378342C /* DaemonRouteTests.swift */; };
 		7012F447E270A8FB38BD87FA /* PurgeTimingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 653183CC8419F5A6E597B7A0 /* PurgeTimingTests.swift */; };
 		7569DD5C83E2582E3BE92EF2 /* HoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1992A65BC0FDBACFC0BF6BFB /* HoldTests.swift */; };
+		79B92A45961DF0F2495C175B /* XCAttrTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC2517ACE3AFDC98C826FD2 /* XCAttrTableTests.swift */; };
 		7A5C8A41D0124711C032C74E /* RealAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37599EC19C7AE84E208CE61C /* RealAppTests.swift */; };
 		7BBDC07C0BB63EBCEC437088 /* ImpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC932D9C8CED793B0AFE66F9 /* ImpTests.swift */; };
 		81E84D0FC592323DF6ECD9EE /* SimFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2DAF539945E4181414B2F7 /* SimFixtureTests.swift */; };
 		821B313BF4473ABB31F590AB /* PBHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = 5B06304F4A0F1A9A71F9596D /* PBHelper.m */; };
+		8303F7DCA58B75E8D8C3236A /* PBHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = 5B06304F4A0F1A9A71F9596D /* PBHelper.m */; };
 		8380586915920C17ADB3D6C3 /* IPadStageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359F39ED8103F56BCB9DE045 /* IPadStageTests.swift */; };
 		83975AF64E52809F24BB0060 /* AuditAttr4Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DD58DEE856B1AC482673CF /* AuditAttr4Tests.swift */; };
+		83CFB3244D6473F003BEB2AF /* ReadAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D804F1DF8ADF133D9FB41BA7 /* ReadAppTests.swift */; };
 		87FA821526A0B3AD118EC79A /* HiddenLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90CB3FEA97EC2B68DF87C3DD /* HiddenLaunchTests.swift */; };
+		894C59BF55CFA75336A84DF2 /* PressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8930A1BCC90C9B83113E71C /* PressTests.swift */; };
 		929D2CD1F74775BF1DD05EB7 /* AuditAttr2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F86C1E27FB27707180D8F064 /* AuditAttr2Tests.swift */; };
+		94306C2D66C0C2443841E805 /* HiddenLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90CB3FEA97EC2B68DF87C3DD /* HiddenLaunchTests.swift */; };
+		94D37B2EF9D604DFA3174F82 /* KeyLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BC6A3CF35DB8E515D09440F /* KeyLaunchTests.swift */; };
 		990190C9E4C1AEF49ECB152D /* AuditAttrTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95329EC096AAA437380BC6CA /* AuditAttrTests.swift */; };
 		9A5E57DF9A61896422B39C2C /* TrustTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 813FEC7D77225DA7CEED8109 /* TrustTests.swift */; };
 		9A889A19B567B45E4DCAB5EB /* Coverage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B483867E343AEF8EC6596BFB /* Coverage.swift */; };
+		9B475507A655A6730341F0CB /* KickAllTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68931595AF15ECC4E86A0FD0 /* KickAllTests.swift */; };
 		A1364901E1114DA7FCF809C5 /* PhoneBack2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C841D4D8C6E1884832F98B0 /* PhoneBack2Tests.swift */; };
 		A1E00D2EF5DA0AFDBDB976FF /* DaemonAttrTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC46A9E27CDF30C1795C4139 /* DaemonAttrTests.swift */; };
 		A227626937CFC1317A8AB9AA /* MenuSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14CDC62BF5EBA7B96ADDC3DC /* MenuSwitchTests.swift */; };
+		A3DE9F449040DD12AC9DDE2F /* WebFreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3C9E98649C416F535520F6A /* WebFreshTests.swift */; };
 		A504B07F2872CEFFB9611CC5 /* ProbeKickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65FFB8036CBB0F35F4761689 /* ProbeKickTests.swift */; };
+		A61D07A739F402F550C51A5D /* SwitcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B0A5334875C9594C4A54746 /* SwitcherTests.swift */; };
 		A6206BA26C0F20F0C878BB11 /* DeviceBackgroundAXTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B1123306D4C2F991818262A /* DeviceBackgroundAXTests.swift */; };
+		A70D7643B88603AFB98C8773 /* WebFormMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66F37FF1A3E7C981F56865A6 /* WebFormMenuTests.swift */; };
 		A8843ED1C9674C7A75C831E3 /* PBHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = D87E94B76CD36BE71021D4BD /* PBHelper.m */; };
+		A9AFA5D1AA436895FF0030D2 /* SimFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2DAF539945E4181414B2F7 /* SimFixtureTests.swift */; };
+		ACA20F22B97CAF72E352AF4C /* SnapWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48F4A525634A3EEADEBBFD6C /* SnapWindowTests.swift */; };
 		AE532E1990B3A0FCAB5617E6 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D19CD33B9AC08A2EEFC206F /* App.swift */; };
+		AE64249D6C42D2509DDD8F46 /* ProbeKickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65FFB8036CBB0F35F4761689 /* ProbeKickTests.swift */; };
+		B08C0414EADD38977E2B7369 /* AttachedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 582013C40498266366AC1D73 /* AttachedTests.swift */; };
+		BA13E1A46A2F29543C891C00 /* AuditAttr2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F86C1E27FB27707180D8F064 /* AuditAttr2Tests.swift */; };
 		BE9AFBFDD164D5AC1E4CAC3B /* WebPidTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F969EE31C8D7D5C090A04B2 /* WebPidTests.swift */; };
+		BEB8D67E9198DFD6013ED833 /* KeyDeliveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D778354117423F2EDDF719 /* KeyDeliveryTests.swift */; };
+		C102F80424D044A2DAA95D23 /* StackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1C43527B25F0C1BB45BAF14 /* StackTests.swift */; };
 		C3784F8B7932F764906C9C00 /* IPadDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D59B94CAF0234100FE8A165 /* IPadDisplayTests.swift */; };
 		C95940135B4194BB6CCFF0F0 /* SnapWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48F4A525634A3EEADEBBFD6C /* SnapWindowTests.swift */; };
 		CBA262E583848292BB3A531A /* KeyDeliveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D778354117423F2EDDF719 /* KeyDeliveryTests.swift */; };
+		CCD5F178774664004B353B16 /* ContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAFF331DA3B6A541F149FE6D /* ContextTests.swift */; };
 		CEB9B38ED7402CB60C3FC872 /* WebTokenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972F061BC323344CB98E6B97 /* WebTokenTests.swift */; };
+		D0257ED35F653F3A9977042E /* WebTokenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972F061BC323344CB98E6B97 /* WebTokenTests.swift */; };
+		D3471F32EAFE6FC9069FF71D /* AlertKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70E1DFC0F68CD1EC04C5392 /* AlertKeyTests.swift */; };
 		DBBAF60A5303D7051001058B /* ButtonVariantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B1EF87EA7F68A49362E572C /* ButtonVariantTests.swift */; };
+		DCA0311FF202DE60FE9F6836 /* PhoneBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65B912D27F8961E609CE1642 /* PhoneBackTests.swift */; };
 		E1448CA5BDA4C97ED7ADCFD1 /* WebFreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3C9E98649C416F535520F6A /* WebFreshTests.swift */; };
 		E477B98863A89008273A9A7C /* AlertKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70E1DFC0F68CD1EC04C5392 /* AlertKeyTests.swift */; };
 		E52203829FDD6013829DBA81 /* LayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49CF43C868A5D48B0DDDCDA /* LayoutTests.swift */; };
 		E57D232B11FC9C4E12E22EE5 /* WebDeepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CEED5C40E80374344A6E1C /* WebDeepTests.swift */; };
 		EB5BCFF0BDAD3D3CB28F86DC /* OutsideEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA522B6260031CCC7B7DB4D5 /* OutsideEventTests.swift */; };
+		EB730A520E16DA766A187B72 /* LayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49CF43C868A5D48B0DDDCDA /* LayoutTests.swift */; };
+		F170E1749D5BBD3B8AC98522 /* HoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1992A65BC0FDBACFC0BF6BFB /* HoldTests.swift */; };
+		F33F9A4A04C4B2B581A50599 /* DaemonRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB237B378D5FD01C8378342C /* DaemonRouteTests.swift */; };
 		FDFF295CD5930F85CD2C75C9 /* CellActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9EF82FA819E27C0678C9675 /* CellActionTests.swift */; };
 		FE80BF5975AB6FF7DD90060D /* SubmitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E74A1781817C3456CB0E3D5D /* SubmitTests.swift */; };
 /* End PBXBuildFile section */
@@ -78,6 +132,13 @@
 			remoteInfo = Fixture;
 		};
 		CCDB6F1653EE187D574DE39C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5C47502E3CBFBDF73F8FD73A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4030F6634D37A1862714E70D;
+			remoteInfo = AXFixture;
+		};
+		EC49349878D1C5E38F1CE8F4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 5C47502E3CBFBDF73F8FD73A /* Project object */;
 			proxyType = 1;
@@ -102,6 +163,7 @@
 		3EFD414B277C743AE2E95B05 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		4092C064FDEE8F715E2F7B06 /* StockBackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockBackTests.swift; sourceTree = "<group>"; };
 		40BC6D00CA0A1200C73F4FD8 /* KickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KickTests.swift; sourceTree = "<group>"; };
+		44EDFB155112D2F9E0033209 /* DeviceSnapUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DeviceSnapUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		48F4A525634A3EEADEBBFD6C /* SnapWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapWindowTests.swift; sourceTree = "<group>"; };
 		4B0A5334875C9594C4A54746 /* SwitcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherTests.swift; sourceTree = "<group>"; };
 		4F340C58D4BA722DE6C9F6D0 /* KeyValueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyValueTests.swift; sourceTree = "<group>"; };
@@ -246,6 +308,7 @@
 			children = (
 				F1C9EC64100281287AC83A30 /* AXFixture.app */,
 				5E7152BB4BF70EC4A8535A68 /* DeviceProbeUITests.xctest */,
+				44EDFB155112D2F9E0033209 /* DeviceSnapUITests.xctest */,
 				D9049B9B19EBD9E0AC7779DB /* Fixture.app */,
 				A6234C74F7E1B4CB4A2A75B9 /* ProbeUITests.xctest */,
 				F173C5D4973C8224923D09BB /* SimProbeUITests.xctest */,
@@ -374,6 +437,24 @@
 			productReference = A6234C74F7E1B4CB4A2A75B9 /* ProbeUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		A70E9FB7DD9056EFB19C0852 /* DeviceSnapUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AE50DB890171AA838CC4BDE3 /* Build configuration list for PBXNativeTarget "DeviceSnapUITests" */;
+			buildPhases = (
+				F1B9358E7DC211C2E4880BF5 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0A7049083DFDB769C9E708AC /* PBXTargetDependency */,
+			);
+			name = DeviceSnapUITests;
+			packageProductDependencies = (
+			);
+			productName = DeviceSnapUITests;
+			productReference = 44EDFB155112D2F9E0033209 /* DeviceSnapUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -392,6 +473,11 @@
 					};
 					7349EBF3F65F7A079CF08500 = {
 						TestTargetID = 3F93E3F16A8AE147AF0EF10F;
+					};
+					A70E9FB7DD9056EFB19C0852 = {
+						DevelopmentTeam = Q64ZL36CJN;
+						ProvisioningStyle = Automatic;
+						TestTargetID = 4030F6634D37A1862714E70D;
 					};
 				};
 			};
@@ -414,6 +500,7 @@
 				3A5CC8029621708F9E3839C5 /* DeviceProbeUITests */,
 				4030F6634D37A1862714E70D /* AXFixture */,
 				4E837F857AD20EF0AF369D57 /* SimProbeUITests */,
+				A70E9FB7DD9056EFB19C0852 /* DeviceSnapUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -514,9 +601,75 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F1B9358E7DC211C2E4880BF5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D3471F32EAFE6FC9069FF71D /* AlertKeyTests.swift in Sources */,
+				0A5A4D4F08FEC451723AFD58 /* AnyControlTests.swift in Sources */,
+				B08C0414EADD38977E2B7369 /* AttachedTests.swift in Sources */,
+				BA13E1A46A2F29543C891C00 /* AuditAttr2Tests.swift in Sources */,
+				658A8939A94727E873F381CB /* AuditAttr3Tests.swift in Sources */,
+				52A68434D1C6EEFCE58DDEA7 /* AuditAttr4Tests.swift in Sources */,
+				1488B1D99AF7D27DA5962B5D /* AuditAttrTests.swift in Sources */,
+				585460E7DF41E6553DB5E9FE /* AuditTests.swift in Sources */,
+				3D865B0CC6A2E2E8F3193689 /* BackTests.swift in Sources */,
+				1B4454120881C422D234D73F /* ButtonVariantTests.swift in Sources */,
+				58E28EAFA6072E0C472738F1 /* CanActTests.swift in Sources */,
+				2954C471E114BD36D9F06DE3 /* CellActionTests.swift in Sources */,
+				6208EEBC3AA2550E17CF1562 /* ChamoisTests.swift in Sources */,
+				CCD5F178774664004B353B16 /* ContextTests.swift in Sources */,
+				1151048E1F7799255F55228C /* CoverageTests.swift in Sources */,
+				68F52995667B128FB8E0D9CA /* DaemonAttrTests.swift in Sources */,
+				F33F9A4A04C4B2B581A50599 /* DaemonRouteTests.swift in Sources */,
+				94306C2D66C0C2443841E805 /* HiddenLaunchTests.swift in Sources */,
+				F170E1749D5BBD3B8AC98522 /* HoldTests.swift in Sources */,
+				022193ED922D8A578D1FC147 /* IPadDisplayTests.swift in Sources */,
+				4A17F8580C7B97EEE099080C /* IPadStageTests.swift in Sources */,
+				17F5B7AAD67BC95C36B022A2 /* ImpTests.swift in Sources */,
+				BEB8D67E9198DFD6013ED833 /* KeyDeliveryTests.swift in Sources */,
+				94D37B2EF9D604DFA3174F82 /* KeyLaunchTests.swift in Sources */,
+				5A3E4554D4A2B5157C04AC83 /* KeyValueTests.swift in Sources */,
+				9B475507A655A6730341F0CB /* KickAllTests.swift in Sources */,
+				45229BC1734108C6E2381658 /* KickTests.swift in Sources */,
+				EB730A520E16DA766A187B72 /* LayoutTests.swift in Sources */,
+				439456DFB5FE3C3A4CE63600 /* MenuSwitchTests.swift in Sources */,
+				02FB3393B04248E4A4AC571F /* OutsideEventTests.swift in Sources */,
+				8303F7DCA58B75E8D8C3236A /* PBHelper.m in Sources */,
+				31BF44E230B3806B4FA096AA /* PhoneBack2Tests.swift in Sources */,
+				DCA0311FF202DE60FE9F6836 /* PhoneBackTests.swift in Sources */,
+				894C59BF55CFA75336A84DF2 /* PressTests.swift in Sources */,
+				AE64249D6C42D2509DDD8F46 /* ProbeKickTests.swift in Sources */,
+				6115D78C62ED81E7A4BE1230 /* PurgeTimingTests.swift in Sources */,
+				83CFB3244D6473F003BEB2AF /* ReadAppTests.swift in Sources */,
+				1D746F458B27FA6814A33B4A /* RealAppTests.swift in Sources */,
+				A9AFA5D1AA436895FF0030D2 /* SimFixtureTests.swift in Sources */,
+				ACA20F22B97CAF72E352AF4C /* SnapWindowTests.swift in Sources */,
+				C102F80424D044A2DAA95D23 /* StackTests.swift in Sources */,
+				2B42E9789474B396FAA2F9B6 /* StockBackTests.swift in Sources */,
+				62502EE9D5D70EF532277050 /* SubmitTests.swift in Sources */,
+				0F61D2F65D2F118E3F22681D /* SwiftUIRestTests.swift in Sources */,
+				A61D07A739F402F550C51A5D /* SwitcherTests.swift in Sources */,
+				33F8C24FF908A1A49EC181EA /* TrustTests.swift in Sources */,
+				29524365F04A6A03CB7B9E18 /* WebAliveTests.swift in Sources */,
+				25191A3C097D073CF59438A3 /* WebCachedTests.swift in Sources */,
+				0B857FFA7D73F1FD302ADA23 /* WebDeepTests.swift in Sources */,
+				A70D7643B88603AFB98C8773 /* WebFormMenuTests.swift in Sources */,
+				A3DE9F449040DD12AC9DDE2F /* WebFreshTests.swift in Sources */,
+				1BE6DD164505A6ED9D8FF4C9 /* WebPidTests.swift in Sources */,
+				D0257ED35F653F3A9977042E /* WebTokenTests.swift in Sources */,
+				79B92A45961DF0F2495C175B /* XCAttrTableTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		0A7049083DFDB769C9E708AC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4030F6634D37A1862714E70D /* AXFixture */;
+			targetProxy = EC49349878D1C5E38F1CE8F4 /* PBXContainerItemProxy */;
+		};
 		46E2C7549DA0968CE29A9D84 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 4030F6634D37A1862714E70D /* AXFixture */;
@@ -818,6 +971,48 @@
 			};
 			name = Debug;
 		};
+		9CA3028D046DB652D921FF72 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = Q64ZL36CJN;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = SimProbeUITests/Bridging.h;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AXFixture;
+			};
+			name = Release;
+		};
+		DFB52F6CEF78407289346315 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = Q64ZL36CJN;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zhehanz.bgaxprobe.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = SimProbeUITests/Bridging.h;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AXFixture;
+			};
+			name = Debug;
+		};
 		E627D0B91C48BEB96337D018 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -892,6 +1087,15 @@
 			buildConfigurations = (
 				FBCEBE10A63C5EF7FDB116F3 /* Debug */,
 				127C8E9E31715B1E993F29CD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AE50DB890171AA838CC4BDE3 /* Build configuration list for PBXNativeTarget "DeviceSnapUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DFB52F6CEF78407289346315 /* Debug */,
+				9CA3028D046DB652D921FF72 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

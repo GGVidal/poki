@@ -5,7 +5,7 @@ import XCTest
 // in the background (Settings in front) versus the foreground.
 final class SimFixtureTests: XCTestCase {
     let fixture = XCUIApplication(bundleIdentifier: "local.pokimcp.axfixture")
-    let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+    let settings = XCUIApplication(bundleIdentifier: ProcessInfo.processInfo.environment["FRONT_BUNDLE"] ?? "com.apple.Preferences")
     var background = true
 
     func say(_ s: String) { print("SIMPROBE \(background ? "BG" : "FG") \(s)") }

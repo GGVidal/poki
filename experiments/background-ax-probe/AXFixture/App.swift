@@ -93,12 +93,17 @@ enum Fix {
     }
     static func focus(_ t: String) { NSLog("FIXLOG focusNow %@", t); focusLabel?.text = t; focusLabel?.accessibilityValue = t }
     static let t0 = Date()
+    static var bgEvents = 0
+    static var bgControl = 0
+    static var bgLast = "-"
     static func log(_ event: String) {
         count += 1
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
         NSLog("FIXLOG %d %d %@ state=%d", count, ms, event, UIApplication.shared.applicationState.rawValue)
-        label?.text = "\(count) \(event)"
-        label?.accessibilityValue = "\(count) \(event)"
+        let st = UIApplication.shared.applicationState.rawValue
+        if st == 2 { bgEvents += 1; if !event.hasPrefix("scene.") { bgControl += 1; bgLast = event } }
+        label?.text = "\(count) \(event) s\(st) bg=\(bgEvents) bgCtl=\(bgControl) [\(bgLast)]"
+        label?.accessibilityValue = "\(count) \(event) s\(st) bg=\(bgEvents) bgCtl=\(bgControl) [\(bgLast)]"
     }
 }
 

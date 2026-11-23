@@ -615,3 +615,14 @@ TK_ROW, TK_DETAIL). App in background with testmanagerd's assertion, Settings in
 Flutter and Compose dispatch semantic actions to their callbacks in the background, but frames are paused, so state,
 navigation and the tree do not advance. React Native re-renders native views in the background, but only components with
 `onAccessibilityTap` implement `accessibilityActivate`.
+
+## RAW 81 on a real iPad (iPad Pro 13" M5, iPadOS 27.0, Full Screen Apps), 2026-11-23 14:15-14:22 ET
+Fixture and runner (`DeviceSnap` scheme, team-signed development profiles), Poki Lab in front, Full Keyboard Access switched
+on in Settings for the run and back off afterwards; fixture and runner uninstalled after the run. The fixture's label now
+counts control events in background state (`bg=` all events, `bgCtl=` controls).
+- Entry-window press (AX 4000 on the focused control, 4 threads across backgrounding, ~90 presses per round): UISwitch 0/10,
+  UIButton 0/10 in background state (`bgCtl=0` every round); presses fired only while foreground or inactive.
+- Any-time route in background: UISegmentedControl segment 2010 fires (`bgCtl=1`); alert default and destructive buttons, action
+  sheet Cancel, alert text field 2006: fail on device (they fire on the simulator); compact date picker 2010 fail, 2004 no change.
+- Back: 2013 on the navigation bar or bar item accepted with no pop in background; the pop happened only when the app came
+  back to the front ("back popped" at +2.3 s in the foreground).
