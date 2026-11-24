@@ -55,12 +55,14 @@ Beta runs the file that internal testers tried and the Gym scored.
    not hold up the pre-alpha, but a build whose tests failed cannot go to Beta. After a flaky
    failure, re-run the failed jobs; the run then counts as passed.
    To build a hotfix, dispatch Pre-alpha from `main` with a `hotfix/` branch and version. Its files
-   go to the versioned Pre-alpha release. If publishing stops at a draft, retry with the same version
-   and keep the branch at the original source commit. The successful run publishes its files and
-   notes together. Ordinary promotions continue to use the rolling `app-prealpha-latest` release
-   and look up artifacts from pushes to `main`.
+   go to the versioned Pre-alpha release, and the same run executes the app and Poki Setup tests on
+   the resolved hotfix commit. If publishing stops at a draft, retry with the same version and keep
+   the branch at the original source commit. The successful run publishes its files and notes
+   together. Ordinary promotions continue to use the rolling `app-prealpha-latest` release and look
+   up artifacts from pushes to `main`.
 2. **Beta, by PR.** Actions > Propose promotion > beta (`propose-promotion.yml`), with a pre-alpha
-   tag, the merge commit it was built from, or empty for the one on `app-prealpha-latest`. The
+   tag (ordinary or versioned hotfix), the main merge commit it was built from, or empty for the
+   one on `app-prealpha-latest`. The
    proposal refuses a build whose Pre-alpha run did not succeed, is still testing, never ran the
    tests above (builds from before they joined the run) or whose artifact has expired, and names
    the run. With `dry_run`, or from a branch other than `main`, it prints the promotion and
@@ -71,10 +73,11 @@ Beta runs the file that internal testers tried and the Gym scored.
    Merging runs `publish-promotion.yml`, which publishes nothing until the approval in `beta`. The
    repository owner tests the build on a real iPhone before approving.
    Older Poki and Poki Setup install whatever the Alpha releases carry, on every channel, so those
-   wait for the same approval. Once approved, the one job puts the same build on the Alpha
-   compatibility releases (`app-<VERSION>-alpha.<N>`, `app-alpha-latest` and `ios-alpha-latest`),
+   wait for the same approval. Once approved, the one job tags `app-<VERSION>-alpha.<N>` and
+   updates the rolling Alpha compatibility releases (`app-alpha-latest` and `ios-alpha-latest`),
    publishes `app-X.Y.Z-beta.K` with the scorecards attached, and creates `release/X.Y` on a
-   version's first beta.
+   version's first beta. Creating the standalone versioned Alpha release on that tag remains a
+   manual compatibility step below.
 
    There is no separate Alpha step to run or approve. Records of earlier betas keep their
    `app-X.Y.Z-alpha.N` sources; new ones name the pre-alpha.

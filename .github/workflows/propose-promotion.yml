@@ -18,7 +18,7 @@ on:
         type: choice
         options: [beta, stable]
       from:
-        description: "Build to promote: for beta a pre-alpha tag (app-0.3.0-prealpha.712) or the merge commit it was built from, for stable a beta tag (app-0.3.0-beta.1). Empty: the current Pre-alpha, or the newest Beta."
+        description: "Build to promote: for beta a pre-alpha tag (ordinary or hotfix, app-0.3.0-prealpha.712) or a main merge commit, for stable a beta tag (app-0.3.0-beta.1). Empty: the current Pre-alpha, or the newest Beta."
         type: string
         required: false
         default: ''

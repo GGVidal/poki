@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 CHANNELS = Path(".github/channels.json")
@@ -75,18 +76,96 @@ def vkey(v):
 TEST_JOBS = ("app-tests / inprocess", "app-tests / agent-chat", "app-tests / app", "setup-tests")
 
 
+def release_by_tag(tag):
+    r = subprocess.run(["gh", "api", f"repos/{os.environ['GH_REPO']}/releases/tags/{tag}"], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return json.loads(r.stdout)
+
+
+def require_tests(run_id, run_url):
+    # A run from before the tests joined prealpha.yml succeeded without them, so the tests must be there.
+    jobs = gh_json("api", f"repos/{os.environ['GH_REPO']}/actions/runs/{run_id}/jobs?per_page=100", "--jq", "[.jobs[] | {name, conclusion}]") or []
+    passed = {j["name"] for j in jobs if j["conclusion"] == "success"}
+    untested = [name for name in TEST_JOBS if name not in passed]
+    if untested:
+        sys.exit(f"Pre-alpha run {run_url} did not pass {', '.join(untested)}. Promote a build whose run passed the tests.")
+
+
+def hotfix_prealpha(src, version, build, sha, release):
+    assets = {a.get("name"): a.get("digest") or "" for a in release.get("assets") or []}
+    ipa_name = f"Poki-external-{version}-{build}.ipa"
+    ipa_digest = assets.get(ipa_name, "")
+    signing_digest = assets.get("Poki-signing.zip", "")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", ipa_digest):
+        sys.exit(f"Hotfix release {src} is missing verified {ipa_name}.")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", signing_digest) or "SHA256SUMS" not in assets:
+        sys.exit(f"Hotfix release {src} is missing verified Poki-signing.zip or SHA256SUMS.")
+    ipa_sha = ipa_digest.removeprefix("sha256:")
+
+    raw = gh(
+        "api", "--paginate",
+        f"repos/{os.environ['GH_REPO']}/actions/workflows/prealpha.yml/runs?branch=main&event=workflow_dispatch&per_page=100",
+        "--jq", ".workflow_runs[] | {id, run_number, status, conclusion, display_title, html_url, head_branch, event}",
+    )
+    titles = {f"Hotfix Pre-alpha {version}", f"Hotfix Pre-alpha {version} ({build})"}
+    candidates = [
+        r for line in raw.splitlines() if line.strip()
+        for r in [json.loads(line)]
+        if r.get("head_branch") == "main" and r.get("event") == "workflow_dispatch" and r.get("display_title") in titles
+    ]
+    candidates.sort(key=lambda r: r.get("run_number", 0), reverse=True)
+
+    matched = []
+    good = None
+    with tempfile.TemporaryDirectory(prefix="hotfix-provenance-") as tmp:
+        for run in candidates:
+            dest = Path(tmp) / str(run["id"])
+            dl = subprocess.run(
+                ["gh", "run", "download", str(run["id"]), "--repo", os.environ["GH_REPO"], "--name", "Poki-hotfix-source", "--dir", str(dest)],
+                capture_output=True, text=True,
+            )
+            prov_file = dest / "poki-hotfix-source.json"
+            if dl.returncode != 0 or not prov_file.exists():
+                continue
+            prov = json.loads(prov_file.read_text())
+            if prov.get("sha") == sha and prov.get("version") == version and str(prov.get("build")) == build and prov.get("ipa_sha256") == ipa_sha:
+                matched.append(run)
+                if run.get("conclusion") == "success":
+                    good = run
+                    break
+
+    if not good:
+        if not matched:
+            sys.exit(f"No hotfix Pre-alpha run matches {src} ({sha}). Promote a hotfix built by prealpha.yml from main.")
+        last = matched[0]
+        if last.get("status") != "completed":
+            sys.exit(f"The Pre-alpha run of {sha} is still building or testing ({last['status']}): {last['html_url']}. Propose it once the run has succeeded.")
+        sys.exit(f"The Pre-alpha run of {sha} did not succeed ({last['conclusion']}): {last['html_url']}. Its build or its tests failed; promote a build that passed both.")
+
+    require_tests(good["id"], good["html_url"])
+    return src, sha, good["html_url"]
+
+
 def prealpha(src):
     """The pre-alpha to promote to beta, and the successful Pre-alpha run whose artifact is its IPA.
-    src is a pre-alpha tag, the commit it was built from, or empty for the one on app-prealpha-latest.
-    A build that failed or was skipped has no tag and no IPA, so it is refused with its run."""
+    src is a pre-alpha tag (ordinary or versioned hotfix), the commit it was built from, or empty for
+    the one on app-prealpha-latest. A build that failed or was skipped has no tag and no IPA, so it
+    is refused with its run."""
     if not src:
         ipa = next(n for n in gh("release", "view", "app-prealpha-latest", "--json", "assets", "--jq", ".assets[].name").splitlines() if n.startswith("Poki-external-") and n.endswith(".ipa"))
         stem = ipa[len("Poki-external-"):-len(".ipa")]
         src = "app-{}-prealpha.{}".format(*stem.rsplit("-", 1))
-    if re.fullmatch(r"app-\d+\.\d+\.\d+-prealpha\.\d+", src):
+    m_tag = re.fullmatch(r"app-(\d+\.\d+\.\d+)-prealpha\.(\d+)", src)
+    if m_tag:
         if not tag_exists(src):
             sys.exit(f"{src} does not exist. A Pre-alpha build is tagged only when it succeeds; pick a tag from app-prealpha-latest or the tag list.")
         sha = tag_sha(src)
+        rel = release_by_tag(src)
+        if rel is not None:
+            if rel.get("draft"):
+                sys.exit(f"{src} is still a draft release. Re-run the hotfix Pre-alpha workflow so it publishes before proposing Beta.")
+            return hotfix_prealpha(src, m_tag.group(1), m_tag.group(2), sha, rel)
     elif re.fullmatch(r"[0-9a-f]{7,40}", src):
         try:
             sha = gh("api", f"repos/{os.environ['GH_REPO']}/commits/{src}", "--jq", ".sha")
@@ -98,17 +177,12 @@ def prealpha(src):
     good = next((r for r in runs if r["conclusion"] == "success"), None)
     if not good:
         if not runs:
-            sys.exit(f"No Pre-alpha run built {sha}. Only commits merged into main get a Pre-alpha build.")
+            sys.exit(f"No Pre-alpha run built {sha}. Only commits merged into main get an automatic Pre-alpha build; for a hotfix, pass its versioned Pre-alpha tag (app-X.Y.Z-prealpha.N).")
         last = runs[0]
         if last["status"] != "completed":
             sys.exit(f"The Pre-alpha run of {sha} is still building or testing ({last['status']}): {last['url']}. Propose it once the run has succeeded.")
         sys.exit(f"The Pre-alpha run of {sha} did not succeed ({last['conclusion']}): {last['url']}. Its build or its tests failed; promote a build that passed both.")
-    # A run from before the tests joined prealpha.yml succeeded without them, so the tests must be there.
-    jobs = gh_json("api", f"repos/{os.environ['GH_REPO']}/actions/runs/{good['databaseId']}/jobs?per_page=100", "--jq", "[.jobs[] | {name, conclusion}]") or []
-    passed = {j["name"] for j in jobs if j["conclusion"] == "success"}
-    untested = [name for name in TEST_JOBS if name not in passed]
-    if untested:
-        sys.exit(f"Pre-alpha run {good['url']} did not pass {', '.join(untested)}. Promote a build whose run passed the tests.")
+    require_tests(good["databaseId"], good["url"])
     artifacts = gh_json("api", f"repos/{os.environ['GH_REPO']}/actions/runs/{good['databaseId']}/artifacts", "--jq", '[.artifacts[] | select(.name == "Poki-unsigned")]') or []
     if not artifacts or artifacts[0]["expired"]:
         sys.exit(f"The IPA of Pre-alpha run {good['url']} has expired (artifacts are kept 90 days). Promote a newer build.")
