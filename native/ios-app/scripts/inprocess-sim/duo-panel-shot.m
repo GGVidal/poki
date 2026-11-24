@@ -61,6 +61,7 @@ static void (^onScreenCapture)(void);
 @property(nonatomic) BOOL omitOrientationRPC;
 @property(nonatomic, copy) NSString *launchedBundle;
 @property(nonatomic, copy) void (^onLaunch)(NSString *bundle);
+@property(nonatomic, copy) void (^activate)(NSString *bundle);
 @end
 @implementation ReadySession
 - (id)prepare:(NSError **)error { return self; }
@@ -77,6 +78,7 @@ static void (^onScreenCapture)(void);
 - (void)_XCT_launchApplicationWithBundleID:(NSString *)bundle arguments:(NSArray *)arguments environment:(NSDictionary *)environment completion:(void (^)(NSError *))completion {
     self.launchedBundle = bundle;
     if (self.onLaunch) self.onLaunch(bundle);
+    if (self.activate) self.activate(bundle);
     completion(nil);
 }
 - (void)_XCT_synthesizeEvent:(XCSynthesizedEventRecord *)record implicitConfirmationInterval:(double)interval completion:(void (^)(NSError *))completion {
@@ -116,6 +118,7 @@ static void (^onScreenCapture)(void);
 @property(nonatomic) PKDisplayGeometry scene;
 @property(nonatomic, strong) AXNode *own;
 @property(nonatomic, strong) AXNode *target;
+@property(nonatomic, copy) NSString *targetBundle;
 @property(nonatomic, strong) AXNode *snapshot;
 @property(nonatomic, strong) AXNode *otherWindow;
 @property(nonatomic) BOOL missTarget;
@@ -126,11 +129,12 @@ static void (^onScreenCapture)(void);
 @implementation CompanionFixture
 - (PKDisplayGeometry)sceneDisplayGeometry { return self.scene; }
 - (BOOL)isPokiSceneVisible { return !self.pokiHidden; }
+- (BOOL)screenLocked { return NO; }
 - (NSData *)daemonJPEGForScreen:(id)screen { return nil; }
 - (id)current:(uint64_t *)generation outcome:(PKOutcome **)outcome { *generation = 1; return [self valueForKey:@"sessions"]; }
 - (id)accessibilityFor:(uint64_t)generation { return self; }
 - (NSString *)bundleForPID:(int)pid session:(id)session {
-    if (pid == self.target.processIdentifier) return @"com.apple.calculator";
+    if (pid == self.target.processIdentifier) return self.targetBundle;
     return pid == getpid() ? @"local.poki" : @"com.apple.mobiletimer";
 }
 - (NSArray *)activeApplications { return @[self.own, self.target]; }
@@ -200,6 +204,7 @@ static CompanionFixture *companion(PKDisplayGeometry scene) {
     runner.own.processIdentifier = getpid();
     runner.target = [AXNode new];
     runner.target.processIdentifier = getpid() + 1;
+    runner.targetBundle = @"com.apple.calculator";
     return runner;
 }
 
@@ -276,6 +281,42 @@ static BOOL checkCompanionActivation(PKDisplayGeometry scene) {
         return NO;
     }
     return YES;
+}
+
+static BOOL checkTaskOpensCalculatorBesidePoki(PKDisplayGeometry scene) {
+    CompanionFixture *runner = companion(scene);
+    runner.targetBundle = @"com.apple.mobilenotes";
+    if (![runner beginDuoCompanionTask] || ![runner bindDuoCompanionTarget] ||
+        ![[runner frontApp][@"bundleId"] isEqual:@"com.apple.mobilenotes"]) {
+        NSLog(@"test setup failed: Notes must be beside Poki when the task starts");
+        return NO;
+    }
+    ReadySession *session = [runner valueForKey:@"sessions"];
+    __weak CompanionFixture *weakRunner = runner;
+    session.activate = ^(NSString *bundle) {
+        if (![bundle isEqualToString:@"com.apple.calculator"]) return;
+        AXNode *calculator = [AXNode new];
+        calculator.processIdentifier = getpid() + 2;
+        weakRunner.target = calculator;
+        weakRunner.targetBundle = bundle;
+
+        AXNode *key = [AXNode new];
+        key.elementType = 9;
+        key.label = @"7";
+        key.frame = CGRectMake(506, 80, 40, 40);
+        AXNode *window = [AXNode new];
+        window.elementType = 2;
+        window.frame = scene.peer;
+        window.children = @[key];
+        weakRunner.snapshot = window;
+    };
+    NSString *error = [runner app:@"com.apple.calculator" action:@"activate"];
+    NSDictionary *front = [runner frontApp];
+    NSString *xml = [runner sourceXML:NULL code:NULL];
+    BOOL passed = !error && [front[@"bundleId"] isEqual:@"com.apple.calculator"] &&
+        [front[@"pokiPane"] isEqual:@"left"] && [xml containsString:@"label=\"7\" x=\"24\" y=\"80\""];
+    NSLog(@"Calculator opens and can be read beside Poki: %@", passed ? @"passed" : error ?: @"right pane not confirmed");
+    return passed;
 }
 
 static BOOL checkLaunchPlacement(PKDisplayGeometry scene) {
@@ -645,6 +686,7 @@ int main(void) {
         geometry.panePlacementKnown = YES;
         BOOL inset = checkInsetWindow(geometry, crop);
         BOOL activation = checkCompanionActivation(geometry);
+        BOOL opensCalculator = checkTaskOpensCalculatorBesidePoki(geometry);
         BOOL afterSwitch = checkCompanionAfterSwitch(geometry, crop, NO);
         BOOL switchBeforeRead = checkCompanionAfterSwitch(geometry, crop, YES);
         BOOL bindingRetry = checkCompanionBindingRetry(geometry, crop);
@@ -663,8 +705,8 @@ int main(void) {
             dispatch_semaphore_signal(coverDone);
         });
         dispatch_semaphore_wait(coverDone, DISPATCH_TIME_FOREVER);
-        return launchPlacement && recoveredEdge && picture && inset && activation && afterSwitch && switchBeforeRead &&
-            bindingRetry && heldTaskPicture && coverFallback && coverCompatLayout && coverPortraitPNG &&
-            coverLaunch && coverHandoff ? 0 : 1;
+        return launchPlacement && recoveredEdge && picture && inset && activation && opensCalculator && afterSwitch &&
+            switchBeforeRead && bindingRetry && heldTaskPicture && coverFallback && coverCompatLayout &&
+            coverPortraitPNG && coverLaunch && coverHandoff ? 0 : 1;
     }
 }
