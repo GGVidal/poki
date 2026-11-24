@@ -12,6 +12,7 @@ protocol VoiceConnection: AnyObject, Sendable {
     func hasRemoteSpeech() async -> Bool
     @discardableResult func send(_ event: [String: Any]) -> Bool
     func setRemoteVolume(_ value: Double)
+    func clearRemotePlayback()
     @MainActor func diagnose(_ write: @escaping @MainActor (String) -> Void)
     @MainActor func close()
 }
@@ -22,6 +23,10 @@ extension VoiceConnection {
     func useOpeningCapture(_ capture: OpeningVoiceCapture?) {}
     @MainActor func ensureOpeningCaptureRunning(_ capture: OpeningVoiceCapture) -> Bool { capture.audio.ensureRunning() }
     func hasRemoteSpeech() async -> Bool { false }
+    func clearRemotePlayback() {
+        setRemoteVolume(0)
+        _ = send(["type": "output_audio_buffer.clear"])
+    }
 }
 
 /// The microphone and speaker are WebRTC tracks. The `oai-events` data channel carries JSON events.
@@ -284,6 +289,12 @@ final class VoiceLink: NSObject, VoiceConnection, RTCPeerConnectionDelegate, RTC
             remoteAudio?.source.volume = value
             remoteAudio?.isEnabled = value > 0
         }
+    }
+
+    /// Immediately silences remote WebRTC playback and asks the server to clear queued output audio.
+    func clearRemotePlayback() {
+        setRemoteVolume(0)
+        _ = send(["type": "output_audio_buffer.clear"])
     }
 
     @MainActor
