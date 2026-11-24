@@ -256,9 +256,16 @@ private struct AccountDetail: View {
                 }
                 .disabled(!ModelAccounts.canChat(provider))
                 if provider == .chatgpt {
-                    LabeledContent {
-                        Text(CodexAccount.accessToken == nil ? AppLocalization.text("Sign In Again") : ModelKeys.selectedProvider == .chatgpt ? "ChatGPT" : AppLocalization.text("Off"))
-                    } label: { SettingsLabel("Live Voice", systemImage: "waveform") }
+                    NavigationLink { ChatGPTLiveVoiceFeature() } label: {
+                        LabeledContent {
+                            Text(CodexAccount.accessToken == nil
+                                 ? AppLocalization.text("Sign In Again")
+                                 : ModelKeys.selectedProvider == .chatgpt
+                                   ? VoiceCatalog.voice(for: .chatgpt).displayName
+                                   : AppLocalization.text("Off"))
+                        } label: { SettingsLabel("Live Voice", systemImage: "waveform") }
+                    }
+                    .accessibilityIdentifier("account.chatgpt.liveVoice")
                 } else {
                     NavigationLink { LiveVoiceFeature(account: .openai) } label: {
                         LabeledContent {
@@ -397,6 +404,16 @@ struct LiveVoiceFeature: View {
                     Picker("Voice Model", selection: Binding(get: { ModelCatalog.voiceModelID(for: account) }, set: { ModelCatalog.setVoiceModelID($0, for: account) })) {
                         ForEach(ModelCatalog.voiceOffered(for: account)) { Text($0.name).tag($0.id) }
                     }
+                    NavigationLink {
+                        LiveVoicePickerView(route: VoiceCatalog.route(for: account))
+                    } label: {
+                        LabeledContent {
+                            Text(verbatim: VoiceCatalog.voice(for: account).displayName)
+                        } label: {
+                            Text("Speaking Voice")
+                        }
+                    }
+                    .accessibilityIdentifier("liveVoice.voicePicker")
                 }
             } footer: {
                 if account == .openai {
@@ -420,6 +437,90 @@ struct LiveVoiceFeature: View {
         .background { Color.clear.accessibilityHidden(true).id(version) }
         .settingsPage()
         .navigationTitle(AppLocalization.text("Live Voice"))
+        .navigationBarTitleDisplayMode(.inline)
+        .onReceive(NotificationCenter.default.publisher(for: ModelKeys.changed)) { _ in version = ModelKeys.saved }
+    }
+}
+
+/// Account › ChatGPT › Live Voice: status and official ChatGPT voice selection.
+struct ChatGPTLiveVoiceFeature: View {
+    @State private var version = ModelKeys.saved
+
+    private var statusText: String {
+        if CodexAccount.accessToken == nil { return AppLocalization.text("Sign In Again") }
+        return ModelKeys.selectedProvider == .chatgpt ? "ChatGPT" : AppLocalization.text("Off")
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Status", value: statusText)
+                NavigationLink {
+                    LiveVoicePickerView(route: .chatgpt)
+                } label: {
+                    LabeledContent {
+                        Text(verbatim: VoiceCatalog.voice(for: .chatgpt).displayName)
+                    } label: {
+                        Text("Speaking Voice")
+                    }
+                }
+                .accessibilityIdentifier("chatgptLiveVoice.voicePicker")
+            } footer: {
+                Text("Poki uses this ChatGPT sign-in for live voice when ChatGPT is selected as your chat account. Choose from ChatGPT’s official voices.")
+            }
+        }
+        .background { Color.clear.accessibilityHidden(true).id(version) }
+        .settingsPage()
+        .navigationTitle(AppLocalization.text("Live Voice"))
+        .navigationBarTitleDisplayMode(.inline)
+        .onReceive(NotificationCenter.default.publisher(for: ModelKeys.changed)) { _ in version = ModelKeys.saved }
+    }
+}
+
+/// Official voice picker for a specific live voice backend route (Realtime API or ChatGPT).
+struct LiveVoicePickerView: View {
+    var route: LiveVoiceRoute
+    @State private var version = ModelKeys.saved
+
+    private var selected: LiveVoiceOption {
+        VoiceCatalog.voice(for: route)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(VoiceCatalog.options(for: route)) { option in
+                    let isSelected = option == selected
+                    Button {
+                        VoiceCatalog.setVoice(option, for: route)
+                    } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(verbatim: option.displayName)
+                                    .foregroundStyle(Color(.label))
+                                Text(verbatim: option.personality)
+                                    .font(.footnote)
+                                    .foregroundStyle(Color(.secondaryLabel))
+                            }
+                            Spacer()
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                    .accessibilityIdentifier("voice.option.\(option.rawValue)")
+                }
+            } footer: {
+                Text("Changes apply to your next voice conversation.")
+            }
+        }
+        .background { Color.clear.accessibilityHidden(true).id(version) }
+        .settingsPage()
+        .navigationTitle(AppLocalization.text("Choose Voice"))
         .navigationBarTitleDisplayMode(.inline)
         .onReceive(NotificationCenter.default.publisher(for: ModelKeys.changed)) { _ in version = ModelKeys.saved }
     }
