@@ -55,8 +55,6 @@ final class ActivityController {
     private var finishTimer: Task<Void, Never>?
     private var chatOwnsCompletion = false
     private var foldTimer: Task<Void, Never>?
-    /// Halfway to an approval's deadline the island is popped open once more (ESP-467).
-    private var approvalReminder: Task<Void, Never>?
     private var eventTimer: Task<Void, Never>?
     private var inStep = false
     private var runAnnounced = false
@@ -66,6 +64,23 @@ final class ActivityController {
     /// run's first step while the run went on (ESP-328, not seen on a simulator).
     private var tally = Tally()
     private struct Tally { var sent = 0, answered = 0, reported = 0, withoutActivity = 0, longestWait = 0.0 }
+    private var contentObserver: Task<Void, Never>?
+    private var stateObserver: Task<Void, Never>?
+
+    isolated deinit {
+        contentObserver?.cancel()
+        stateObserver?.cancel()
+    }
+
+    private func clearActivity() {
+        activity = nil
+        contentObserver?.cancel()
+        contentObserver = nil
+        stateObserver?.cancel()
+        stateObserver = nil
+        held = nil
+    }
+
     /// The phase and step iOS last reported holding for the activity.
     private var held: (phase: PokiState.Phase, step: Int)?
     private static let runPhases: Set<PokiState.Phase> = [.working, .approval, .deciding, .handoff]
@@ -92,7 +107,7 @@ final class ActivityController {
     /// counts as having none, which keeps the banner.
     private static let dynamicIslandMinInset: CGFloat = 51
 
-    private static func hasDynamicIsland() -> Bool {
+    static func hasDynamicIsland() -> Bool {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return false }
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         for scene in scenes {
@@ -122,31 +137,39 @@ final class ActivityController {
 
     /// Starts the Live Activity if it is not running. iOS only allows this while Poki is in front, so
     /// it is called when the person taps something (Start, Start pairing, a setup step), never later
-    /// from the background.
-    func start(deviceName: String) {
+    /// from the background. The one exception is `fromIntent`: an intent iOS runs for the person
+    /// (Talk Here, a LiveActivityIntent) may start it with Poki in the background.
+    func start(deviceName: String, fromIntent: Bool = false) {
         wanted = deviceName
         guard activity == nil else { return }
         // Keep it wanted for the next foreground update, without asking ActivityKit to start from
         // the background. Direct callers and update-driven restarts share the same restriction.
-        guard canStart() else { return }
+        guard fromIntent || canStart() else { return }
         if state.isQuiet, hidesWhenIdle() { lastError = nil; return }
         guard enabled else { lastError = "Live Activities are off for Poki (Settings > Poki > Live Activities)."; return }
+        guard let content = content() else { return }
         // A Live Activity left from an earlier run of the app is replaced.
         for old in Activity<PokiActivityAttributes>.activities { Task { await old.end(nil, dismissalPolicy: .immediate) } }
         do {
-            let started = try Activity.request(attributes: PokiActivityAttributes(deviceName: deviceName), content: content(), pushType: nil)
+            let started = try Activity.request(attributes: PokiActivityAttributes(deviceName: deviceName), content: content, pushType: nil)
             activity = started
             budget = UpdateBudget()
             lastError = nil
-            Task { [weak self] in
+            contentObserver = Task { [weak self] in
                 for await content in started.contentUpdates {
-                    await MainActor.run { self?.tally.reported += 1; self?.held = (content.state.phase, content.state.stepCount) }
+                    guard !Task.isCancelled, let self, self.activity?.id == started.id else { return }
+                    self.tally.reported += 1
+                    self.held = (content.state.phase, content.state.stepCount)
                 }
             }
             // Dismissed by the person (swiped away) or ended by iOS: start again next time.
-            Task { [weak self] in
-                for await state in started.activityStateUpdates where state == .dismissed || state == .ended {
-                    await MainActor.run { if self?.activity?.id == started.id { self?.activity = nil } }
+            stateObserver = Task { [weak self] in
+                for await state in started.activityStateUpdates {
+                    guard !Task.isCancelled, let self, self.activity?.id == started.id else { return }
+                    if state == .dismissed || state == .ended {
+                        self.clearActivity()
+                        return
+                    }
                 }
             }
         } catch { lastError = AppLocalization.text(LocalizedStringResource("The Live Activity did not start. \(error.localizedDescription)")) }
@@ -177,11 +200,11 @@ final class ActivityController {
         if Self.runPhases.contains(state.phase) { logRun("cut off by ending the Live Activity") }
         worker?.cancel(); worker = nil; plainWaiting = false
         guard let activity else { return tail }
-        self.activity = nil
+        clearActivity()
         // A finished run or a problem stays on the Lock Screen with its final content for a while (HIG:
         // end at once, keep the outcome readable); anything else goes at once.
-        let final: ActivityContent<PokiState>? = state.phase == .done || state.phase == .problem
-            ? ActivityContent(state: state, staleDate: nil, relevanceScore: 0) : nil
+        let final: ActivityContent<PokiState>? = state.phase.isRunOutcome || state.phase == .problem
+            ? Self.fittedState(state).map { ActivityContent(state: $0, staleDate: nil, relevanceScore: 0) } : nil
         let policy = dismissalPolicy ?? (final == nil ? .immediate : .after(.now.addingTimeInterval(15 * 60)))
         state.guide = nil; state.pin = nil; state.since = nil; state.event = nil; state.previous = nil
         state.stepCount = 0; state.failedCount = 0; state.failedSteps = nil; state.endedAt = nil; state.decision = nil; state.plan = nil
@@ -194,7 +217,7 @@ final class ActivityController {
     private func hide() {
         worker?.cancel(); worker = nil; plainWaiting = false
         guard let activity else { return }
-        self.activity = nil
+        clearActivity()
         let previous = tail
         tail = Task { await previous?.value; await activity.end(nil, dismissalPolicy: .immediate) }
     }
@@ -242,9 +265,17 @@ final class ActivityController {
 
     /// Writes a thumbnail, at most about 160 points wide, to the App Group container for the widget.
     func setThumbnail(_ jpeg: Data?) {
-        guard let jpeg, let url = SharedContainer.thumbnailURL, let small = Self.shrink(jpeg, maxPixels: 260) else { return }
+        guard let jpeg else { clearThumbnail(); return }
+        guard let url = SharedContainer.thumbnailURL, let small = Self.shrink(jpeg, maxPixels: 260) else { return }
         try? small.write(to: url, options: .atomic)
         update { $0.thumbnailVersion += 1 }
+    }
+
+    func clearThumbnail() {
+        if let url = SharedContainer.thumbnailURL { try? FileManager.default.removeItem(at: url) }
+        if state.thumbnailVersion != 0 {
+            update { $0.thumbnailVersion = 0 }
+        }
     }
 
     // MARK: Transitions
@@ -266,10 +297,14 @@ final class ActivityController {
         let runPhases = Self.runPhases
         if state.phase == .working, !runPhases.contains(old.phase) {
             state.stepCount = 0; state.failedCount = 0; state.failedSteps = nil; state.endedAt = nil; state.previous = nil
+            state.thumbnailVersion = 0
+            if let url = SharedContainer.thumbnailURL { try? FileManager.default.removeItem(at: url) }
             // The app belongs to its run: a run that never reads the screen must not finish in the last run's app.
             if state.app == old.app { state.app = nil }
             tally = Tally()
             if planFinished { state.plan = nil; planFinished = false }
+            // What the last run came to belongs to it.
+            state.result = nil; state.task = nil
             AppLog.shared.add("activity", "run started from \(old.phase.rawValue)\(activity == nil ? " with no Live Activity" : "")")
             if state.since == nil { state.since = now }
             // The runner's start and the agent's first step are one start.
@@ -278,11 +313,11 @@ final class ActivityController {
                 setEvent(.started, "Started")
             }
         }
-        if state.phase == .done || state.phase == .idle && state.runnerPaused || state.phase == .pairing || state.phase == .setup {
+        if state.phase.isRunOutcome || state.phase == .idle && state.runnerPaused || state.phase == .pairing || state.phase == .setup {
             runAnnounced = false
         }
         if runPhases.contains(old.phase), !runPhases.contains(state.phase) { logRun("left for \(state.phase.rawValue)") }
-        if state.phase != .done { foldTimer?.cancel() }
+        if !state.phase.isRunOutcome { foldTimer?.cancel() }
         // Into another app mid-run.
         if runPhases.contains(state.phase), let app = state.app, let before = old.app, app != before {
             setEvent(.app, app)
@@ -301,13 +336,13 @@ final class ActivityController {
         // Approval: always pops up and lights the screen.
         if let approval = state.approval, approval.id != old.approval?.id {
             alert = critical(approval.question, "")
-            remindHalfway(approval)
         }
-        if state.approval == nil, let was = old.approval {
+        if state.approval == nil, let was = old.approval, state.phase != .stopped {
             state.decision = nil
-            let approved = state.headline == "Continuing"
-            let expired = !approved && was.expires <= now.addingTimeInterval(0.5)
-            setEvent(approved ? .approved : expired ? .expired : .denied, approved ? "Allowed" : expired ? "Timed out" : "Denied")
+            if state.headline != "Continuing" {
+                let expired = was.expires <= now.addingTimeInterval(0.5)
+                setEvent(expired ? .expired : .denied, expired ? "Timed out" : "Denied")
+            }
         }
         if state.phase == .problem, old.phase != .problem {
             setEvent(.problem, state.label ?? "Problem")
@@ -329,7 +364,7 @@ final class ActivityController {
         }
         if state.stepCount != old.stepCount { inStep = false }
         // The finish timer: re-armed by every change during a run; never fires in the middle of a step.
-        if !chatOwnsCompletion, state.phase == .working, state.approval == nil, state.handoff == nil, state.stepCount > 0 { armFinish() } else { finishTimer?.cancel() }
+        if quietEnds { armFinish() } else { finishTimer?.cancel() }
         return alert
     }
 
@@ -338,19 +373,13 @@ final class ActivityController {
         state.phase != old.phase || state.approval?.id != old.approval?.id || state.decision != old.decision || state.pin != old.pin
     }
 
-    /// iOS shows an alert's expanded island for a few seconds only. Halfway to the deadline, while the
-    /// same approval still waits, the update carries the alert once more: one reminder, never a loop.
-    /// The runner sends no input while an approval waits, so the expanded island is safe.
-    private func remindHalfway(_ approval: PendingApproval) {
-        approvalReminder?.cancel()
-        let half = approval.expires.timeIntervalSinceNow / 2
-        guard half > 5 else { return }
-        approvalReminder = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(half))
-            guard !Task.isCancelled, let self, self.state.phase == .approval, self.state.approval?.id == approval.id else { return }
-            AppLog.shared.add("activity", "approval \(approval.id) reminded halfway")
-            self.send(alert: self.critical(approval.question, ""), critical: true)
-        }
+    /// A run of steps counts as finished after `finishAfter` without a new one, for an agent that does
+    /// not say when it is done. Not while the chat's task is under way, and not during a talk with Poki:
+    /// both say when they are done (`finishNow`; the talk's TalkActivity at the end of its turn). Between
+    /// two of their steps the model thinks or speaks, often longer than the wait, and the run read as
+    /// finished while it went on (ESP-954).
+    private var quietEnds: Bool {
+        !chatOwnsCompletion && state.voice == nil && state.phase == .working && state.approval == nil && state.handoff == nil && state.stepCount > 0
     }
 
     private func armFinish() {
@@ -366,35 +395,57 @@ final class ActivityController {
     /// The local chat can be waiting for its model after a phone step has finished.
     func setChatOwnsCompletion(_ ownsCompletion: Bool) {
         chatOwnsCompletion = ownsCompletion
-        if ownsCompletion { finishTimer?.cancel() }
+        // Handed back without a finish (a stopped task): the quiet wait finishes the run, as before.
+        if quietEnds { armFinish() } else { finishTimer?.cancel() }
     }
 
-    func endStoppedRun() {
+    func stopRun() {
+        guard chatOwnsCompletion || Self.runPhases.contains(state.phase) else { return }
+        chatOwnsCompletion = false
+        inStep = false
+        planFinished = true
+        eventTimer?.cancel()
         update { state in
-            state.phase = .idle
-            state.headline = "Waiting for agent"
-            state.plan = nil
+            state.phase = .stopped
+            state.headline = "Stopped"
+            state.approval = nil
+            state.decision = nil
+            state.handoff = nil
+            state.event = nil
+            state.previous = nil
             state.since = nil
+            state.thumbnailVersion = 0
+            if let url = SharedContainer.thumbnailURL { try? FileManager.default.removeItem(at: url) }
         }
-        end(dismissalPolicy: .immediate)
+        armFold()
     }
 
     /// The chat's task ended: the run is finished now, not after the quiet wait. `alert` false when
     /// the chat tells the owner itself (its reply notification). True when the finish pop-up went to a
-    /// Dynamic Island, so no banner is needed on top of it.
+    /// Dynamic Island, so no banner is needed on top of it. `result` is finish_task's summary of a task
+    /// that succeeded (or, in a talk, what Poki said at its end), `task` the task as the owner asked it:
+    /// the finished run says what it came to.
     @discardableResult
-    func finishNow(alert: Bool) -> Bool {
+    func finishNow(alert: Bool, result: String? = nil, task: String? = nil) -> Bool {
         finishTimer?.cancel()
+        chatOwnsCompletion = false
         guard state.phase == .working, state.approval == nil, state.handoff == nil else {
             if Self.runPhases.contains(state.phase) { AppLog.shared.add("activity", "the run was not marked finished: the activity shows \(state.phase.rawValue)") }
             return false
         }
         inStep = false
+        state.result = result.map(Self.oneLine)
+        state.task = task.map(Self.oneLine)
         return finish(alert: alert)
     }
 
+    /// A line for the Live Activity: the first line, cut short. ActivityKit caps the whole state at 4 KB.
+    private static func oneLine(_ text: String) -> String {
+        String((text.split(whereSeparator: \.isNewline).first ?? "").prefix(80))
+    }
+
     private func finishRun(ifCount count: Int) {
-        guard !chatOwnsCompletion, state.phase == .working, state.approval == nil, !inStep, state.stepCount == count, count > 0 else { return }
+        guard quietEnds, !inStep, state.stepCount == count else { return }
         finish(alert: true)
     }
 
@@ -409,22 +460,18 @@ final class ActivityController {
         state.previous = nil
         state.headline = "Finished"
         setEvent(.finished, "Run finished")
-        let summary = state.runSummary ?? state.doneTitle
+        let summary = state.doneLine ?? state.runTime ?? ""
         let popUp = alert ? ordinary(StatusWord.done.text, summary) : nil
         send(alert: popUp, critical: true)
         armFold()
         return popUp != nil && isRunning && Self.hasDynamicIsland()
     }
 
-    /// What a run's updates did, once iOS has had time to take the last one.
+    /// Snapshot the diagnostics before a later run resets the counters.
     private func logRun(_ how: String) {
         let steps = state.stepCount
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self else { return }
-            let t = self.tally, held = self.held.map { "\($0.phase.rawValue) step \($0.step)" } ?? "nothing reported"
-            AppLog.shared.add("activity", "run \(how) at step \(steps): \(t.sent) updates sent, \(t.answered) answered, iOS reported \(t.reported) and holds \(held); \(t.withoutActivity) with no Live Activity; longest wait for the update budget \(String(format: "%.1f", t.longestWait)) s; \(self.activity.map { "\($0.activityState)" } ?? "no activity"), \(Activity<PokiActivityAttributes>.activities.count) Poki activities")
-        }
+        let t = self.tally, held = self.held.map { "\($0.phase.rawValue) step \($0.step)" } ?? "nothing reported"
+        AppLog.shared.add("activity", "run \(how) at step \(steps): \(t.sent) updates sent, \(t.answered) answered, iOS reported \(t.reported) and holds \(held); \(t.withoutActivity) with no Live Activity; longest wait for the update budget \(String(format: "%.1f", t.longestWait)) s; \(self.activity.map { "\($0.activityState)" } ?? "no activity"), \(Activity<PokiActivityAttributes>.activities.count) Poki activities")
     }
 
     /// The finished run stays a while, then the activity folds back to Ready: no old run is left
@@ -433,12 +480,13 @@ final class ActivityController {
         foldTimer?.cancel()
         foldTimer = Task { [weak self, foldAfter] in
             try? await Task.sleep(for: foldAfter)
-            guard !Task.isCancelled, let self, self.state.phase == .done else { return }
+            guard !Task.isCancelled, let self, self.state.phase.isRunOutcome else { return }
             self.update { state in
                 state.phase = .idle
                 state.headline = "Waiting for agent"
                 state.previous = nil; state.stepCount = 0; state.failedCount = 0; state.failedSteps = nil
                 state.since = nil; state.endedAt = nil; state.event = nil; state.plan = nil
+                state.result = nil; state.task = nil
             }
         }
     }
@@ -498,16 +546,20 @@ final class ActivityController {
     }
 
     /// Updates go out one after another, so an alert is never overtaken by an older update.
-    private func enqueue(_ content: ActivityContent<PokiState>, alert: AlertConfiguration?) {
-        guard let activity else { return }
+    private func enqueue(_ content: ActivityContent<PokiState>?, alert: AlertConfiguration?) {
+        guard let content, let activity else { return }
         let previous = tail
         tally.sent += 1
         let queued = Date()
         tail = Task {
             await previous?.value
+            if alert != nil, content.state.phase == .approval,
+               self.state.phase != .approval || self.state.approval?.id != content.state.approval?.id {
+                return
+            }
             let began = Date()
             if let alert { await activity.update(content, alertConfiguration: alert) } else { await activity.update(content) }
-            self.tally.answered += 1
+            if self.activity?.id == activity.id { self.tally.answered += 1 }
             let seconds = Date().timeIntervalSince(began)
             if alert != nil {
                 // For the Activity Log: iOS opens the island for an alert, but not while Poki itself is in
@@ -524,21 +576,77 @@ final class ActivityController {
 
     /// ActivityKit refuses a state over 4 KB. Ours is far smaller, but long texts from an agent are cut
     /// so an update is never lost to size.
-    private func trimToFit() {
-        func size() -> Int { (try? JSONEncoder().encode(state).count) ?? 0 }
-        guard size() > 3_500 else { return }
-        state.headline = String(state.headline.prefix(80))
-        state.previous = nil
-        if let steps = state.plan?.steps { state.plan?.steps = steps.map { String($0.prefix(30)) } }
-        if var approval = state.approval {
-            approval.summary = String(approval.summary.prefix(80)); approval.reason = String(approval.reason.prefix(60))
-            state.approval = approval
+    private static func fittedState(_ original: PokiState) -> PokiState? {
+        var state = original
+        let encoder = JSONEncoder()
+        func fits() -> Bool { (try? encoder.encode(state).count).map { $0 <= 3_500 } ?? false }
+        if !fits() {
+            // Leave room for ActivityKit's envelope. Limit UTF-8 bytes instead of Characters:
+            // one extended grapheme can carry an arbitrary number of combining marks.
+            func shortened(_ text: String, to limit: Int) -> String {
+                var end = text.startIndex
+                var remaining = limit
+                while end < text.endIndex {
+                    let next = text.index(after: end)
+                    let length = text[end..<next].utf8.count
+                    guard length <= remaining else { break }
+                    remaining -= length
+                    end = next
+                }
+                return String(text[..<end])
+            }
+            state.headline = shortened(state.headline, to: 160)
+            state.previous = nil
+            state.result = state.result.map { shortened($0, to: 160) }
+            state.task = state.task.map { shortened($0, to: 160) }
+            if var plan = state.plan {
+                plan.title = plan.title.map { shortened($0, to: 120) }
+                plan.to = plan.to.map { shortened($0, to: 80) }
+                plan.steps = plan.steps.map { shortened($0, to: 80) }
+                state.plan = plan
+            }
+            if var approval = state.approval {
+                approval.summary = shortened(approval.summary, to: 160)
+                approval.reason = shortened(approval.reason, to: 120)
+                approval.app = shortened(approval.app, to: 80)
+                state.approval = approval
+            }
+            if var handoff = state.handoff {
+                handoff.text = handoff.text.map { shortened($0, to: 160) }
+                handoff.app = handoff.app.map { shortened($0, to: 80) }
+                state.handoff = handoff
+            }
+            if !fits() {
+                // Keep the phase, timing and action identities if rich display data is too large.
+                state.approval?.sourceSession = nil
+                state.plan = nil
+                state.failedSteps = nil
+                state.event = nil
+                state.app = nil
+                state.caller = nil
+                state.label = nil
+                state.guide = nil
+                state.result = nil
+                state.task = nil
+            }
         }
+        if !fits() {
+            // Escaping can expand even the shortened strings. Keep actionable identifiers intact.
+            state.headline = ""
+            state.approval?.app = ""
+            state.approval?.summary = ""
+            state.approval?.reason = ""
+            state.handoff?.text = nil
+            state.handoff?.app = nil
+        }
+        return fits() ? state : nil
     }
 
-    private func content() -> ActivityContent<PokiState> {
-        trimToFit()
-        // Approvals are urgent; everything else is not. An approval goes stale when it expires.
+    func content() -> ActivityContent<PokiState>? {
+        guard let state = Self.fittedState(state) else {
+            AppLog.shared.add("activity", "Live Activity state exceeds the payload budget")
+            return nil
+        }
         // An approval goes stale when it expires. A run goes stale when no update has come for ten
         // minutes (Poki was closed or suspended), and then says it is not updating.
         let stale = state.approval?.expires ?? (state.phase == .working ? Date.now.addingTimeInterval(600) : nil)

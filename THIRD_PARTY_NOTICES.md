@@ -40,6 +40,10 @@ The on-phone runner is built from [appium/WebDriverAgent](https://github.com/app
 
 The Poki app's Voice tab links Google's [WebRTC](https://webrtc.googlesource.com/src) through the unmodified prebuilt framework from [stasel/WebRTC](https://github.com/stasel/WebRTC) 155.0.0 (Swift Package Manager, `native/ios-app/project.yml`). WebRTC is BSD-3-Clause licensed (Copyright (c) 2011, The WebRTC project authors); its license and patent grant ship inside the framework (`WebRTC.xcframework/LICENSE`). The framework is downloaded at build time and not stored in this repository.
 
+## ChatGPT voice trust roots
+
+The Poki app's iOS Codex voice build links the Mozilla public CA roots from [webpki-roots 1.0.10](https://crates.io/crates/webpki-roots/1.0.10) through its [0.26.11 compatibility crate](https://crates.io/crates/webpki-roots/0.26.11). Both versions are licensed under [CDLA-Permissive-2.0](https://cdla.dev/permissive-2-0/) and pinned in the generated Codex build lockfile.
+
 ## JavaScript packages
 
 The exact installed versions come from `package-lock.json`. These packages provide the MCP server/client transports, image processing and input validation:
@@ -47,14 +51,14 @@ The exact installed versions come from `package-lock.json`. These packages provi
 | Repository | Packages and locked versions | License |
 | --- | --- | --- |
 | [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) | `@modelcontextprotocol/client`, `core`, `server` 2.4.0; `@modelcontextprotocol/node` 2.1.2 | Package metadata declares Apache-2.0. The upstream license also retains MIT for contributions without relicensing consent; its complete text is preserved in [third_party/LICENSE.typescript-sdk](third_party/LICENSE.typescript-sdk). |
-| [sharp](https://github.com/lovell/sharp/tree/e0624568686516209c434de2d3c0ef6688f0811d) | `sharp` and applicable `@img/sharp-*` packages 0.34.5 | Apache-2.0; full text in [third_party/LICENSE.sharp](third_party/LICENSE.sharp). |
+| [sharp](https://github.com/lovell/sharp/tree/51a990faa26ade5586a4934ac9673c98d8893326) | `sharp` and applicable `@img/sharp-*` packages 0.35.5 | Apache-2.0; full text in [third_party/LICENSE.sharp](third_party/LICENSE.sharp). |
 | [Zod](https://github.com/colinhacks/zod/tree/b500a2ee95134f81d74da7911d7378dd2853d042) | `zod` 4.6.7 | MIT; full text in [third_party/LICENSE.zod](third_party/LICENSE.zod). |
 
 The [dependency inventory](docs/third-party-dependencies.md#npm-packages) names every locked npm package, its source repository, declared license and platform conditions. It includes transitive packages such as Hono, EventSource, jose and cross-spawn.
 
 ## libvips and bundled image libraries
 
-`npm ci` selects sharp's prebuilt packages for the installing machine. On macOS arm64, `@img/sharp-libvips-darwin-arm64` 1.2.4 supplies libvips 8.17.3 and its bundled image libraries. The package is distributed by [sharp-libvips at commit 20b5e899954907a3039d6e3d4c200aaa0ec52c4c](https://github.com/lovell/sharp-libvips/tree/20b5e899954907a3039d6e3d4c200aaa0ec52c4c), with LGPL-3.0-or-later package metadata. Its components retain their own licenses.
+`npm ci` selects sharp's prebuilt packages for the installing machine. On macOS arm64, `@img/sharp-libvips-darwin-arm64` 1.3.4 supplies libvips 8.18.7 and its bundled image libraries. The package is distributed by [sharp-libvips at commit ebb95f8add54eee8bed840e3fb587e4cbec857d7](https://github.com/lovell/sharp-libvips/tree/ebb95f8add54eee8bed840e3fb587e4cbec857d7), with LGPL-3.0-or-later package metadata. Its components retain their own licenses.
 
 The upstream component notices are retained in [third_party/NOTICE.sharp-libvips.md](third_party/NOTICE.sharp-libvips.md). The [bundle inventory](docs/third-party-dependencies.md#image-libraries-in-the-macos-arm64-libvips-package) lists the versions reported by that package, source repositories and component terms. This includes libvips, libheif, libexif, librsvg, GLib, Pango, Cairo, FreeType, libpng, libwebp and the other reported libraries.
 

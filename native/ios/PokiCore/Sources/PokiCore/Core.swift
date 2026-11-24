@@ -46,10 +46,24 @@ public struct CoreConfig: Sendable {
     /// point or two of scatter inside the element, minimum-jerk drags, typing in bursts. nil reads
     /// `POKI_HUMANIZE` (on unless off); false sends the exact legacy schedules.
     public var humanize: Bool?
-    /// The agent's memory (routines and notes); nil uses `RoutineStore.shared`, the app's file.
-    public var memory: RoutineStore?
+    /// The agent's memory library (skills and notes); nil uses `SkillStore.shared`, the app's file.
+    public var memory: SkillStore?
+    /// An app's bundle id from its name as people write it ("Clock", "时钟"); nil when the host does not
+    /// know it. A bundle id given to it answers itself when the host knows that app.
+    public var resolveApp: @Sendable (String) -> String? = { _ in nil }
+    /// Resolves a shorthand launch or session app against the host's installed apps. An exact bundle
+    /// ID takes precedence over a name. Returns nil when neither matches an installed app.
+    public var resolveInstalledApp: @Sendable (String) -> String? = { _ in nil }
+    /// Apps by name: `launch` takes a name, and `do` takes `app`, kept as the session's app until it
+    /// is let go. Read at each call. On unless the host turns it off (the app's Testing Options).
+    public var appNames: @Sendable () -> Bool = { true }
+    /// After a launch, a swipe, a pinch or a hardware button, the screen is read as soon as it has
+    /// changed and holds still, in place of the whole fixed pause. Read at each call. On unless the
+    /// host turns it off (the app's Testing Options).
+    public var quickRead: @Sendable () -> Bool = { true }
+    public var screenHistory: ScreenHistorySource?
 
-    public init(runnerURL: URL = URL(string: "http://127.0.0.1:8100")!, sensitive: SensitivityRules = SensitivityRules(), approvalWait: Double = 115, toolDeadline: Double = 25, actionCap: Double = 6, readTimeout: Double = 4, busyWait: Double = 2, runnerWait: Double = 15, treeFormat: String = "xml", ownApps: [String] = ["nz.zheha.poki"], accessibilityDeadline: Double = 2, taskGap: Double = 300, humanize: Bool? = nil) {
+    public init(runnerURL: URL = URL(string: "http://127.0.0.1:8100")!, sensitive: SensitivityRules = SensitivityRules(), approvalWait: Double = 115, toolDeadline: Double = 25, actionCap: Double = 6, readTimeout: Double = 4, busyWait: Double = 2, runnerWait: Double = 15, treeFormat: String = "xml", ownApps: [String] = ["nz.zheha.poki"], accessibilityDeadline: Double = 2, taskGap: Double = 300, humanize: Bool? = nil, screenHistory: ScreenHistorySource? = nil) {
         self.accessibilityDeadline = accessibilityDeadline
         self.humanize = humanize
         self.runnerURL = runnerURL
@@ -63,6 +77,7 @@ public struct CoreConfig: Sendable {
         self.treeFormat = treeFormat
         self.ownApps = ownApps
         self.taskGap = taskGap
+        self.screenHistory = screenHistory
     }
 
     /// Whether `app` is Poki itself: one of `ownApps`, or its Live Activity widget or tunnel
@@ -82,15 +97,44 @@ public struct CoreConfig: Sendable {
 /// The launcher's view of the runner, as the app shell reports it (from PokiLauncher's events).
 public enum RunnerState: Sendable, Equatable {
     case running
+    case automationReady(revision: UInt64)
     case starting(String)
+    case openingAutomationSession(String)
+    case awaitingAutomationAuthorization(String)
+    case automationAuthorizationDeclined(String, fix: String?)
     case failed(String, fix: String?)
 
-    public var isRunning: Bool { self == .running }
+    public var isRunning: Bool {
+        switch self {
+        case .running, .automationReady: true
+        default: false
+        }
+    }
+
+    var isStarting: Bool {
+        switch self {
+        case .starting, .openingAutomationSession, .awaitingAutomationAuthorization: true
+        case .running, .automationReady, .automationAuthorizationDeclined, .failed: false
+        }
+    }
+
+    var automationRevision: UInt64? {
+        if case .automationReady(let revision) = self { return revision }
+        return nil
+    }
+
+    var isWaitingForAutomation: Bool {
+        switch self {
+        case .openingAutomationSession, .awaitingAutomationAuthorization: true
+        default: false
+        }
+    }
+
     public var describe: String {
         switch self {
-        case .running: return "running"
-        case .starting(let detail): return "starting (\(detail))"
-        case .failed(let detail, let fix): return "failed: \(detail)" + (fix.map { ". Fix on the phone: \($0)" } ?? "")
+        case .running, .automationReady: return "running"
+        case .starting(let detail), .openingAutomationSession(let detail), .awaitingAutomationAuthorization(let detail): return "starting (\(detail))"
+        case .failed(let detail, let fix), .automationAuthorizationDeclined(let detail, let fix): return "failed: \(detail)" + (fix.map { ". Fix on the phone: \($0)" } ?? "")
         }
     }
 }
@@ -141,6 +185,8 @@ public protocol CoreHost: AnyObject, Sendable {
     func restartRunner()
     /// An agent connected (MCP initialize): get ready for its first look now, not during it.
     func warmUp()
+    /// The app may unlock for an owner-started task. No passcode crosses into the core.
+    func unlockForLocalTask(timeout: Double) async -> Bool
     /// Text read from a PNG screenshot, used for elements an app collapsed. PokiCore answers it with
     /// Vision by default, so a host need not implement it.
     func recognizeText(inPNG png: Data) async -> [RecognizedText]?
@@ -157,6 +203,7 @@ public protocol CoreHost: AnyObject, Sendable {
 
 extension CoreHost {
     public var currentRunner: RunnerState { runnerState() }
+    public func unlockForLocalTask(timeout: Double) async -> Bool { false }
     public func screenshotWithoutRunner() async -> Data? { nil }
     public func approveConnection(client: String, callback: String, connector: String) async -> Bool { false }
 }
@@ -278,6 +325,9 @@ public struct RelayResponse: Sendable, Equatable {
 
 /// Poki on the phone: the MCP server behind the relay.
 public final class PokiCore: @unchecked Sendable {
+    /// The original do action, its replay step if any, and its saved skill, after a successful driver receipt.
+    public typealias ActionSucceeded = @MainActor @Sendable (Int, Int?, String?) -> Void
+
     public let config: CoreConfig
     weak var host: CoreHost?
     let runner: Runner
@@ -286,17 +336,19 @@ public final class PokiCore: @unchecked Sendable {
     private let continuation: AsyncStream<CoreEvent>.Continuation
     public let events: AsyncStream<CoreEvent>
     private let gate = Gate()
+    private var itemPictureSources = ItemPictureSources()
+    private let taskScreenshots = TaskScreenshotStore()
     private let sessions = LockedBox<Set<String>>([])
-    /// Each MCP session's client, by the name it gave at initialize (routines and notes say who saved them).
+    /// Each MCP session's client, by the name it gave at initialize (skills and notes say who saved them).
     let clientNames = LockedBox<[String: String]>([:])
     var relay: RelayClient?
-    /// The app's tools, after look, do and status in tools/list.
+    /// The app's tools, after look, do, skills and status in tools/list.
     private let hostTools = LockedBox<[HostTool]>([])
     private let sessionSignal = LockedBox<(@Sendable (SessionSignal) -> Void)?>(nil)
 
-    /// Replaces the app's tools (none: only look, do and status are listed).
+    /// Replaces the app's tools (none: only look, do, skills and status are listed).
     public func setHostTools(_ tools: [HostTool]) {
-        let own: Set<String> = ["look", "do", "routines", "status"]
+        let own: Set<String> = ["look", "do", "skills", "routines", "status", "screen_history"]
         hostTools.value = tools.filter { !own.contains($0.name) }
     }
     /// Told when an MCP client's session starts or ends.
@@ -359,7 +411,7 @@ public final class PokiCore: @unchecked Sendable {
     /// The owner tapped Done on a step the model handed to them (the Live Activity).
     public func handoffDone(id: String) { computer.handoffDone(id: id) }
     /// The step the model handed to the owner that is still waiting, if any.
-    public var handoff: Handoff? { computer.handoff.value.flatMap { $0.done == nil ? $0 : nil } }
+    public var handoff: Handoff? { computer.handoff.active }
 
     public var pendingApproval: Approval? { approvals.pending }
 
@@ -373,18 +425,20 @@ public final class PokiCore: @unchecked Sendable {
         let app = Foreground(bundleID: bundleID, name: name)
         // The approval card is in Poki: a tap there is refused, and the request waiting stays for the owner.
         if config.isPoki(app) { return .refused(CoreConfig.ownAppRefusal) }
-        // Like `do`: a tap withdraws the request still waiting, so two taps never wait side by side.
-        if let pending = approvals.pending { approvals.withdraw(id: pending.id) }
+        // Like `do`: a tap withdraws the request still waiting, so two taps never wait side by side. A
+        // granted approval the agent has not used yet stays for the agent's own `do`.
+        approvals.withdrawPending()
         let element = Element(type: "Other", label: text, value: nil, identifier: nil, frame: Rect(x: 0, y: 0, width: 0, height: 0), depth: 0)
         // No readable text: the rules cannot tell what it does, so the owner is asked.
+        // Bridged voice taps carry only a label with no accessibility tree, so pass `in: nil`.
         let unreadable = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard let reason = unreadable && config.sensitive.enabled ? "a tap on something with no readable text" : config.rules.reason(touching: element, typing: false, app: app, secureOnScreen: false) else { return .clear }
+        guard let reason = unreadable && config.sensitive.enabled ? "a tap on something with no readable text" : config.rules.reason(touching: element, typing: false, app: app, secureOnScreen: false, in: nil) else { return .clear }
         // Never Ask would not stop a tap the rules cannot read, nor one they hold back whatever the way of asking.
-        let stopsWhenOff = !unreadable && config.sensitive.asked(.off).reason(touching: element, typing: false, app: app, secureOnScreen: false) == nil
-        let approval = approvals.request(app: app.describe, summary: unreadable ? "Tap something with no text" : "Tap “\(text)”", reason: reason, fingerprint: "tap:\(UUID().uuidString)", stopsWhenOff: stopsWhenOff)
+        let stopsWhenOff = !unreadable && config.sensitive.asked(.off).reason(touching: element, typing: false, app: app, secureOnScreen: false, in: nil) == nil
+        let approval = approvals.request(app: app.describe, summary: unreadable ? "Tap something with no text" : "Tap “\(text)”", reason: reason, scope: ApprovalScope(actions: "tap:\(UUID().uuidString)"), stopsWhenOff: stopsWhenOff)
         switch await approvals.wait(id: approval.id, seconds: seconds) {
         case .approved?:
-            _ = approvals.consumeGrant(fingerprint: approval.fingerprint)
+            _ = approvals.consumeGrant(scope: approval.scope)
             return .approved(reason)
         case .declined?:
             return .declined(reason)
@@ -396,20 +450,40 @@ public final class PokiCore: @unchecked Sendable {
         }
     }
 
-    /// look, do or status for another part of the app (the Voice tab), run here on the phone exactly as a
-    /// relay call: same gate, approvals, Live Activity and deadlines. `arguments` is the call's JSON object.
+    /// look, do or status for live voice on this phone, with the same queue and approval rules as chat.
+    /// The local task identity also lets voice use the owner's automatic unlock setting.
+    /// The Voice tab acts for the owner, so a step handed to the owner does not hold its input back.
     public func tool(_ name: String, arguments: String) async -> ToolResult {
         guard let args = try? JSON.parse(arguments.isEmpty ? "{}" : arguments) else {
             return ToolResult(text: "error: the arguments are not JSON; nothing was sent", jpeg: nil, isError: true)
         }
-        return await call(name, args)
+        return await call(name, args, local: true, byOwnersVoice: true, localTask: "owner-voice")
     }
 
     /// The task is over (the app stops an idle runner, or its chat's turn ended): the phone goes back
     /// to the app the task began in. Nothing happens while a tool call runs or when no task is open.
     /// `switching: false` only forgets the task, for a runner the owner stopped: nothing is sent to it.
-    public func finishTask(switching: Bool = true, localSession: String? = nil, ifNoLocalWorkspace: Bool = false) async -> String? {
-        await endTask(session: localSession, switching: switching, ifNoLocalWorkspace: ifNoLocalWorkspace)
+    public func finishTask(switching: Bool = true, localSession: String? = nil, ifNoLocalWorkspace: Bool = false, localTask: String? = nil) async -> String? {
+        await endTask(session: localSession, switching: switching, ifNoLocalWorkspace: ifNoLocalWorkspace, localTask: localTask)
+    }
+
+    public func bringBackTargetApp(why: String, shouldRun: (@Sendable () async -> Bool)? = nil) async -> String? {
+        if let shouldRun {
+            guard await gate.enter(while: { [computer] in
+                guard !computer.handoffWaiting, computer.approvals.pending == nil else { return false }
+                return await shouldRun()
+            }) else { return nil }
+        } else {
+            guard await gate.enter(waiting: config.busyWait) else { return nil }
+        }
+        defer { gate.leave() }
+        guard !computer.handoffWaiting, computer.approvals.pending == nil else { return nil }
+        if let shouldRun, await !shouldRun() { return nil }
+        return await computer.bringBackTargetApp(why: why, check: shouldRun == nil)
+    }
+
+    public func clearTaskScreenshots(localTask: String) {
+        taskScreenshots.clear(task: localTask)
     }
 
     /// The task of one session is over (its client ended the session): nothing happens when another
@@ -417,11 +491,13 @@ public final class PokiCore: @unchecked Sendable {
     public func finishTask(session: String) async -> String? { await endTask(session: session) }
 
     /// Only the session that began the task ends it; nil ends any.
-    func endTask(session: String?, switching: Bool = true, ifNoLocalWorkspace: Bool = false) async -> String? {
+    func endTask(session: String?, switching: Bool = true, ifNoLocalWorkspace: Bool = false, localTask: String? = nil) async -> String? {
+        if let localTask { taskScreenshots.clear(task: localTask) }
         guard await gate.enter(waiting: config.busyWait) else { return nil }
         defer { gate.leave() }
         if ifNoLocalWorkspace, computer.hasLocalWorkspace { return nil }
         if let session, !computer.ownsTask(session: session) { return nil }
+        if let activeTask = computer.recordingTask { taskScreenshots.clear(task: activeTask) }
         guard switching else {
             if session != nil, computer.hasLocalWorkspace { return await computer.returnToOrigin() }
             computer.forgetTask()
@@ -494,11 +570,11 @@ public final class PokiCore: @unchecked Sendable {
                 "protocolVersion": .string(version),
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": "poki", "version": "1.0"],
-                "instructions": .string(Self.instructions),
+                "instructions": .string(Self.toolInstructions(includeScreenHistory: isScreenHistoryEnabled)),
             ]), newSession)
         case "notifications/initialized", "notifications/cancelled": return (nil, nil)
         case "ping": return (isNotification ? nil : result(.object([:])), nil)
-        case "tools/list": return (result(["tools": .array(Self.tools + hostTools.value.map(\.listing))]), nil)
+        case "tools/list": return (result(["tools": .array(listedTools + hostTools.value.map(\.listing))]), nil)
         case "tools/call":
             let name = message["params"]?["name"]?.string ?? ""
             let args = message["params"]?["arguments"] ?? .object([:])
@@ -520,15 +596,15 @@ public final class PokiCore: @unchecked Sendable {
 
     // MARK: Tools
 
-    static let instructions = "look reads the iPhone's screen; do runs actions and then reads it. Both return the app in front, numbered elements and a screenshot whose pixels are screen points. Use the numbers from the latest answer; an element that stays on screen keeps its number, and do lists only what changed. Decide what happened from the elements, the screen_changed line and the picture. To reach something further down a list, use scroll_to with its text before trying swipes. Some actions (payments, deleting, sending messages, calls, passwords) need the owner's approval on the phone; do says so instead of sending them. Only the owner approves, by hand: do takes no input inside the Poki app. When the tree is late the elements come from the picture and a tap on a point of the picture always works: there is always a way on. A step that is the owner's to do (a password, a verification, a checkout you will not make) is handed to them with {handoff: {kind, text}}; keep polling look while they do it, then go on. When the owner's task is done, put finish: true on the last do (its actions may be empty): the phone then goes back to the app the owner asked from, where they read your reply. Saved routines repeat a whole path in one call: do {run: \"name\"} (routines {action: \"list\"} names them); after a task that worked, routines {action: \"save\"} keeps its steps for next time, and remember keeps a fact about the owner."
+    static let instructions = "look reads the iPhone's screen; do runs actions and then reads it. Both return the app in front, numbered elements and a screenshot whose pixels are screen points. Use the numbers from the latest answer; an element that stays on screen keeps its number, and do lists only what changed. Decide what happened from the elements, the screen_changed line and the picture. To reach something further down a list, use scroll_to with its text before trying swipes. Some actions (payments, deleting, sending messages, calls, passwords) need the owner's approval on the phone; do says so instead of sending them. Only the owner approves, by hand: do takes no input inside the Poki app. When the tree is late the elements come from the picture and a tap on a point of the picture always works: there is always a way on. A step that is the owner's to do (a password, a verification, a checkout you will not make) is handed to them with {handoff: {kind, text}}; keep polling look while they do it, then go on. When the owner's task is done, put finish: true on the last do (its actions may be empty): the phone then goes back to the app the owner asked from, where they read your reply. Saved skills repeat a whole path in one call: do {run: \"name\"} (skills {action: \"list\"} names them); after a task that worked, skills {action: \"save\"} keeps its steps for next time, and remember keeps a fact about the owner. When you already know the way through several screens, send it as one do {path: {goal, steps}} with each target named by its text instead of one call per screen."
 
     static let tools: [JSON] = [
         ["name": "look", "description": "Read the screen now: the app in front, the numbered elements (role, \"label = value\", [x,y,w,h] in screen points; + marks elements new since the last read, ~ moved ones) and a screenshot that is one pixel per screen point, so a point on the picture is a point to tap. Repeated text, scroll bars and empty containers are left out and long labels are cut; full=true lists every element as the tree has it and adds the text read from the picture inside [collapsed] elements (an app showed a whole cell, buttons and all, as one element). Full mode skips Poki’s label shortening, but the app or iOS accessibility snapshot can supply partial text without a marker. Numbers stay the same while an element stays on screen.",
          "inputSchema": ["type": "object", "properties": ["full": ["type": "boolean"], "pane": ["type": "string", "enum": ["left", "right", "auto"], "description": "On a supported Duo in landscape Split View with Poki in the background, select the visible left or right app. Subsequent look and do use that pane and pane-relative points. Select the other pane with a fresh look. Auto clears the selection."]], "additionalProperties": false],
          "annotations": ["readOnlyHint": true]],
-        ["name": "do", "description": "Run actions in order, then read the screen once. The answer says what each action did, screen_changed (true or false: whether the elements or the picture differ from the read before), and only the elements that are new (+) or moved (~); the others keep their numbers (full=true lists all and skips Poki’s label shortening; source text can still be partial without a marker). Actions: {run: \"routine name\"} or {run: {name, with: {text_1: \"…\"}}} (replays a saved routine in this one call: each step waits for its target and acts only on a single match, the end check is read, and it stops at the first screen that differs with the reason and the screen, from where you go on by hand; steps that need the owner's approval are handed back to you); {tap: n} or {tap: [x, y]} (a numbered element is tapped at its centre, or at the nearest free point when the tree puts something over its centre, and the answer says so; only an element with no part on the screen is refused as not_hittable); {type: \"text\", ref?: n, clear?: true, via?: \"paste\"} (taps n first, then types the text as key presses and says what the field holds afterwards; via paste is the backup when typing comes out wrong: it pastes through the field's menu and puts the owner's clipboard back); {key: \"return\"|\"delete\"|\"tab\"|\"space\"|\"escape\"}; {scroll_to: \"text\"} or {scroll_to: {text or ref, in?: n, direction?: \"down\", max_swipes?: 12}} (the best way to bring something into view: it scrolls until the text is fully on screen and says where, up to 12 s; when it stops short it says so and a second call goes on from there); {swipe: \"up\"|\"down\"|\"left\"|\"right\"} or {swipe: {direction, in?: n, distance?: \"short\"|\"long\"}} (a quick flick inside the biggest list on screen, or inside n, clear of bars; direction is where the finger moves, so up shows what is further down); {drag: {from: n or [x, y], to: n or [x, y], ms?: 400, hold_ms?: 0}} or {drag: [x1, y1, x2, y2]} (the content follows the finger and stops where it stops; hold_ms first to pick something up. For a Split View drop, look at the destination, then select the source with look. Use {drag: {from: ref or [x,y], to: [x,y], to_pane: \"left\" or \"right\"}}, with destination-local points. Look at the destination again to verify); {long_press: n or [x, y] or {ref, ms?}}; {pinch: {ref or x, y, scale}}; {button: \"home\"|\"lock\"|\"volume_up\"|\"volume_down\"}; {launch: \"bundle id\"} or {launch: {bundle, fresh: true}}; {wait_until: \"text\"} or {wait_until: {text, gone?: true, ms?: 3000}} or {wait_until: {settled: true, ms?}} (reads the screen until the text appears or goes, or the screen holds still; use it instead of fixed waits); {wait: ms} (nonnegative milliseconds, capped at 3000 ms and the remaining call time); {back: true} (the top-left back button if one is listed, else an edge swipe from the left); {handoff: {kind: \"passcode\"|\"password\"|\"verification\"|\"payment\"|\"other\", text: \"what the owner must do\"}} (when a step is the owner's to do, by your own judgement: it is shown on the phone with a Done button, no input is sent until they tap Done or you send {handoff: false}, and you keep polling with look or {wait_until: {handoff_done: true, ms?: 10000}} rather than ending your work). Points are screen points, like the frames and the screenshot's pixels. An earlier action that could change the screen can pause a batch before a later coordinate action. Use the returned read to choose the remaining actions. This check runs before the final screen comparison. A locked phone takes nothing but buttons and says screen: locked. Each action is reported as sent, not_sent or unknown; it stops at the first action that fails. A type that fails or times out is checked against the focused field first: the text already there counts as typed, an empty field (its placeholder counts as empty) gets one more try, and a field holding anything else, half the text or other text, is not typed into again unless clear is set; no other action that may have been delivered is ever re-sent. Payments, deleting, sending messages and passwords need the owner's approval on the phone: the plain actions before the first such action are sent, the rest are not. do holds for the owner's answer (up to about two minutes, less behind a relay that gives up sooner) and goes on in the same call once they approve; when that time runs out the answer says approval_required and which actions to send again, on their own, after they approve. A runner still finishing an earlier request answers not_sent and busy; call look again then. finish: true on the do that completes the owner's task (actions may be empty): after the actions and the read, the phone goes back to the app the task began in, where the owner asked, so they see your reply there; leave it off while more steps follow.",
-         "inputSchema": ["type": "object", "properties": ["actions": ["type": "array", "items": ["type": "object"], "minItems": 0, "maxItems": 20], "full": ["type": "boolean"], "finish": ["type": "boolean"]], "required": ["actions"], "additionalProperties": false]],
-        routinesTool,
+        ["name": "do", "description": "Run actions in order, then read the screen once. The answer says what each action did, screen_changed (true or false: whether the elements or the picture differ from the read before), and only the elements that are new (+) or moved (~); the others keep their numbers (full=true lists all and skips Poki’s label shortening; source text can still be partial without a marker). Actions: {run: \"skill name\"} or {run: {name, with: {text_1: \"…\"}}} (replays a saved skill in this one call: each step waits for its target and acts only on a single match, the end check is read, and it stops at the first screen that differs with the reason and the screen, from where you go on by hand; steps that need the owner's approval are handed back to you); {path: {goal: \"what this is for\", steps: [{tap: \"General\"}, {tap: \"About\"}, {type: \"text\", into: \"Search\"}, {key: \"return\"}]}} (steps written ahead for screens you have not read yet, when you know the way: a target is the text the element shows, or {label, type}, never a number; each step waits for its target as a skill's does, so several screens are crossed in one call with no read in between, and it stops at the first step it cannot do with the screen as it is; up to 20 steps. A step may carry expect: \"text\" (the text must be on screen after it, or the path stops there) and optional: true (for something only sometimes there, such as {tap: \"Not Now\", optional: true}: it is left out when its target is not on screen). On the path: dismiss: [\"Not Now\", \"Later\"] names controls that may be closed whenever they are in the way of a step, expect: [\"text\"] checks the last screen, and read: [\"label\"] answers label = value from it, so a lookup is one call. No model is asked on the way); {tap: n} or {tap: [x, y]} (a numbered element is tapped at its centre, or at the nearest free point when the tree puts something over its centre, and the answer says so; only an element with no part on the screen is refused as not_hittable); {type: \"text\", ref?: n, clear?: true, via?: \"paste\"} (taps n first, then types the text as key presses and says what the field holds afterwards; via paste is the backup when typing comes out wrong: it pastes through the field's menu and puts the owner's clipboard back); {key: \"return\"|\"delete\"|\"tab\"|\"space\"|\"escape\"}; {scroll_to: \"text\"} or {scroll_to: {text or ref, in?: n, direction?: \"down\", max_swipes?: 12}} (the best way to bring something into view: it scrolls until the text is fully on screen and says where, up to 12 s; when it stops short it says so and a second call goes on from there); {swipe: \"up\"|\"down\"|\"left\"|\"right\"} or {swipe: {direction, in?: n, distance?: \"short\"|\"long\"}} (a quick flick inside the biggest list on screen, or inside n, clear of bars; direction is where the finger moves, so up shows what is further down); {drag: {from: n or [x, y], to: n or [x, y], ms?: 400, hold_ms?: 0}} or {drag: [x1, y1, x2, y2]} (the content follows the finger and stops where it stops; hold_ms first to pick something up. For a Split View drop, look at the destination, then select the source with look. Use {drag: {from: ref or [x,y], to: [x,y], to_pane: \"left\" or \"right\"}}, with destination-local points. Look at the destination again to verify); {long_press: n or [x, y] or {ref, ms?}}; {pinch: {ref or x, y, scale}}; {button: \"home\"|\"lock\"|\"volume_up\"|\"volume_down\"}; {launch: \"bundle id or app name\"} or {launch: {bundle or name, fresh: true}} (with Apps by Name on, a launch string first matches an installed bundle ID exactly, then an installed app by name. If neither matches, no actions are sent. Use the bundle field to pass an ID directly to the runner); {wait_until: \"text\"} or {wait_until: {text, gone?: true, ms?: 3000}} or {wait_until: {settled: true, ms?}} (reads the screen until the text appears or goes, or the screen holds still; use it instead of fixed waits); {wait: ms} (nonnegative milliseconds, capped at 3000 ms and the remaining call time); {back: true} (the top-left back button if one is listed, else an edge swipe from the left); {handoff: {kind: \"passcode\"|\"password\"|\"verification\"|\"payment\"|\"other\", text: \"what the owner must do\"}} (when a step is the owner's to do, by your own judgement: it is shown on the phone with a Done button, no input is sent until they tap Done or you send {handoff: false}, and you keep polling with look or {wait_until: {handoff_done: true, ms?: 10000}} rather than ending your work). Points are screen points, like the frames and the screenshot's pixels. An earlier action that could change the screen can pause a batch before a later coordinate action. Use the returned read to choose the remaining actions. This check runs before the final screen comparison. For a task started by the owner in Poki, the phone checks Automatic Unlock before returning screen: locked. If it remains locked, only button actions can be sent and the owner can unlock it. Each action is reported as sent, not_sent or unknown; it stops at the first action that fails. A type that fails or times out is checked against the focused field first: the text already there counts as typed, an empty field (its placeholder counts as empty) gets one more try, and a field holding anything else, half the text or other text, is not typed into again unless clear is set; no other action that may have been delivered is ever re-sent. Payments, deleting, sending messages and passwords need the owner's approval on the phone: the plain actions before the first such action are sent, the rest are not. do holds for the owner's answer (up to about two minutes, less behind a relay that gives up sooner) and goes on in the same call once they approve; when that time runs out the answer says approval_required and which actions to send again, on their own, after they approve. A runner still finishing an earlier request answers not_sent and busy; call look again then. finish: true on the do that completes the owner's task (actions may be empty): after the actions and the read, the phone goes back to the app the task began in, where the owner asked, so they see your reply there; leave it off while more steps follow. app: \"name or bundle id\" beside actions names the app this work is in: it is brought to the front first when it is not there, and it stays the session's app for the calls after, so it is given once; when another app is in front later the answer says so, app again brings it back, and app: false or finish lets go of it. The screen still changes under a kept app: use the numbers of the latest read.",
+         "inputSchema": ["type": "object", "properties": ["actions": ["type": "array", "items": ["type": "object"], "minItems": 0, "maxItems": 20], "full": ["type": "boolean"], "finish": ["type": "boolean"], "app": ["description": "The app to work in, by name or bundle id; kept for the session. false lets go of it."]], "required": ["actions"], "additionalProperties": false]],
+        skillsTool,
         ["name": "status", "description": "Poki's state without touching the phone: the runner, the relay, and any approval waiting on the phone.",
          "inputSchema": ["type": "object", "properties": .object([:]), "additionalProperties": false],
          "annotations": ["readOnlyHint": true]],
@@ -539,6 +615,12 @@ public final class PokiCore: @unchecked Sendable {
         public let app: String
         public let otherApp: String
         public let layout: String
+    }
+
+    /// The elements shown to the model in a full screen read, keyed by their displayed references.
+    public struct NumberedScreen: Sendable {
+        public let bundleID: String
+        public let elements: [Int: Element]
     }
 
     /// A tool's answer for a caller in the app itself (the chat's model loop), without MCP framing.
@@ -553,31 +635,69 @@ public final class PokiCore: @unchecked Sendable {
         public let screen: String?
         /// Handoff, a locked phone, or runner startup requires waiting rather than model progress.
         public let waitingForOwner: Bool
-        public init(text: String, jpeg: Data?, isError: Bool, splitView: SplitViewRead? = nil, splitViewNeedsRead: Bool = false, screen: String? = nil, waitingForOwner: Bool = false) {
+        public let automationAuthorizationDeclined: Bool
+        public let numberedScreen: NumberedScreen?
+        public let offeredMemories: [MemoryNote]
+        public let readApp: String?
+        public init(text: String, jpeg: Data?, isError: Bool, splitView: SplitViewRead? = nil, splitViewNeedsRead: Bool = false, screen: String? = nil, waitingForOwner: Bool = false, automationAuthorizationDeclined: Bool = false, numberedScreen: NumberedScreen? = nil, offeredMemories: [MemoryNote] = [], readApp: String? = nil) {
             self.text = text; self.jpeg = jpeg; self.isError = isError; self.splitView = splitView
             self.splitViewNeedsRead = splitViewNeedsRead; self.screen = screen; self.waitingForOwner = waitingForOwner
+            self.automationAuthorizationDeclined = automationAuthorizationDeclined
+            self.numberedScreen = numberedScreen
+            self.offeredMemories = offeredMemories
+            self.readApp = readApp
         }
     }
 
     /// Calls `look`, `do` or `status` from inside the app, the same way an MCP client's `tools/call`
     /// does: one call at a time, the same approval rules, the same events. `arguments` is the JSON
     /// object the model sent.
-    public func callTool(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil) async -> ToolAnswer {
+    /// `conversation`: the app's saved conversation a `routines` call comes from, kept with a note as
+    /// where it was heard.
+    public func callTool(_ name: String, arguments: String, localSession: String? = nil, expectedApps: Set<String>? = nil, conversation: String? = nil, localTask: String? = nil, offeredMemoryIDs: Set<String> = [], onActionSucceeded: ActionSucceeded? = nil) async -> ToolAnswer {
         let args = (try? JSON.parse(arguments)) ?? .object([:])
-        let output = await call(name, args, session: localSession, local: true, expectedApps: expectedApps)
+        let output = await call(name, args, session: localSession, local: true, expectedApps: expectedApps, conversation: conversation, localTask: localTask ?? localSession, offeredMemoryIDs: offeredMemoryIDs, onActionSucceeded: onActionSucceeded)
         return ToolAnswer(text: output.text, jpeg: output.jpeg, isError: output.isError, splitView: output.splitView,
-                          splitViewNeedsRead: output.splitViewNeedsRead, screen: output.screen, waitingForOwner: output.waitingForOwner)
+                          splitViewNeedsRead: output.splitViewNeedsRead, screen: output.screen, waitingForOwner: output.waitingForOwner,
+                          automationAuthorizationDeclined: output.automationAuthorizationDeclined,
+                          numberedScreen: output.numberedScreen, offeredMemories: output.offeredMemories, readApp: output.readApp)
+    }
+
+    /// Returns the indices of writes that were not saved. A required failure discards the whole batch.
+    public func saveTaskMemories(_ writes: [TaskMemoryWrite], conversation: String, task: String) -> [Int] {
+        guard !writes.isEmpty, let store = computer.memory, gate.tryEnter() else { return Array(writes.indices) }
+        defer { gate.leave() }
+        return store.saveTaskMemories(writes) { staged, write in
+            guard let args = try? JSON.parse(write.arguments),
+                  let action = args["action"]?.string, ["save", "remember"].contains(action) else { return false }
+            return !skillsCall(args, session: nil, conversation: conversation, recordingTask: task, store: staged).isError
+        }
     }
 
     /// The tools as MCP lists them (name, description, inputSchema), as a JSON array, and the
     /// instructions MCP clients get, for a model loop inside the app.
-    public static var toolCatalogJSON: String { JSON.array(tools).serialized() }
-    public static var toolInstructions: String { instructions }
+    public static var toolCatalogJSON: String { toolCatalogJSON(includeScreenHistory: false) }
+    public static func toolCatalogJSON(includeScreenHistory: Bool) -> String {
+        JSON.array(includeScreenHistory ? tools + [screenHistoryTool] : tools).serialized()
+    }
+    public static var toolInstructions: String { toolInstructions(includeScreenHistory: false) }
+    public static func toolInstructions(includeScreenHistory: Bool) -> String {
+        includeScreenHistory ? instructions + " " + screenHistoryInstructions : instructions
+    }
+    var isScreenHistoryEnabled: Bool { config.screenHistory?.isEnabled() == true }
+    var listedTools: [JSON] { isScreenHistoryEnabled ? Self.tools + [Self.screenHistoryTool] : Self.tools }
 
     /// A cancelled call answers at once, while the action it had sent may still be running on the
     /// phone. True once the runner is through with it, false if it is not within `timeout`.
     public func settle(timeout: Double) async -> Bool {
         await computer.runner.settle(timeout: timeout)
+    }
+
+    /// The finished task's pictures grouped by the screenshots that supplied their coordinates.
+    public func itemPictures(_ requests: [String: ItemPictureRequest], localTask: String) async -> [ItemPictures] {
+        guard !requests.isEmpty, await gate.enter(waiting: 2) else { return [] }
+        defer { gate.leave() }
+        return itemPictureSources.pictures(requests, task: localTask)
     }
 
     /// The chat can set up an iPhone workspace while it owns the same queue its pane tools use.
@@ -589,11 +709,26 @@ public final class PokiCore: @unchecked Sendable {
         return computer.reserveWorkspace(session: session)
     }
 
+    /// Release the local workspace after iOS declined automation, without calling the runner.
+    public func discardWorkspace(session: String) async {
+        guard await gate.enter(waiting: config.busyWait) else { return }
+        defer { gate.leave() }
+        guard computer.ownsTask(session: session) else { return }
+        computer.forgetTask(discardingPane: true)
+    }
+
     public func clearWorkspacePaneForSetup(session: String) async -> Bool {
         guard await gate.enter(waiting: config.busyWait) else { return false }
         defer { gate.leave() }
         guard !Task.isCancelled else { return false }
         return await computer.clearWorkspacePaneForSetup(session: session)
+    }
+
+    public func bindCompanionTarget() async -> Bool {
+        guard runner.transport.supportsPaneSelection, await gate.enter(waiting: config.busyWait) else { return false }
+        defer { gate.leave() }
+        guard !computer.hasLocalWorkspace else { return false }
+        return await computer.bindCompanionTarget()
     }
 
     public func workspaceLauncherStep(session: String, request: JSON) async throws -> JSON {
@@ -604,22 +739,36 @@ public final class PokiCore: @unchecked Sendable {
         return try await runner.call("POST", "/poki/workspace-launcher", request, timeout: 12, countsAsMiss: false)
     }
 
-    func call(_ name: String, _ args: JSON, session: String? = nil, answerBy: Double? = nil, local: Bool = false, expectedApps: Set<String>? = nil) async -> ToolResult {
+    func call(_ name: String, _ args: JSON, session: String? = nil, answerBy: Double? = nil, local: Bool = false, expectedApps: Set<String>? = nil, conversation: String? = nil, byOwnersVoice: Bool = false, localTask: String? = nil, offeredMemoryIDs: Set<String> = [], onActionSucceeded: ActionSucceeded? = nil) async -> ToolResult {
         if name == "status" { return status() }
+        if name == "screen_history" { return await screenHistoryCall(args) }
+        if name == "get_screenshot", local, !byOwnersVoice {
+            guard let id = args["screenshot_id"]?.string, !id.isEmpty, let localTask else {
+                return ToolResult(text: "Use a screenshot_id from this task.", jpeg: nil, isError: true)
+            }
+            guard await gate.enter(waiting: 2) else {
+                return ToolResult(text: "Poki is busy. Try retrieving the screenshot again.", jpeg: nil, isError: true)
+            }
+            defer { gate.leave() }
+            guard !Task.isCancelled, let jpeg = taskScreenshots.screenshot(id, task: localTask) else {
+                return ToolResult(text: "This screenshot is no longer available in this task.", jpeg: nil, isError: true)
+            }
+            return ToolResult(text: "Earlier screenshot \(id). Use a current screen read for taps.", jpeg: jpeg, isError: false)
+        }
         if let tool = hostTools.value.first(where: { $0.name == name }) {
             // Outside the gate: the app's tool makes its own look and do calls, one at a time as any.
             let answer = await tool.run(args.serialized(), session, answerBy.map { max(0, $0 - now() - 3) })
             return ToolResult(text: answer.text, jpeg: answer.jpeg, isError: answer.isError)
         }
-        if name == "routines" {
+        if name == "skills" || name == "routines" {
             // Memory only: no phone input, so it does not wait for a look or do in progress.
             let received = now()
             computer.lastCallTook = nil
-            let result = routinesCall(args, session: session)
+            let result = skillsCall(args, session: session, conversation: conversation)
             computer.lastCallTook = now() - received
             return result
         }
-        guard name == "look" || name == "do" else { return ToolResult(text: "unknown tool \(name); the tools are \((["look", "do", "routines", "status"] + hostTools.value.map(\.name)).joined(separator: ", "))", jpeg: nil, isError: true) }
+        guard name == "look" || name == "do" else { return ToolResult(text: "unknown tool \(name); the tools are \((listedTools.compactMap { $0["name"]?.string } + hostTools.value.map(\.name)).joined(separator: ", "))", jpeg: nil, isError: true) }
         let actions = args["actions"]?.array ?? []
         if name == "do", args["actions"]?.array == nil || actions.count > 20 || actions.contains(where: { $0.object == nil }) {
             return ToolResult(text: "error: actions must be an array of 0 to 20 action objects; nothing was sent.", jpeg: nil, isError: true)
@@ -629,6 +778,9 @@ public final class PokiCore: @unchecked Sendable {
         let activity = ToolActivity(id: UUID().uuidString, name: name, summary: name == "do" ? computer.labels(actions) : "Look at the screen", started: Date(), session: local ? nil : session)
         // One tool call at a time per phone; a second waits briefly, then says what the first is doing.
         guard await gate.enter(waiting: config.busyWait) else {
+            if host?.currentRunner.isWaitingForAutomation == true {
+                return ToolResult(text: "Poki is waiting for automation to be ready. Nothing was sent.", jpeg: nil, waitingForOwner: true)
+            }
             if computer.hasLocalWorkspace {
                 return ToolResult(text: "busy: Poki is still working in Split View; nothing was sent.", jpeg: nil, isError: true)
             }
@@ -645,6 +797,7 @@ public final class PokiCore: @unchecked Sendable {
         emit(.toolStarted(activity))
         // The owner's time on an approval, and the runner's start, come on top of the tool's own time.
         let deadline = config.toolDeadline + (name == "do" ? config.approvalWait : 0) + config.runnerWait + 1
+            + (local ? Computer.authorizationWait : 0)
         var output: ToolResult
         computer.failureLog.value = nil
         do {
@@ -653,13 +806,29 @@ public final class PokiCore: @unchecked Sendable {
                     if let pane = args["pane"], pane.string == nil {
                         return ToolResult(text: "pane must be left, right, or auto", jpeg: nil, isError: true)
                     }
-                    return await computer.look(full: args["full"]?.bool ?? false, pane: args["pane"]?.string, session: session, local: local, expectedApps: expectedApps)
+                    return await computer.look(full: args["full"]?.bool ?? false, pane: args["pane"]?.string, session: session, local: local, expectedApps: expectedApps, localTask: localTask)
                 }
-                return await computer.act(actions: actions, full: args["full"]?.bool ?? false, finish: args["finish"]?.bool ?? false, session: session, answerBy: answerBy)
+                return await computer.act(actions: actions, full: args["full"]?.bool ?? false, finish: args["finish"]?.bool ?? false, session: session, answerBy: answerBy, app: args["app"], byOwnersVoice: byOwnersVoice, local: local, localTask: localTask, onActionSucceeded: onActionSucceeded)
             }
         } catch {
             // Never reached in practice (every step has its own deadline), but a call always answers.
             output = ToolResult(text: "error: \(error); what was sent is unknown. Call look to see the screen.", jpeg: nil, isError: true)
+        }
+        if local, session == nil, let localTask, localTask == computer.recordingTask,
+           !output.isError, let app = output.readApp?.lowercased(), app != "com.apple.springboard",
+           let memory = computer.memory, computer.memoryAppsOffered.insert(app).inserted {
+            let brief = memory.appMemoryBrief(for: app, excluding: offeredMemoryIDs)
+            if !brief.notes.isEmpty {
+                output.text += "\n" + brief.text
+                output.offeredMemories = brief.notes
+            }
+        }
+        if local, let localTask, let source = output.itemPictureSource {
+            let id = itemPictureSources.record(source, task: localTask)
+            if let jpeg = output.jpeg {
+                taskScreenshots.record(jpeg, id: id, task: localTask)
+            }
+            output.text += "\nscreenshot_id: \(id)"
         }
         gate.current = nil
         gate.leave()
@@ -676,7 +845,7 @@ public final class PokiCore: @unchecked Sendable {
             output.text = "earlier, never delivered to you: " + earlier.joined(separator: "\n\n") + "\n\nnow:\n" + output.text
         }
         let line = output.text.split(separator: "\n").first.map(String.init) ?? ""
-        let thumbnail = computer.lastPNG.flatMap { try? host?.jpeg(fromPNG: $0, width: 96, quality: 0.5) }
+        let thumbnail = output.freshPNG.flatMap { try? host?.jpeg(fromPNG: $0, width: 96, quality: 0.5) }
         // The log keeps the error line too: the step's own wording (it names what a field held by case
         // only), or the answer's first `error:` line. What the call typed is taken out of it either way
         // (a runner's error can echo it). A failed action with a read is not an isError answer (the
@@ -689,14 +858,14 @@ public final class PokiCore: @unchecked Sendable {
             }
             errorLine = String(text.prefix(300))
         }
-        emit(.toolFinished(activity, output.isError ? .failed(line) : .done(line), ToolFacts(app: computer.lastForeground?.describe, thumbnail: thumbnail, error: errorLine)))
+        emit(.toolFinished(activity, output.isError ? .failed(line) : .done(line), ToolFacts(app: output.observedApp, thumbnail: thumbnail, error: errorLine)))
         return output
     }
 
     func status() -> ToolResult {
         let state = host?.currentRunner
         var waitingForOwner = computer.handoffWaiting
-        if case .starting? = state { waitingForOwner = true }
+        if state?.isStarting == true { waitingForOwner = true }
         var lines = ["runner: \(state?.describe ?? "unknown")"]
         if let relay { lines.append("relay: \(relay.stateDescription)") }
         if let p = approvals.pending { lines.append("approval waiting on the phone: \(p.summary) (\(p.reason), id \(p.id))") }
@@ -723,6 +892,14 @@ final class Gate: @unchecked Sendable {
             if now() >= until { return false }
             await sleep(seconds: 0.05)
         }
+    }
+    func enter(while stillNeeded: @Sendable () async -> Bool) async -> Bool {
+        while !Task.isCancelled {
+            if await !stillNeeded() { return false }
+            if tryEnter() { return true }
+            await sleep(seconds: 0.05)
+        }
+        return false
     }
     func leave() { lock.lock(); held = false; lock.unlock() }
 }

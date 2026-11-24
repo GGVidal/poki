@@ -275,13 +275,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "待批准"
+            "value" : "操作确认"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "待批准"
+            "value" : "操作確認"
           }
         }
       }
@@ -292,7 +292,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "等待批准"
+            "value" : "等待操作确认"
           }
         },
         "en" : {
@@ -304,7 +304,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "等待批准"
+            "value" : "等待操作確認"
           }
         }
       }
@@ -315,13 +315,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "后台保活"
+            "value" : "后台运行"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "背景保活"
+            "value" : "背景執行"
           }
         },
         "en" : {
@@ -1041,52 +1041,6 @@
         }
       }
     },
-    "Finished in %@" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Done in %@"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已在“%@”完成"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已在「%@」完成"
-          }
-        }
-      }
-    },
-    "Finished in %@, took %@" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Done in %1$@, took %2$@"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已在“%1$@”完成，用时 %2$@"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已在「%1$@」完成，用時 %2$@"
-          }
-        }
-      }
-    },
     "General › VPN & Device Management. Trust Poki Runner's developer." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1168,7 +1122,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在設定精靈中重配"
+            "value" : "在配置中重配"
           }
         }
       }
@@ -1237,7 +1191,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "開代理或在設定精靈重配"
+            "value" : "開代理或在配置重配"
           }
         }
       }
@@ -1271,7 +1225,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "后台保活"
+            "value" : "后台运行"
           }
         },
         "en" : {
@@ -1283,7 +1237,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "背景保活"
+            "value" : "背景執行"
           }
         }
       }
@@ -1334,13 +1288,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "回环"
+            "value" : "本地连接"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "迴環"
+            "value" : "本機連線"
           }
         }
       }
@@ -1351,13 +1305,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "回环未开"
+            "value" : "本地连接未开"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "迴環未開"
+            "value" : "本機連線未開"
           }
         }
       }
@@ -1368,13 +1322,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "回环或配对"
+            "value" : "本地连接或配对"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "迴環或配對"
+            "value" : "本機連線或配對"
           }
         }
       }
@@ -1477,13 +1431,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "需要回环连接"
+            "value" : "需要本地连接"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "需要回環連線"
+            "value" : "需要本機連線"
           }
         }
       }
@@ -1609,7 +1563,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在設定精靈下載最新映像"
+            "value" : "在配置下載最新映像"
           }
         }
       }
@@ -1643,13 +1597,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在建立隧道"
+            "value" : "正在建立本地连接"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在建立通道"
+            "value" : "正在建立本機連線"
           }
         }
       }
@@ -2587,7 +2541,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "設定精靈"
+            "value" : "配置"
           }
         },
         "en" : {
@@ -2834,6 +2788,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "向上輕掃"
+          }
+        }
+      }
+    },
+    "Run Poki Anytime again to send as text." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "说完后，再运行一次「随时 Poki」转成文字。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "說完後，再執行一次「隨時 Poki」轉成文字。"
           }
         }
       }
@@ -3182,7 +3153,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开启回环"
+            "value" : "开启本地连接"
           }
         },
         "en" : {
@@ -3194,7 +3165,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "開啟迴環"
+            "value" : "開啟本機連線"
           }
         }
       }

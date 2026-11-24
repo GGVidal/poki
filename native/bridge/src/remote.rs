@@ -424,8 +424,8 @@ async fn reply(session: &mut Session, line: &str) -> Value {
     response.unwrap_or_else(|e| json!({"isError":true,"transport_error":true,"error":e.to_string(),"screen_change_verified":false}))
 }
 
-const INPUT_MEDIA_IDLE_TIMEOUT: Duration = Duration::from_secs(3);
-pub(super) const INPUT_MEDIA_MAX_READ_HOLD: Duration = Duration::from_secs(15);
+const INPUT_MEDIA_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const INPUT_MEDIA_MAX_READ_HOLD: Duration = Duration::from_secs(5);
 
 async fn with_media_deadline<T>(
     session: &mut Session,
@@ -654,7 +654,8 @@ mod tests {
             DisplayServiceClient::<Box<dyn ReadWrite>>::rsd_service_name().to_string(),
             AppServiceClient::<Box<dyn ReadWrite>>::rsd_service_name().to_string(),
             "com.apple.accessibility.axAuditDaemon.remoteAXService".to_string(),
-            crate::Touch::rsd_service_name().to_string(),
+            crate::Hid::rsd_service_name().to_string(),
+            "com.apple.coredevice.deviceinfo".to_string(),
         ]
         .into_iter()
         .zip(50000u16..)
@@ -1166,8 +1167,10 @@ mod tests {
             last_activity: now,
         };
         let (mut connection, phone) = tunnel();
+        // This phone advertises device information and refuses the display query, so the tap also
+        // shows that such a phone keeps the main touchscreen.
         connection.media = Some(media);
-        let touch = connection.rsd.services[crate::Touch::rsd_service_name().as_ref()].port;
+        let touch = connection.rsd.services[crate::Hid::rsd_service_name().as_ref()].port;
         // The touch report reaches the phone; the tunnel goes down before the release.
         let phone = tokio::spawn(async move { answer(phone, vec![touch], Some(b"send\0")).await });
         let mut session = Session {
@@ -1248,7 +1251,7 @@ mod tests {
             (media, media_closed)
         };
 
-        // 1. In-flight read-only operation crossing INPUT_MEDIA_MAX_READ_HOLD releases media at 15s
+        // 1. In-flight read-only operation crossing INPUT_MEDIA_MAX_READ_HOLD releases media
         // while keeping the live tunnel intact.
         let start = tokio::time::Instant::now();
         let (media, mut slow_read_closed) = make_media(start).await;
@@ -1264,7 +1267,7 @@ mod tests {
             control: None,
             connection: Some(connection),
         };
-        tokio::time::advance(Duration::from_secs(14)).await;
+        tokio::time::advance(INPUT_MEDIA_MAX_READ_HOLD - Duration::from_secs(1)).await;
         session
             .connection
             .as_mut()
@@ -1296,7 +1299,7 @@ mod tests {
                 .is_ok()
         );
 
-        // 2. Refused requests and half-open sockets at 2.9s cannot delay the 3s idle release.
+        // 2. Refused requests and half-open sockets just before the idle deadline cannot delay release.
         let reset_now = tokio::time::Instant::now();
         let (media, _media_closed) = make_media(reset_now).await;
         session.connection.as_mut().unwrap().media = Some(media);
@@ -1362,7 +1365,7 @@ mod tests {
             while !client_socket.exists() {
                 tokio::task::yield_now().await;
             }
-            tokio::time::sleep(Duration::from_millis(2900)).await;
+            tokio::time::sleep(INPUT_MEDIA_IDLE_TIMEOUT - Duration::from_millis(100)).await;
             let stalled = tokio::net::UnixStream::connect(&client_socket)
                 .await
                 .unwrap();
@@ -1376,7 +1379,7 @@ mod tests {
             );
             assert!(
                 reset_now.elapsed() >= INPUT_MEDIA_IDLE_TIMEOUT
-                    && reset_now.elapsed() < Duration::from_secs(4),
+                    && reset_now.elapsed() < INPUT_MEDIA_IDLE_TIMEOUT + Duration::from_secs(1),
                 "stalled client connection delayed idle media release: {:?}",
                 reset_now.elapsed()
             );
@@ -1464,7 +1467,7 @@ mod tests {
         drop(display_phone);
         let (mut connection, mut wire) = tunnel();
         connection.media = Some(media);
-        let touch_port = connection.rsd.services[crate::Touch::rsd_service_name().as_ref()].port;
+        let touch_port = connection.rsd.services[crate::Hid::rsd_service_name().as_ref()].port;
 
         let (first_send_tx, first_send_rx) = tokio::sync::oneshot::channel::<()>();
         let phone_task = tokio::spawn(async move {

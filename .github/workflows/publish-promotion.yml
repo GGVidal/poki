@@ -105,20 +105,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ fromJSON(needs.read.outputs.rec).sha }}", fetch-depth: 0, filter: 'tree:0' }
-      # The publishing script from this workflow's commit, so older pre-alphas can be published too.
+      # The publishing and verification scripts from this workflow's commit, so older pre-alphas can be published too.
       - uses: actions/checkout@v4
         if: env.CHANNEL == 'beta'
-        with: { path: pipeline, sparse-checkout: .github/scripts }
-      # A beta's files: the artifact of the Pre-alpha run that built it, downloaded once for the
-      # Alpha records and the Beta.
+        with:
+          ref: ${{ github.sha }}
+          path: pipeline
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      # A beta's files: the published hotfix Pre-alpha release or the main Pre-alpha run's artifact,
+      # downloaded and verified once for both the Alpha compatibility records and the Beta.
       - name: The Pre-alpha run's build
         if: env.CHANNEL == 'beta'
         run: |
           set -euo pipefail
-          run="$(gh run list --workflow prealpha.yml --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId')"
-          [ -n "$run" ] || { echo "::error::no successful Pre-alpha run built $SHA (artifacts are kept 90 days)"; exit 1; }
-          echo "IPA source: Pre-alpha run $run ($SOURCE, $SHA)"
-          gh run download "$run" --name Poki-unsigned --dir prealpha
+          rm -rf prealpha && mkdir -p prealpha
+          # A hotfix can use a commit that main also built with different version inputs.
+          preview="app-$BASE-prealpha.$BUILD"
+          if [ "$(gh release view "$preview" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
+            source_sha="$(gh api "repos/$GH_REPO/commits/$preview" --jq .sha)"
+            [ "$source_sha" = "$SHA" ] || { echo "::error::release $preview is not the promoted commit"; exit 1; }
+            echo "IPA source: release $preview ($SOURCE, $SHA)"
+            ipa="Poki-external-$BASE-$BUILD.ipa"
+            gh release download "$preview" --dir prealpha --pattern "$ipa" --pattern Poki-signing.zip --pattern SHA256SUMS
+            awk -v name="$ipa" '$2 == name { print; found=1 } END { exit !found }' prealpha/SHA256SUMS > prealpha/IPA-SHA256SUMS
+            (cd prealpha && sha256sum --check IPA-SHA256SUMS)
+            # Older release manifests omit the signing archive; GitHub supplies its digest.
+            signing_digest="$(gh api "repos/$GH_REPO/releases/tags/$preview" --jq '.assets[] | select(.name == "Poki-signing.zip") | .digest')"
+            [[ "$signing_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::missing signing archive SHA-256"; exit 1; }
+            (cd prealpha && printf '%s  Poki-signing.zip\n' "${signing_digest#sha256:}" | sha256sum --check -)
+            cp "prealpha/$ipa" prealpha/Poki-external-unsigned.ipa
+          else
+            run="$(gh run list --workflow prealpha.yml --branch main --event push --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId')"
+            [ -n "$run" ] || { echo "::error::no successful main Pre-alpha run built $SHA (artifacts are kept 90 days)"; exit 1; }
+            echo "IPA source: Pre-alpha run $run ($SOURCE, $SHA)"
+            gh run download "$run" --name Poki-unsigned --dir prealpha
+          fi
+          python3 pipeline/.github/scripts/verify-ipa-version.py prealpha/Poki-external-unsigned.ipa "$BASE" "$BUILD"
       # Only after the beta approval above: the build as app-<VERSION>-alpha.<build> on
       # app-alpha-latest (and the old ios-alpha-latest), for older clients, then the Beta below.
       # scripts/release/publish-compat.sh needs that tag and release for the Beta's compatibility
@@ -134,6 +157,7 @@ jobs:
           rm -rf src dist && mkdir -p src dist
           if [ "$CHANNEL" = beta ]; then
             cp prealpha/Poki-external-unsigned.ipa "dist/Poki-external-$BASE-$BUILD.ipa"
+            python3 pipeline/.github/scripts/verify-ipa-version.py "dist/Poki-external-$BASE-$BUILD.ipa" "$BASE" "$BUILD"
             cp prealpha/Poki-signing.zip dist/
             gh release download app-alpha-latest --dir dist --pattern 'PokiSetup-*' --pattern 'SHA256SUMS-desktop.txt' || echo "::warning::no Poki Setup files on app-alpha-latest"
             # The Gym scorecards from the merged PR's gate, the baseline for the next beta.
@@ -174,7 +198,7 @@ jobs:
             echo
             if [ -n "$prev" ] && git merge-base --is-ancestor "$prev" HEAD 2>/dev/null; then
               echo "### Changes since $prev"
-              git log --no-merges --format='- %s (%h)' "$prev..HEAD" | head -80
+              git log --no-merges --max-count=80 --format='- %s (%h)' "$prev..HEAD"
             fi
           } > notes.md
           cat notes.md

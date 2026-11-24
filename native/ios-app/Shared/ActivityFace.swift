@@ -9,6 +9,8 @@ enum ActivityBear: String, Hashable {
     case phone, needs, turn, done, tripped, ready, paused, thinking, checking
 
     var image: String { "ActivityBear-\(rawValue)" }
+    var compactImage: String { image + "Compact" }
+    var smallImage: String { image + "Small" }
 
     /// The middle of the smallest circle round the head and a raised hand, as shares of the side.
     var middle: (x: CGFloat, y: CGFloat) {
@@ -26,7 +28,7 @@ enum ActivityBear: String, Hashable {
     }
 
     /// Where the picture's top-left corner stands in the compact island's left block, the picture
-    /// 27.2 points a side (`ActivityMetrics.compactBear`), so the whole bear, ears and outline, stays
+    /// 27 points a side (`ActivityMetrics.compactBear`), so the whole bear, ears and outline, stays
     /// inside the 4.33 points the system cuts off the island's edge. Measured per pose in ESP-503's
     /// design (the island 36.67 tall, 393-point class): each pose's head sits elsewhere in its square.
     /// The design has no thinking bear; it stands where the ready one does.
@@ -101,8 +103,6 @@ struct ActivityFace: Hashable {
         /// segments. Stop beside it.
         case progress(line: Bool, stop: Bool)
         case approval(id: String)
-        /// The answer is on its way to PokiCore.
-        case deciding(String)
         /// "Continue" for a screen the agent handed to the person.
         case handoff(id: String)
         /// Open Poki to fix a stopped runner or pairing error.
@@ -147,10 +147,10 @@ struct ActivityFace: Hashable {
     var compact: Compact
     /// The screen a tap opens.
     var link: URL = ActivityLink.chat
-    /// While the agent may be acting (a run, an approval, a hand-off), a tap on the expanded island
-    /// that misses its controls does nothing instead of opening Poki (`TapShield`): the expanded
-    /// island lies over the top of the app being worked in, so the agent's taps there, and the owner's
-    /// near misses of Allow and Don't Allow, brought Poki to the front in the middle of the task.
+    /// While the agent may be acting (a run, an approval, a hand-off) or a talk is on, a tap on the
+    /// expanded island that misses its controls does nothing instead of opening Poki (`TapShield`): the
+    /// expanded island lies over the top of the app being worked in, so the agent's taps there, and the
+    /// owner's near misses of Allow and Don't Allow, brought Poki to the front in the middle of the task.
     var shieldsTaps = false
     /// The app has not updated the activity for longer than it should have: what it shows may be old.
     var stale = false
@@ -166,6 +166,8 @@ struct ActivityFace: Hashable {
 enum ActivityLink {
     /// The chat that runs the agent (also approvals and handoffs, which the chat shows).
     static let chat = URL(string: "poki://chat")!
+    /// A tap on the Live Activity while a run, approval, hand-off or talk is active.
+    static let activity = URL(string: "poki://activity")!
     /// The Activity Log, where a problem's details are.
     static let log = URL(string: "poki://log")!
     static func setup(_ step: String? = nil) -> URL {
@@ -192,21 +194,19 @@ extension PokiState {
     /// Poki is on, the Live Activity steps aside then.
     var isQuiet: Bool { phase == .idle && voice == nil }
 
-    /// Where and how long a finished run took: "Done in Messages, took 1:24". Never a count of steps,
-    /// which an agent changes as it goes.
-    var runSummary: String? {
-        let place = AppName.display(app)
-        let time = since.flatMap { since in endedAt.map { Duration.seconds(max(0, $0.timeIntervalSince(since))).formatted(.time(pattern: .minuteSecond)) } }
-        switch (place, time) {
-        case let (place?, time?): return String(activity: "Finished in \(place), took \(time)")
-        case let (nil, time?): return String(activity: "Took \(time)")
-        case let (place?, nil): return String(activity: "Finished in \(place)")
-        default: return nil
-        }
+    /// How long a finished run took: "Took 1:24". Never a count of steps, which an agent changes as
+    /// it goes.
+    var runTime: String? {
+        guard let since, let endedAt else { return nil }
+        return String(activity: "Took \(Duration.seconds(max(0, endedAt.timeIntervalSince(since))).formatted(.time(pattern: .minuteSecond)))")
     }
 
-    /// What a finished run did: the plan's title, else Poki's own line.
-    var doneTitle: String { plan?.title?.nonBlank ?? StatusWord.done.text }
+    /// What a finished run came to, the line under Done (ESP-954): finish_task's summary, else the
+    /// task's name (the plan's title, else the task as the owner asked it), else the app it finished
+    /// in. nil when none of these is known; the face then says Done alone, never twice.
+    var doneLine: String? {
+        result?.nonBlank ?? plan?.title?.nonBlank ?? task?.nonBlank ?? AppName.display(app)
+    }
 
     /// The plan's step under way, from 1.
     private var planNumber: Int? {
@@ -256,12 +256,17 @@ extension PokiState {
         // keeps them to itself.
         face.endsTalk = voice != nil && (phase == .idle || phase == .working) && !stale
         face.talkGlow = voice != nil && !stale
-        face.shieldsTaps = !stale && [.working, .approval, .deciding, .handoff].contains(phase)
-        // A fresh event ("Started", "Allowed") shows beside the app's name for a few seconds. An app
-        // switch is the app's name itself, already there.
+        face.shieldsTaps = !stale && ([.working, .approval, .deciding, .handoff].contains(phase) || voice != nil)
+        if face.shieldsTaps, face.link == ActivityLink.chat { face.link = ActivityLink.activity }
+        // A fresh event ("Started", "Denied") shows beside the app's name for a few seconds. An app
+        // switch is the app's name itself, already there; so is a word the face already says (Done
+        // over a finished run, Paired over Paired), which said twice read as a fault (ESP-954).
         if let event, !phase.holdsApproval, event.kind != .app {
-            face.event = ActivityWords.local(event.text)
-            face.eventTone = event.tone
+            let word = ActivityWords.local(event.text)
+            if word != face.content, word != face.kicker {
+                face.event = word
+                face.eventTone = event.tone
+            }
         }
         if stale, phase == .working || phase == .handoff {
             // The app stopped updating (closed, or iOS suspended it): say so, and drop the action,
@@ -281,7 +286,7 @@ extension PokiState {
 
     private var baseFace: ActivityFace {
         switch phase {
-        case .working:
+        case .working, .deciding:
             let inApp = app.flatMap { $0.isEmpty || $0 == "unknown" ? nil : $0 }
             let name = AppName.display(inApp) ?? (voice != nil ? String(activity: "Voice") : nil)
             return ActivityFace(
@@ -293,21 +298,9 @@ extension PokiState {
                 bottom: .progress(line: name != nil || plan != nil, stop: true),
                 thumbnail: hasThumbnail ? .large : .none,
                 compact: workingCompact(app: inApp))
-        case .approval, .deciding:
+        case .approval:
             guard let approval else { return quietFace }
             let question = approval.question
-            if phase == .deciding {
-                let allowed = decision == true
-                return ActivityFace(
-                    symbol: allowed ? "checkmark.circle.fill" : "xmark.circle.fill",
-                    bear: allowed ? .phone : .needs, size: .asking,
-                    meta: .none,
-                    content: question,
-                    bottom: .deciding(allowed ? String(activity: "Continuing") : String(activity: "Telling the agent")),
-                    offersStopAsking: approval.offersStopAsking,
-                    thumbnail: hasThumbnail ? .small : .none,
-                    compact: .symbol(allowed ? "checkmark" : "xmark", allowed ? .accent : .quiet))
-            }
             return ActivityFace(
                 symbol: "hand.raised.fill",
                 bear: .needs, size: .asking,
@@ -318,15 +311,26 @@ extension PokiState {
                 thumbnail: hasThumbnail ? .small : .none,
                 compact: .asking(String(activity: "Allow?"), approval.expires))
         case .done:
+            // Done once: over what the run came to where that is known, else as the title.
+            let line = doneLine
             return ActivityFace(
                 symbol: "checkmark.circle.fill",
                 bear: .done, size: .low,
+                kicker: line == nil ? nil : StatusWord.done.text,
                 meta: .symbol("checkmark", .accent), lockMeta: ActivityFace.Meta.none,
-                content: doneTitle,
-                subtitle: runSummary,
+                content: line ?? StatusWord.done.text,
+                subtitle: runTime,
                 bottom: .none,
                 thumbnail: hasThumbnail ? .large : .none,
                 compact: .symbol("checkmark", .accent))
+        case .stopped:
+            return ActivityFace(
+                symbol: "stop.circle.fill",
+                bear: .paused, size: .low,
+                meta: .none,
+                content: StatusWord.stopped.text,
+                bottom: .none,
+                compact: .text(StatusWord.stopped.text, .quiet))
         case .problem:
             let (problemTitle, problemSubtitle) = Self.problemPresentation(for: headline)
             return ActivityFace(
@@ -384,19 +388,22 @@ extension PokiState {
                 compact: .symbol("hand.tap.fill", .accent))
         case .idle:
             if let voice {
-                let (line, hint, bear): (String, String, ActivityBear) = switch voice {
-                case .listening: (StatusWord.listening.text, String(activity: "Talk with Poki"), .ready)
-                case .thinking: (StatusWord.thinking.text, String(activity: "Working out the next step."), .thinking)
-                case .speaking: (StatusWord.speaking.text, String(activity: "Talk with Poki"), .ready)
+                let (line, hint, bear, symbol): (String, String, ActivityBear, String) = switch voice {
+                case .connecting: (StatusWord.starting.text, ActivityWords.local("Connecting"), .ready, "antenna.radiowaves.left.and.right")
+                case .listening: (StatusWord.listening.text, String(activity: "Talk with Poki"), .ready, "waveform")
+                case .finishingOpening: (StatusWord.listening.text, String(activity: "Run Poki Anytime again to send as text."), .ready, "waveform")
+                case .thinking: (StatusWord.thinking.text, String(activity: "Working out the next step."), .thinking, "waveform")
+                case .speaking: (StatusWord.speaking.text, String(activity: "Talk with Poki"), .ready, "waveform")
                 }
                 return ActivityFace(
-                    symbol: "waveform",
+                    symbol: symbol,
                     bear: bear, size: .working,
                     meta: .none,
                     content: line,
                     subtitle: hint,
+                    subtitleLines: voice == .finishingOpening ? 2 : 1,
                     bottom: .none,
-                    compact: .symbol("waveform", .accent))
+                    compact: .symbol(symbol, .accent))
             }
             return quietFace
         }

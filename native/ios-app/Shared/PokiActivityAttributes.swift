@@ -14,14 +14,16 @@ struct PokiActivityAttributes: ActivityAttributes {
         /// until PokiCore has the answer. `handoff`: the agent cannot act on this screen (a passcode, a
         /// verification, a payment) and the person has to; the agent keeps polling meanwhile. See `Handoff`.
         enum Phase: String, Codable, Hashable {
-            case idle, working, approval, deciding, pairing, setup, problem, done, handoff
+            case idle, working, approval, deciding, pairing, setup, problem, done, stopped, handoff
 
             /// The phases a person has to answer: a step from the agent never replaces them.
             var holdsApproval: Bool { self == .approval || self == .deciding }
+
+            var isRunOutcome: Bool { self == .done || self == .stopped }
         }
         /// Live voice session state when Poki's voice mode is active.
         enum Voice: String, Codable, Hashable {
-            case listening, thinking, speaking
+            case connecting, listening, thinking, speaking, finishingOpening
         }
         /// Refreshes an existing activity when the shared UI language changes; older states decode nil.
         var uiLanguage: String? = nil
@@ -66,6 +68,11 @@ struct PokiActivityAttributes: ActivityAttributes {
         var previous: String?
         /// When the run finished (phase `done`), so the summary shows a fixed duration.
         var endedAt: Date?
+        /// What the chat's finished task came to, in the model's words: finish_task's summary, set only
+        /// when it says the task succeeded. And the task as the owner asked it, for when there is no
+        /// summary and no plan title. Both set when the run finishes, cleared with its plan.
+        var result: String? = nil
+        var task: String? = nil
         /// A short-lived event ("Started", "Now in WeChat", "Allowed") shown as the status word for a few
         /// seconds. ActivityController clears it.
         var event: Event?
@@ -124,6 +131,8 @@ struct PendingApproval: Codable, Hashable {
     /// chat app on a screen not read yet reads as sending, and stops, while a payment, a deletion, Wallet
     /// and a tap after a launch do not.
     var stopsWhenOff: Bool? = nil
+    /// The origin of this one approval, captured inside PokiCore. Not the visible chat.
+    var sourceSession: String? = nil
 
     /// The card offers Don’t Ask Again.
     var offersStopAsking: Bool { stopsWhenOff == true }

@@ -62,13 +62,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 使用面容 ID 解锁屏幕历史，确保只有你能打开。"
+            "value" : "Poki 使用面容 ID 解锁屏幕记录，确保只有你能打开。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poki 使用 Face ID 解鎖螢幕歷史，確保只有你能打開。"
+            "value" : "Poki 使用 Face ID 解鎖螢幕記錄，確保只有你能打開。"
           }
         }
       }
@@ -141,6 +141,30 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poki 開啟時會在背景保持執行，以便智慧體連線此 iPhone。Poki 不會記錄或傳送你的位置。"
+          }
+        }
+      }
+    },
+    "NSScreenCaptureUsageDescription" : {
+      "comment" : "Info.plist",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki listens to app audio you choose to share so it can answer questions about it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 会听你选择共享的 App 声音，用来回答相关问题。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poki 會聽你選擇共享的 App 聲音，用來回答相關問題。"
           }
         }
       }

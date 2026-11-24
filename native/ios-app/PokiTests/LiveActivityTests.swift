@@ -1,5 +1,6 @@
 import ActivityKit
 import Darwin
+import SwiftUI
 import UIKit
 import UserNotifications
 import XCTest
@@ -7,6 +8,61 @@ import XCTest
 
 @MainActor
 final class LiveActivityTests: XCTestCase {
+    func testActivityPayloadBoundsUnicodeWithoutChangingControllerState() throws {
+        let activity = ActivityController()
+        let headline = String(repeating: "👩🏽‍💻", count: 500)
+        let result = String(repeating: "e" + String(repeating: "\u{0301}", count: 90), count: 80)
+        activity.update {
+            $0.headline = headline
+            $0.result = result
+        }
+
+        let payload = try XCTUnwrap(activity.content()).state
+        XCTAssertLessThanOrEqual(try JSONEncoder().encode(payload).count, 3_500)
+        XCTAssertFalse(payload.headline.isEmpty)
+        XCTAssertEqual(payload.phase, activity.state.phase)
+        XCTAssertEqual(activity.state.headline, headline)
+        XCTAssertEqual(activity.state.result, result)
+    }
+
+    func testOversizedPlanKeepsApprovalIdentityAndExpiry() throws {
+        let activity = ActivityController()
+        let expires = Date().addingTimeInterval(120)
+        activity.update {
+            $0.phase = .approval
+            $0.approval = .init(id: "approval-id", app: "Notes", summary: "Edit note",
+                                reason: "deleting", expires: expires)
+            $0.plan = .init(steps: Array(repeating: String(repeating: "查", count: 60), count: 80), current: 2)
+        }
+
+        let content = try XCTUnwrap(activity.content())
+        XCTAssertLessThanOrEqual(try JSONEncoder().encode(content.state).count, 3_500)
+        XCTAssertEqual(content.state.phase, .approval)
+        XCTAssertEqual(content.state.approval?.id, "approval-id")
+        XCTAssertEqual(content.staleDate, expires)
+        XCTAssertEqual(activity.state.plan?.steps.count, 80)
+    }
+
+    func testEscapedFallbackStillFitsAndKeepsApprovalIdentity() throws {
+        let activity = ActivityController()
+        let escaped = String(repeating: "\u{0001}", count: 160)
+        let expiry = Date().addingTimeInterval(60)
+        activity.update {
+            $0.phase = .approval
+            $0.headline = escaped
+            $0.approval = .init(id: "approval-id", app: escaped, summary: escaped,
+                                reason: escaped, expires: expiry)
+            $0.handoff = .init(id: "handoff-id", kind: .other, text: escaped, app: escaped, since: Date())
+        }
+
+        let content = try XCTUnwrap(activity.content())
+        XCTAssertLessThanOrEqual(try JSONEncoder().encode(content.state).count, 3_500)
+        XCTAssertEqual(content.state.approval?.id, "approval-id")
+        XCTAssertEqual(content.state.handoff?.id, "handoff-id")
+        XCTAssertEqual(content.staleDate, expiry)
+        XCTAssertEqual(activity.state.headline, escaped)
+    }
+
     func testSplitViewChatKeepsStopAvailableWhileWaitingForTheModel() async throws {
         let activity = ActivityController()
         activity.finishAfter = .milliseconds(20)
@@ -23,12 +79,45 @@ final class LiveActivityTests: XCTestCase {
         XCTAssertEqual(activity.state.phase, .done)
     }
 
-    func testStoppingARunReturnsItsActivityStateToIdle() {
+    func testStoppedRunShowsItsOutcomeBeforeReturningToIdle() async throws {
         let activity = ActivityController()
+        activity.foldAfter = .milliseconds(20)
         activity.update { $0.phase = .working; $0.headline = "Read Notes" }
         XCTAssertEqual(activity.state.phase, .working)
-        activity.endStoppedRun()
+        activity.stopRun()
+        XCTAssertEqual(activity.state.face.content, "Stopped")
+        let foldedBy = ContinuousClock.now + .seconds(1)
+        while activity.state.phase != .idle, ContinuousClock.now < foldedBy {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         XCTAssertEqual(activity.state.phase, .idle)
+    }
+
+    func testNewRunAndNilThumbnailClearPreviousTaskThumbnail() {
+        let activity = ActivityController()
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20))
+        let jpeg = renderer.jpegData(withCompressionQuality: 0.7) { context in
+            UIColor.systemOrange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+
+        activity.update { $0.phase = .working; $0.headline = "Open Calculator" }
+        activity.setThumbnail(jpeg)
+        XCTAssertTrue(activity.state.hasThumbnail)
+        activity.finishNow(alert: false)
+        XCTAssertEqual(activity.state.phase, .done)
+        XCTAssertTrue(activity.state.hasThumbnail, "finished task keeps its final thumbnail on Done")
+
+        activity.update { $0.phase = .working; $0.headline = "Thinking" }
+        XCTAssertFalse(activity.state.hasThumbnail, "a new run must not inherit the previous task's thumbnail")
+        if let url = SharedContainer.thumbnailURL {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        }
+
+        activity.setThumbnail(jpeg)
+        XCTAssertTrue(activity.state.hasThumbnail)
+        activity.setThumbnail(nil)
+        XCTAssertFalse(activity.state.hasThumbnail, "a step without a fresh screenshot clears the thumbnail")
     }
 
     private var language = AppLocalization.system
@@ -46,7 +135,7 @@ final class LiveActivityTests: XCTestCase {
             app.startSession()
             XCTAssertTrue(app.sessionOn)
             XCTAssertTrue(activities().isEmpty, "Starting the session in the background must defer the activity")
-            app.chatTaskBegan()
+            await app.chatTaskBegan()
             XCTAssertTrue(activities().isEmpty, "Live Activity updates must also wait for the foreground")
 
             app.becameActive()
@@ -57,7 +146,7 @@ final class LiveActivityTests: XCTestCase {
             XCTAssertEqual(activity.content.state.headline, "Thinking")
 
             app.becameActive()
-            app.chatTaskBegan()
+            await app.chatTaskBegan()
             XCTAssertEqual(activities().map(\.id), [activity.id])
 
             app.stopSession()
@@ -148,7 +237,7 @@ final class LiveActivityTests: XCTestCase {
     /// No presentation of the Live Activity counts a run's steps: an agent changes its count as it
     /// goes, so "2/5", "Step 8" and "12 steps" read as broken promises. The line over the title names
     /// the app, the compact island shows the app or the time, the line under the title has no
-    /// segments, and a finished run says where and how long, with or without a plan.
+    /// segments, and a finished run says how long, with or without a plan.
     func testNoPresentationCountsTheRunsSteps() {
         let start = Date(timeIntervalSince1970: 1_000_000)
         var state = PokiState(phase: .working, headline: "Tap “Send”", thumbnailVersion: 0)
@@ -168,7 +257,105 @@ final class LiveActivityTests: XCTestCase {
         state.endedAt = start.addingTimeInterval(84)
         state.plan = .init(steps: ["Open Messages", "Send it"], current: 2, title: "Text Mom")
         XCTAssertEqual(state.face.content, "Text Mom")
-        XCTAssertEqual(state.face.subtitle, "Done in Messages, took 1:24")
+        XCTAssertEqual(state.face.subtitle, "Took 1:24")
+    }
+
+    /// ESP-954: a finished run says Done once, over what the run came to. The island said it twice
+    /// (the finish event's word over a title that fell back to Done), with the time cut off under it.
+    func testAFinishedRunSaysDoneOnceOverWhatItCameTo() {
+        func finished(result: String? = nil, task: String? = nil, _ set: (inout PokiState) -> Void = { _ in }) -> ActivityFace {
+            let controller = ActivityController()
+            controller.update { $0.phase = .working; $0.headline = "Open Notes"; set(&$0) }
+            controller.finishNow(alert: false, result: result, task: task)
+            return controller.state.face
+        }
+        // Nothing known about the run: Done is the title, said once.
+        let bare = finished()
+        XCTAssertEqual(bare.content, "Done")
+        XCTAssertNil(bare.kicker)
+        XCTAssertNil(bare.event)
+
+        // Otherwise Done over finish_task's summary, else the plan's title, else the task as asked,
+        // else the app.
+        let inNotes: (inout PokiState) -> Void = { $0.app = "Notes" }
+        let titled: (inout PokiState) -> Void = { $0.app = "Notes"; $0.plan = .init(steps: ["Open Notes"], current: 1, title: "Shopping list") }
+        let lines = [
+            finished(inNotes),
+            finished(task: "Make me a shopping list\nwith milk", inNotes),
+            finished(task: "Make me a shopping list", titled),
+            finished(result: "Wrote the shopping list in Notes", task: "Make me a shopping list", titled),
+        ]
+        XCTAssertEqual(lines.map(\.content), ["Notes", "Make me a shopping list", "Shopping list", "Wrote the shopping list in Notes"])
+        for face in lines {
+            XCTAssertEqual(face.kicker, "Done")
+            XCTAssertNil(face.event)
+            XCTAssertEqual(face.subtitle, "Took 0:00")
+        }
+    }
+
+    /// ESP-981: in every voice state on the expanded Dynamic Island (listening, thinking, speaking,
+    /// working, approval, deciding, hand-off, done), both the bear and the words and controls stay
+    /// above the 12.33-point bottom strip that iOS clips away.
+    func testEveryVoiceStatesExpandedIslandKeepsTheBearAndControlsInsideTheSystemClip() throws {
+        let samples = ActivityPreview.makeSamples().filter { $0.0.hasPrefix("voice") }
+        XCTAssertEqual(samples.map(\.0), ["voice", "voicethinking", "voicespeaking", "voiceworking", "voiceapproval", "voicedeciding", "voicehandoff", "voicedone"])
+        let width = 374
+        let clip = Int(ActivityMetrics.islandClip)
+        let space = CGColorSpaceCreateDeviceRGB()
+
+        for locale in ["en", "zh-Hans"] {
+            AppLocalization.shared.preference = locale
+            for (name, sample) in samples {
+                var variants = [(name, sample)]
+                if sample.phase == .idle {
+                    var withEvent = sample
+                    withEvent.event = .init(kind: .started, text: "Started")
+                    variants.append(("\(name)+event", withEvent))
+                } else if sample.phase == .approval {
+                    var withStopAsking = sample
+                    withStopAsking.approval?.stopsWhenOff = true
+                    variants.append(("\(name)+stopAsking", withStopAsking))
+                }
+                for (label, state) in variants {
+                    let face = state.face
+                    let sizes = ActivityMetrics.sizes(face)
+                    let height = Int(sizes.island - ActivityMetrics.cameraRow)
+                    let split = Int(sizes.islandLeft)
+                    let view = IslandBottom(face: face)
+                        .dynamicTypeSize(...ActivityMetrics.largestType)
+                        .environment(\.isLuminanceReduced, true)
+                        .frame(width: CGFloat(width), height: CGFloat(height))
+                    let renderer = ImageRenderer(content: view)
+                    renderer.scale = 1
+                    let cgImage = try XCTUnwrap(renderer.cgImage, "\(locale) \(label)")
+                    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+                    let context = try XCTUnwrap(CGContext(
+                        data: &pixels, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                        space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    ))
+                    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+                    var bearVisible = 0, bearClipped = 0
+                    var wordsVisible = 0, wordsClipped = 0
+                    for y in 0..<height {
+                        let inBottomClip = y >= height - clip
+                        for x in 0..<width {
+                            let alpha = pixels[(y * width + x) * 4 + 3]
+                            guard alpha > 16 else { continue }
+                            if x < split {
+                                if inBottomClip { bearClipped += 1 } else { bearVisible += 1 }
+                            } else {
+                                if inBottomClip { wordsClipped += 1 } else { wordsVisible += 1 }
+                            }
+                        }
+                    }
+                    XCTAssertGreaterThan(bearVisible, 0, "\(locale) \(label): bear must render above the bottom clip")
+                    XCTAssertGreaterThan(wordsVisible, 0, "\(locale) \(label): words and controls must render above the bottom clip")
+                    XCTAssertEqual(wordsClipped, 0, "\(locale) \(label): words or buttons extend into the bottom \(clip)pt clip")
+                    XCTAssertEqual(bearClipped, 0, "\(locale) \(label): bear extends into the bottom \(clip)pt clip")
+                }
+            }
+        }
     }
 
     /// ESP-467: the island and the Lock Screen say what the task is doing, never the single tap under
@@ -221,6 +408,24 @@ final class LiveActivityTests: XCTestCase {
         XCTAssertTrue(state.face.compact.says("Allow?"))
     }
 
+    func testAnsweringAnIslandApprovalReturnsToProgressWithoutConfirmation() {
+        let controller = ActivityController()
+        controller.update { $0.phase = .working; $0.headline = "Working"; $0.app = "Messages" }
+        let normalProgress = controller.state.face
+
+        let approval = PendingApproval(id: "approval", app: "Messages", summary: "Send message",
+                                       reason: "sending a message", expires: .now.addingTimeInterval(60))
+        controller.update { $0.phase = .approval; $0.approval = approval; $0.headline = "Allow this step?" }
+        XCTAssertEqual(controller.state.face.bottom, .approval(id: approval.id))
+
+        controller.update { $0.phase = .deciding; $0.decision = true }
+        XCTAssertEqual(controller.state.face.compact, normalProgress.compact, "Answering shows normal progress")
+        XCTAssertEqual(controller.state.face.bottom, normalProgress.bottom, "Answering shows no confirmation card")
+
+        controller.update { $0.phase = .working; $0.approval = nil; $0.headline = "Continuing" }
+        XCTAssertNotEqual(controller.state.face.event, "Allowed", "Continuing shows no approval confirmation")
+    }
+
     private static var runningSession: RunningSession?
 
     private struct RunningSession {
@@ -255,7 +460,7 @@ final class LiveActivityTests: XCTestCase {
             try await withSessionApp { app, activities in
                 app.becameActive()
                 app.startSession()
-                app.chatTaskBegan()
+                await app.chatTaskBegan()
                 let activity = try XCTUnwrap(activities().first)
                 XCTAssertEqual(activity.activityState, .active)
 
@@ -327,7 +532,7 @@ final class LiveActivityTests: XCTestCase {
 
     func testTaskFinishOnDynamicIslandUpdatesActivityWithoutPostingBanner() async throws {
         try await withActiveActivityInBackground(dynamicIsland: true) { app, activity in
-            app.chatTaskBegan()
+            await app.chatTaskBegan()
             try await waitForPhase(.working, on: activity)
             clearNotice("poki-reply")
             app.chatTaskEnded(reply: "Sent the note.", session: "finish-island", acted: true)
@@ -342,7 +547,7 @@ final class LiveActivityTests: XCTestCase {
     func testTaskFinishWithoutDynamicIslandPostsBannerEvenWhenActivityRuns() async throws {
         try await withActiveActivityInBackground(dynamicIsland: false) { app, activity in
             XCTAssertEqual(activity.activityState, .active)
-            app.chatTaskBegan()
+            await app.chatTaskBegan()
             try await waitForPhase(.working, on: activity)
             clearNotice("poki-reply")
             app.chatTaskEnded(reply: "Sent the note.", session: "finish-notch", acted: true)
@@ -365,7 +570,7 @@ final class LiveActivityTests: XCTestCase {
                 defer { clearNotice("poki-reply") }
                 try await movePokiToBackground(app)
                 app.startSession()
-                app.chatTaskBegan()
+                await app.chatTaskBegan()
                 XCTAssertTrue(activities().isEmpty)
 
                 clearNotice("poki-reply")
@@ -377,7 +582,89 @@ final class LiveActivityTests: XCTestCase {
         }
     }
 
-    private func ensureRunningSession() throws -> RunningSession {
+    func testNonDynamicIslandApprovalIntentResolvesBeforeReturningAndSchedulesFallbackNotice() async throws {
+        try await withFinishWindow(dynamicIsland: false) {
+            InProcessWDA.gate.withLock { $0 = InProcessWDA.OpenGate() }
+            let defaults = UserDefaults.standard
+            let keys = ["relayAddress", "relayEnabled", "wantsOn", ApprovalClassifier.modeKey]
+            let saved = keys.map { defaults.object(forKey: $0) }
+            let setup = SetupState.load()
+            let automation = FakeAutomation()
+            // Ordinary-page Delete is allowed under ESP-1328; use a payment button so approval always triggers.
+            let transport = SessionScreenTransport(session: automation, screenLabel: { "Pay" })
+            let app = AppModel(launcher: FakeLauncher(), pairer: FakePairing(), automation: automation, transport: transport)
+            defer {
+                automation.answer(nil)
+                if app.sessionOn { app.stopSession() }
+                for (key, value) in zip(keys, saved) { defaults.set(value, forKey: key) }
+                setup.save()
+            }
+            UserDefaults.standard.set(ApprovalClassifier.Mode.confirm.rawValue, forKey: ApprovalClassifier.modeKey)
+            app.loopback.simulate(.working(ms: 9))
+            app.setup.loopback = .proxy
+            XCTAssertTrue(app.setRelay("https://relay.invalid"))
+            app.becameActive()
+            app.startSession()
+            app.wakeRunner()
+            for _ in 0..<150 where !["failed", "running"].contains(app.runner.state) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            app.runnerChanged(RunnerStatus(state: "running", code: "local_ddi"))
+            for _ in 0..<150 where !app.hasOpenInProcessSession {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            await app.chatTaskBegan()
+
+            let look = await app.runTool("look", arguments: "{}")
+            XCTAssertFalse(look.isError, look.text)
+
+            let allowTask = Task { await app.runTool("do", arguments: #"{"actions":[{"tap":1}]}"#) }
+            for _ in 0..<150 where app.approvals.isEmpty {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let first = try XCTUnwrap(app.approvals.first, "Sensitive tap must raise a pending approval")
+            let firstNoticeID = "approval-\(first.id)"
+            defer { clearNotice(firstNoticeID) }
+
+            var scheduledFallback: UNNotificationRequest?
+            for _ in 0..<50 {
+                let pending = await UNUserNotificationCenter.current().pendingNotificationRequests()
+                if let match = pending.first(where: { $0.identifier == firstNoticeID }) {
+                    scheduledFallback = match
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertNotNil(scheduledFallback, "Without a Dynamic Island, a fallback approval notification must be scheduled after the Live Activity banner dismisses")
+
+            let allowStarted = ContinuousClock.now
+            _ = try await ApproveActionIntent(approvalID: first.id).perform()
+            let allowResult = await allowTask.value
+            let allowElapsed = ContinuousClock.now - allowStarted
+            XCTAssertFalse(allowResult.isError, allowResult.text)
+            XCTAssertLessThan(allowElapsed, .milliseconds(900), "On a device without a Dynamic Island, ApproveActionIntent must resolve before returning instead of waiting behind an unawaited collapse sleep")
+
+            let pendingAfterAllow = await UNUserNotificationCenter.current().pendingNotificationRequests()
+            XCTAssertFalse(pendingAfterAllow.contains { $0.identifier == firstNoticeID }, "Answering on the Live Activity must cancel the fallback approval notification")
+
+            let denyTask = Task { await app.runTool("do", arguments: #"{"actions":[{"tap":1}]}"#) }
+            for _ in 0..<150 where app.approvals.isEmpty {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let second = try XCTUnwrap(app.approvals.first, "Second sensitive tap must raise a pending approval")
+            let secondNoticeID = "approval-\(second.id)"
+            defer { clearNotice(secondNoticeID) }
+
+            let denyStarted = ContinuousClock.now
+            _ = try await DenyActionIntent(approvalID: second.id).perform()
+            let denyResult = await denyTask.value
+            let denyElapsed = ContinuousClock.now - denyStarted
+            XCTAssertTrue(denyResult.isError || denyResult.text.lowercased().contains("denied") || denyResult.text.lowercased().contains("not"), denyResult.text)
+            XCTAssertLessThan(denyElapsed, .milliseconds(900), "On a device without a Dynamic Island, DenyActionIntent must resolve before returning")
+        }
+    }
+
+    private func ensureRunningSession() async throws -> RunningSession {
         if let session = Self.runningSession, session.activities().first != nil {
             return session
         }
@@ -394,7 +681,7 @@ final class LiveActivityTests: XCTestCase {
         XCTAssertTrue(app.setRelay("https://relay.invalid"))
         app.becameActive()
         app.startSession()
-        app.chatTaskBegan()
+        await app.chatTaskBegan()
         let session = RunningSession(app: app, existingIDs: existingIDs) {
             automation.answer(nil)
             for (key, value) in zip(keys, saved) { defaults.set(value, forKey: key) }
@@ -409,7 +696,7 @@ final class LiveActivityTests: XCTestCase {
         _ body: (AppModel, Activity<PokiActivityAttributes>) async throws -> Void
     ) async throws {
         try await withFinishWindow(dynamicIsland: dynamicIsland) {
-            let session = try ensureRunningSession()
+            let session = try await ensureRunningSession()
             let activity = try XCTUnwrap(session.activities().first)
             XCTAssertEqual(activity.activityState, .active)
             defer { clearNotice("poki-reply") }

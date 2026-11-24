@@ -53,6 +53,8 @@ struct SettingsIcon: View {
 struct SettingsRow: View {
     var title: LocalizedStringKey
     var caption: LocalizedStringKey? = nil
+    /// A line under the name that is data, not words: an address, shown as it is and cut in the middle.
+    var dataCaption: String? = nil
     var symbol: String
     var value: String? = nil
     var warns = false
@@ -75,6 +77,10 @@ struct SettingsRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body).foregroundStyle(Color(.label))
                 if let caption { Text(caption).font(.footnote).foregroundStyle(Color(.secondaryLabel)) }
+                if let dataCaption {
+                    Text(verbatim: dataCaption).font(.footnote).foregroundStyle(Color(.secondaryLabel))
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 1).truncationMode(.middle)
+                }
                 // At the accessibility sizes the value goes under the caption, as in Settings.
                 if typeSize.isAccessibilitySize, let value { valueView(value) }
             }
@@ -165,12 +171,16 @@ private struct SettingsLabelIcon<Icon: View>: View {
 }
 
 private struct SettingsPageStyle: ViewModifier {
+    @Environment(\.startDesign) private var startDesign
     func body(content: Content) -> some View {
         content
             .labelStyle(SettingsLabelStyle())
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
-            .background { HomeBackdrop(home: true, working: false, frozen: true) }
+            .background {
+                if let startDesign { StartGround(design: startDesign) }
+                else { HomeBackdrop(home: true, working: false, frozen: true) }
+            }
     }
 }
 
@@ -251,5 +261,22 @@ struct SettingsChoiceCard: View {
         }
         .buttonStyle(PressedDimStyle())
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+}
+
+
+extension View {
+    func settingsHeader() -> some View { modifier(SettingsSectionWords(header: true)) }
+    func settingsFooter() -> some View { modifier(SettingsSectionWords(header: false)) }
+}
+
+private struct SettingsSectionWords: ViewModifier {
+    var header: Bool
+    @Environment(\.startDesign) private var startDesign
+
+    func body(content: Content) -> some View {
+        content
+            .font(header ? .headline : .footnote)
+            .foregroundStyle(startDesign == nil ? Color(.secondaryLabel) : header ? StartGround.ink : StartGround.quietInk)
     }
 }

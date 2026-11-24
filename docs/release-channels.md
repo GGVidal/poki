@@ -38,8 +38,7 @@ Compatibility depends on the build, not just the 0.2.2 version label: revision `
 661, already recognizes both schemes. This is a source check, not a check of the shipped binary. Pre-alpha and Alpha compatibility continue to publish those
 copies. New Betas use `app-*`; the independently numbered `ios-beta-*` compatibility records below remain available to installed clients.
 
-N is the commit count of the built commit on `main`, so it only goes up while `main` is never
-rewritten. New Beta IPA filenames retain the numeric build, which must match `CFBundleVersion` inside the app. Stable filenames still omit it.
+N is the number of commits reachable from the source commit, on `main` or the hotfix branch. New Beta IPA filenames retain the numeric build, which must match `CFBundleVersion` inside the app. Stable filenames still omit it.
 
 ## One build, promoted
 
@@ -49,11 +48,17 @@ Beta runs the file that internal testers tried and the Gym scored.
 1. **Pre-alpha, automatic.** Every merge into `main` runs `.github/workflows/prealpha.yml`: one
    macOS job builds the external IPA, tags `app-<VERSION>-prealpha.<N>` and replaces the files of
    `app-prealpha-latest`. Its artifact is kept 90 days for later promotions. Internal testers
-   install this build. A build that fails gets no tag. The same run tests that commit: the app tests
-   (`ios-app.yml`, three macOS jobs: PokiCore and loopback tests, the in-process checks, the
-   simulator smoke test and screenshots, the app unit tests, and Poki's agent end to end) and Poki
-   Setup's core tests on Linux. They do not hold up the pre-alpha, but a build whose tests failed
-   cannot go to Beta. After a flaky failure, re-run the failed jobs; the run then counts as passed.
+   install this build. A build that fails gets no tag. Re-run a failed main build from its existing
+   Actions run. The same run tests that commit: the app tests (`ios-app.yml`, three macOS jobs:
+   PokiCore and loopback tests, the in-process checks, the simulator smoke test and screenshots,
+   the app unit tests, and Poki's agent end to end) and Poki Setup's core tests on Linux. They do
+   not hold up the pre-alpha, but a build whose tests failed cannot go to Beta. After a flaky
+   failure, re-run the failed jobs; the run then counts as passed.
+   To build a hotfix, dispatch Pre-alpha from `main` with a `hotfix/` branch and version. Its files
+   go to the versioned Pre-alpha release. If publishing stops at a draft, retry with the same version
+   and keep the branch at the original source commit. The successful run publishes its files and
+   notes together. Ordinary promotions continue to use the rolling `app-prealpha-latest` release
+   and look up artifacts from pushes to `main`.
 2. **Beta, by PR.** Actions > Propose promotion > beta (`propose-promotion.yml`), with a pre-alpha
    tag, the merge commit it was built from, or empty for the one on `app-prealpha-latest`. The
    proposal refuses a build whose Pre-alpha run did not succeed, is still testing, never ran the
@@ -120,7 +125,8 @@ Both carry `Poki-external-X.Y.Z-N.ipa`, `Poki-signing.zip`, `poki-relay-worker.j
 1. `check` (the default) downloads the Pre-alpha run's files and verifies them. Run it before
    merging the beta promotion too: it prints the digest of the entitlements in `Poki-signing.zip`,
    and a changed digest has to be known before a rolling tag hands the new build to clients that
-   cached the old zip.
+   cached the old zip. For a hotfix, the same command checks the files from its versioned Pre-alpha
+   release.
 2. `draft` uploads a draft release, which no client can see.
 3. `public --confirm <tag>` checks the draft again, file by file, against the same Pre-alpha files,
    and only then makes it public. A draft with a file missing, a file from another build or another
@@ -147,6 +153,10 @@ install. `--live` reads today's releases from GitHub in place of the saved copy;
 `plans/withdraw-beta.json` replays taking a Beta back.
 `scripts/release/oracle.sh` runs the picker cut from the `app-0.3.1-alpha.752` source over the same
 releases and fails when the script's port of it answers differently.
+
+## Setup-only updates
+
+A public `desktop-vX.Y.Z` prerelease can reach Poki Setup through the signed Beta catalog on its own schedule. Publish both installers from the same build and their desktop checksum list, then run **Mirror approved release to R2** on `main` with the exact desktop tag. The repository owner approves the `beta` job. Users can then find the Setup update through their normal update check. Phone updates and the phone installer continue to select the numbered Poki Beta. See [publishing an approved release](update-sources.md#publishing-an-approved-release).
 
 ## Branches
 

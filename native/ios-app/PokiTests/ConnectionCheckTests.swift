@@ -6,6 +6,7 @@ final class ModelServerStub: URLProtocol {
     struct Sent {
         let url: URL?
         let body: Data
+        let headers: [String: String]
         var json: [String: Any] {
             (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
         }
@@ -14,6 +15,7 @@ final class ModelServerStub: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) static var answer: (status: Int, body: String)?
     nonisolated(unsafe) static var responder: (@Sendable (URLRequest, Data) -> (status: Int, type: String, body: String))?
+    nonisolated(unsafe) static var additionalHosts: Set<String> = []
     nonisolated(unsafe) private static var recorded: [Sent] = []
 
     static var requests: [Sent] { lock.withLock { recorded } }
@@ -22,6 +24,7 @@ final class ModelServerStub: URLProtocol {
         lock.withLock {
             answer = nil
             responder = nil
+            additionalHosts = []
             recorded.removeAll()
         }
     }
@@ -29,6 +32,7 @@ final class ModelServerStub: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
         guard let host = request.url?.host() else { return false }
         return ["model-server.test", "openrouter.ai", "api.anthropic.com", "opencode.ai"].contains(host)
+            || lock.withLock { additionalHosts.contains(host) }
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -36,7 +40,14 @@ final class ModelServerStub: URLProtocol {
     override func startLoading() {
         let body = Self.bodyData(from: request)
         let customResponder = Self.lock.withLock { () -> (@Sendable (URLRequest, Data) -> (status: Int, type: String, body: String))? in
-            Self.recorded.append(Sent(url: request.url, body: body))
+            // Only inspect non-secret routing fields in tests: never retain
+            // Authorization, API keys, cookies or other credential headers.
+            let visible: Set<String> = ["x-opencode-session", "x-opencode-client", "user-agent"]
+            let headers = (request.allHTTPHeaderFields ?? [:]).reduce(into: [String: String]()) { result, field in
+                let name = field.key.lowercased()
+                if visible.contains(name) { result[name] = field.value }
+            }
+            Self.recorded.append(Sent(url: request.url, body: body, headers: headers))
             return Self.responder
         }
         let reply: (status: Int, type: String, body: String)
@@ -133,6 +144,44 @@ final class ConnectionCheckTests: XCTestCase {
         return await ConnectionCheck.run(.custom, key: key, customURL: "https://model-server.test/v1", modelID: "house-model")
     }
 
+    /// Automatic tries the Responses API first; an address without it (404 at /responses) is tested
+    /// again in chat completions, and the check says which one answered.
+    func testAutomaticFallsBackToChatCompletionsWhereThereIsNoResponsesAPI() async {
+        let chunk = #"{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"house-model","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}"#
+        ModelServerStub.responder = { request, _ in
+            if request.url?.path == "/v1/responses" { return (404, "application/json", #"{"error":{"message":"Not Found"}}"#) }
+            return (200, "text/event-stream", "data: \(chunk)\n\ndata: [DONE]\n\n")
+        }
+        let run = await ConnectionCheck.runCustom(url: "https://model-server.test/v1", key: key, modelID: "house-model", api: .automatic, reasoning: nil)
+        XCTAssertTrue(run.result.passed)
+        XCTAssertEqual(run.api, .chatCompletions)
+        XCTAssertEqual(ModelServerStub.requests.map { $0.url?.path }, ["/v1/responses", "/v1/chat/completions"])
+    }
+
+    /// The Responses API is spoken where it is chosen, with the model's reasoning when the owner turns
+    /// thinking on, as the official OpenAI account sends it.
+    func testResponsesIsSentToTheResponsesPathWithReasoning() async throws {
+        ModelServerStub.answer = (404, #"{"error":{"message":"Not Found"}}"#)
+        let run = await ConnectionCheck.runCustom(url: "https://model-server.test/v1", key: key, modelID: "house-model", api: .responses, reasoning: true)
+        XCTAssertFalse(run.result.passed)
+        XCTAssertEqual(run.api, .responses)
+        let sent = try XCTUnwrap(ModelServerStub.requests.first)
+        XCTAssertEqual(sent.url?.path, "/v1/responses")
+        XCTAssertEqual(sent.json["model"] as? String, "house-model")
+        XCTAssertEqual(sent.json["store"] as? Bool, false)
+        XCTAssertEqual((sent.json["reasoning"] as? [String: Any])?["effort"] as? String, "low")
+        XCTAssertEqual(ModelServerStub.requests.count, 1)
+    }
+
+    func testOnlyAMissingResponsesAPIFallsBack() {
+        XCTAssertTrue(ConnectionCheck.lacksResponses(.noEndpoint))
+        XCTAssertTrue(ConnectionCheck.lacksResponses(.failed(status: 405, reason: nil)))
+        XCTAssertFalse(ConnectionCheck.lacksResponses(.badKey(reason: nil)))
+        XCTAssertFalse(ConnectionCheck.lacksResponses(.unreachable(reason: nil)))
+        XCTAssertFalse(ConnectionCheck.lacksResponses(.timedOut))
+        XCTAssertFalse(ConnectionCheck.lacksResponses(.works(model: "m")))
+    }
+
     func testOpenCodeConnectionCheckSendsAnIsolatedSessionHeader() async {
         ModelServerStub.responder = { request, _ in
             let session = request.value(forHTTPHeaderField: "x-opencode-session")
@@ -173,6 +222,11 @@ final class ConnectionCheckTests: XCTestCase {
         let late = await check(nil)
         XCTAssertEqual(late.words, "No answer within 10 seconds. Check the address and the network, then try again.")
 
+        // A gateway that doubles the prefix (issue #344) works as the chat now reads it.
+        let doubled = await check((200, "data:data: \(chunk)\n\ndata:\n\ndata:data: [DONE]\n\n"))
+        XCTAssertTrue(doubled.passed)
+        XCTAssertEqual(doubled.words, "Connection works. Model: house-model-2026-11")
+
         AppLocalization.shared.preference = "zh-Hant"
         XCTAssertEqual(works.words, "連線正常，回應模型：house-model-2026-11")
         XCTAssertEqual(rejected.words, "金鑰無效，請確認金鑰已完整複製。")
@@ -212,7 +266,7 @@ final class ConnectionCheckTests: XCTestCase {
 
         try ModelKeys.save(key, for: .openrouter)
         let model = try XCTUnwrap(ModelProvider.openrouter.piModel(modelID))
-        let loop = PiLoop(provider: .openrouter, model: model, tools: []) { _ in
+        let loop = PiLoop(provider: .openrouter, model: model, sessionID: UUID().uuidString, tools: []) { _ in
             .init(text: "", jpeg: nil, isError: false)
         }
         let turnOutcome = await loop.run("Reply with OK.", instructions: "Be brief.", maxTurns: 1) { _ in }
@@ -249,7 +303,7 @@ final class ConnectionCheckTests: XCTestCase {
         ModelKeys.selectedProvider = .openrouter
         ModelKeys.selectedModel = "vendor/plain-chat"
         let plainModel = try XCTUnwrap(ModelProvider.openrouter.piModel("vendor/plain-chat"))
-        let plainLoop = PiLoop(provider: .openrouter, model: plainModel, tools: []) { _ in
+        let plainLoop = PiLoop(provider: .openrouter, model: plainModel, sessionID: UUID().uuidString, tools: []) { _ in
             .init(text: "", jpeg: nil, isError: false)
         }
         let plainOutcome = await plainLoop.run("Reply with OK.", instructions: "Be brief.", maxTurns: 1) { _ in }
@@ -268,7 +322,7 @@ final class ConnectionCheckTests: XCTestCase {
         XCTAssertNil(checkSent.json["thinking"])
 
         let reasoningModel = try XCTUnwrap(ModelProvider.openrouter.piModel("openai/gpt-6.1-terra"))
-        let reasoningLoop = PiLoop(provider: .openrouter, model: reasoningModel, tools: []) { _ in
+        let reasoningLoop = PiLoop(provider: .openrouter, model: reasoningModel, sessionID: UUID().uuidString, tools: []) { _ in
             .init(text: "", jpeg: nil, isError: false)
         }
         let reasoningOutcome = await reasoningLoop.run("Reply with OK.", instructions: "Be brief.", maxTurns: 1) { _ in }
@@ -318,7 +372,7 @@ final class ConnectionCheckTests: XCTestCase {
 
         ModelServerStub.recordedReset()
         let solModel = try XCTUnwrap(ModelProvider.openrouter.piModel("openai/gpt-6.1-sol"))
-        let solLoop = PiLoop(provider: .openrouter, model: solModel, tools: []) { _ in
+        let solLoop = PiLoop(provider: .openrouter, model: solModel, sessionID: UUID().uuidString, tools: []) { _ in
             .init(text: "", jpeg: nil, isError: false)
         }
         let solOutcome = await solLoop.run("Reply with OK.", instructions: "Be brief.", maxTurns: 1) { _ in }
@@ -361,7 +415,7 @@ final class ConnectionCheckTests: XCTestCase {
         func chatRequest(_ modelID: String) async throws -> ModelServerStub.Sent {
             ModelServerStub.recordedReset()
             let model = try XCTUnwrap(ModelProvider.anthropic.piModel(modelID))
-            let loop = PiLoop(provider: .anthropic, model: model, tools: []) { _ in
+            let loop = PiLoop(provider: .anthropic, model: model, sessionID: UUID().uuidString, tools: []) { _ in
                 .init(text: "", jpeg: nil, isError: false)
             }
             let outcome = await loop.run("Reply with OK.", instructions: "Be brief.", maxTurns: 1) { _ in }

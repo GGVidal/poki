@@ -94,7 +94,7 @@ def prealpha(src):
             sys.exit(f"{src} is not a commit of {os.environ['GH_REPO']}")
     else:
         sys.exit(f"{src} is neither a pre-alpha tag (app-X.Y.Z-prealpha.N) nor a commit")
-    runs = gh_json("run", "list", "--workflow", "prealpha.yml", "--commit", sha, "--json", "databaseId,status,conclusion,url") or []
+    runs = gh_json("run", "list", "--workflow", "prealpha.yml", "--branch", "main", "--event", "push", "--commit", sha, "--json", "databaseId,status,conclusion,url") or []
     good = next((r for r in runs if r["conclusion"] == "success"), None)
     if not good:
         if not runs:

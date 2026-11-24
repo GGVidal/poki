@@ -1,5 +1,5 @@
 import { remoteDevices, nativeRequest } from './remote.mjs';
-import { execute, checkWork, deadline, pause, phase, stopped, stoppingReason, timingCount, timingsSince } from './work.mjs';
+import { execute, checkWork, deadline, pause, phase, stopped, stoppingReason, timingCount, timingsSince, work } from './work.mjs';
 import { Coordination, managementTools } from './coordination.mjs';
 import { runBatch } from './batch.mjs';
 import { runCode } from './run-code.mjs';
@@ -79,15 +79,29 @@ export function hidPoint(x, y, width, height) {
 const names = (device, query) => device.id === query || device.name.toLocaleLowerCase() === query.toLocaleLowerCase();
 
 export class Devices {
-  selected; requested; frame; size; seen; structureViewport; batchViewportVerified = false; elements = []; elementsAt = 0; lastInputAt = -Infinity; lastInputCompletedAt; inBatch = false;
-  scales = new Map(); readCosts = new Map(); physicalNames = new Map(); backgroundDevices = new Map(); nextRef = 0;
+  selected; requested; frame; size; seen; structureViewport; batchViewportVerified = false; elements = []; elementsAt = 0; lastInputAt = -Infinity; lastInputCompletedAt; inBatch = false; inputGroupDepth = 0;
+  scales = new Map(); multiplePanels = new Map(); readCosts = new Map(); physicalNames = new Map(); backgroundDevices = new Map(); physicalInputs = new Map(); nextRef = 0;
   constructor(coordinator = new Coordination()) { this.coordinator = coordinator; }
+  beginInputGroup() { this.inputGroupDepth++; }
+  async endInputGroup() {
+    this.inputGroupDepth = Math.max(0, this.inputGroupDepth - 1);
+    if (this.inputGroupDepth === 0) await this.releaseInputs();
+  }
+  async releaseInputs(onlyDevices) {
+    const targets = [...this.physicalInputs.values()].filter(target => !onlyDevices || onlyDevices.has(target.id));
+    for (const target of targets) this.physicalInputs.delete(target.id);
+    if (!targets.length) return;
+    await phase('input_release', () => Promise.allSettled(
+      targets.map(target => work.run({ signal: AbortSignal.timeout(3000), timings: [] }, () => nativeRequest(target, { op: 'release_input' })))
+    ));
+  }
   async run(file, args, timeout = 45000, input) {
     const result = await execute(file, args, { timeout, input });
     return { stdout: result.stdout.trimEnd(), stderr: result.stderr.trimEnd() };
   }
   async cleanup(onlyDevices) {
     const result = await closePlatform(this, onlyDevices);
+    await this.releaseInputs(onlyDevices);
     if (onlyDevices) for (const id of onlyDevices) this.backgroundDevices.delete(id);
     else this.backgroundDevices.clear();
     if (!onlyDevices || onlyDevices.has(this.frame?.device) || onlyDevices.has(this.structureViewport?.device)) { this.frame = undefined; this.elements = []; this.structureViewport = undefined; }
@@ -214,6 +228,17 @@ export class Devices {
     if (!Number.isFinite(scale) || scale <= 0 || scale > 5) throw new Error('Could not read the screen scale. Refusing to guess touch coordinates.');
     this.scales.set(target.id, scale); return scale;
   }
+  // Whether the phone has a second built-in panel. Only then must a screenshot name the panel, which the helper does.
+  // Every other phone, and one whose helper cannot say, keeps the screenshot command used before.
+  async panels(target) {
+    if (this.multiplePanels.has(target.id)) return this.multiplePanels.get(target.id);
+    let multiple;
+    try { multiple = (await nativeRequest(target, { op: 'panels' })).multiple; }
+    catch (error) { if (stopped(error)) throw error; }
+    // No answer is not remembered, so a phone that could not be asked yet is asked again.
+    if (typeof multiple !== 'boolean') return false;
+    this.multiplePanels.set(target.id, multiple); return multiple;
+  }
   capture() { return phase('screen_capture', () => this.captureFrame()); }
   async captureFrame() {
     checkWork();
@@ -225,7 +250,7 @@ export class Devices {
     try {
       // Unmasked, the area around the Dynamic Island differs between frames of a still screen, which would expire refs.
       if (target.kind === 'simulator') await this.run('xcrun', ['simctl', 'io', target.id, 'screenshot', '--type=png', '--mask=black', path]);
-      else if (target.remote) await nativeRequest(target, { op: 'screenshot', path });
+      else if (target.remote || await this.panels(target)) await nativeRequest(target, { op: 'screenshot', path });
       else await this.native(['screenshot', path], /Screenshot saved to:/);
       const original = await readFile(path), meta = await sharp(original).metadata();
       const scale = await this.scale(target);
@@ -464,6 +489,7 @@ export class Devices {
     let result;
     try { result = await phase('input', () => this.bridge(command)); }
     catch (error) { result = { outcome: 'unknown', error: error.message, stopped: Boolean(stopped(error)), stop_reason: stopped(error) ? stoppingReason(error) : 'unknown', instruction: 'Input may have been delivered. Inspect the screen before retrying.', isError: true }; }
+    if (target.kind === 'physical' && result.outcome !== 'not_sent' && result.sent !== false) this.physicalInputs.set(target.id, target);
     if (result.reason === 'display_service_missing') result = { ...result, instruction: `No input was sent. This iPhone does not provide com.apple.coredevice.displayservice, which touch and text input need. Screenshots and accessibility work without it, so they do not show whether input is available. Run node bin/prepare-device.mjs ${target.id} from the Poki checkout to install a developer disk image that provides it. See docs/physical-iphone.md#touch-and-text-input-fail.` };
     this.lastInputAt = performance.now();
     this.lastInputCompletedAt = new Date().toISOString();
@@ -634,7 +660,9 @@ export class Devices {
               this.elements.length && Date.now() - this.elementsAt <= 30000) {
             this.structureViewport = { ...previousViewport, revision: before.revision };
           }
-          let result = await interaction(this,name,args);
+          let result;
+          try { result = await interaction(this,name,args); }
+          finally { if (this.inputGroupDepth === 0) await this.releaseInputs(); }
           if(result===undefined) throw new Error(`No implementation for ${name}`);
           const delivered = result.sent === true && !result.isError && !result.stopped;
           // A target that had to be waited for is compared with the screen it was found on, not the one before the wait.

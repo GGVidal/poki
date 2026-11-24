@@ -11,6 +11,8 @@ struct ApprovalDecision: Hashable, Sendable {
     let approved: Bool
     /// Allow this step and turn asking off (Don’t Ask Again).
     var stopAsking = false
+    /// Wait for the Dynamic Island to fold before forwarding input (true on Live Activity buttons).
+    var waitForIslandCollapse = true
 }
 
 /// A LiveActivityIntent runs in the app's process, so the button hands its decision straight to
@@ -18,7 +20,7 @@ struct ApprovalDecision: Hashable, Sendable {
 /// AppModel installed itself, the bridge has no handler and the decision goes to the mailbox.
 @MainActor
 enum ApprovalIntentBridge {
-    typealias Handler = @MainActor @Sendable (ApprovalDecision) -> Bool
+    typealias Handler = @MainActor @Sendable (ApprovalDecision) async -> Bool
 
     private static var handler: Handler?
 
@@ -26,8 +28,8 @@ enum ApprovalIntentBridge {
         self.handler = handler
     }
 
-    static func submit(_ decision: ApprovalDecision) {
-        if handler?(decision) != true { ApprovalMailbox.post(decision) }
+    static func submit(_ decision: ApprovalDecision) async {
+        if await handler?(decision) != true { ApprovalMailbox.post(decision) }
     }
 }
 
@@ -49,7 +51,7 @@ struct ApproveActionIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        ApprovalIntentBridge.submit(ApprovalDecision(approvalID: approvalID, approved: true))
+        await ApprovalIntentBridge.submit(ApprovalDecision(approvalID: approvalID, approved: true))
         return .result()
     }
 }
@@ -70,7 +72,7 @@ struct StopAskingIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        ApprovalIntentBridge.submit(ApprovalDecision(approvalID: approvalID, approved: true, stopAsking: true))
+        await ApprovalIntentBridge.submit(ApprovalDecision(approvalID: approvalID, approved: true, stopAsking: true))
         return .result()
     }
 }
@@ -89,13 +91,14 @@ struct DenyActionIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        ApprovalIntentBridge.submit(ApprovalDecision(approvalID: approvalID, approved: false))
+        await ApprovalIntentBridge.submit(ApprovalDecision(approvalID: approvalID, approved: false))
         return .result()
     }
 }
 
-/// Stop runner on the Live Activity: stops the runner (and with it iOS's automation banner) until an
-/// agent's next request. No authentication: stopping is always safe.
+/// Stop on the Live Activity: stops the talk, the task and the runner (and with it iOS's automation
+/// banner) until an agent's next request, and ends the Live Activity. No authentication: stopping is
+/// always safe.
 struct StopRunnerIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Stop runner"
     static let openAppWhenRun = false
