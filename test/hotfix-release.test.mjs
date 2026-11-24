@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { evalActionsField, evalJobIf, jobNeeds, parseWorkflowYaml } from './workflow-eval.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sha = '1234567890abcdef1234567890abcdef12345678';
@@ -302,52 +303,54 @@ test('Beta uses the published hotfix package even if a main push built the same 
 });
 
 test('prealpha.yml runs app-tests and setup-tests on the resolved hotfix commit after publish-hotfix', () => {
-  const source = workflow('prealpha');
-  const jobBlock = id => {
-    const block = source.split(`\n  ${id}:\n`)[1]?.split(/\n  \S/, 1)[0];
-    assert.ok(block, `Missing workflow job ${id}`);
-    return block;
-  };
-  const needsOf = block => {
-    const m = block.match(/^    needs:\s*(.+)$/m);
-    assert.ok(m, 'job declares needs');
-    const raw = m[1].trim();
-    return raw.startsWith('[') ? raw.slice(1, -1).split(',').map(s => s.trim()) : [raw];
-  };
-  const evalGate = (block, { cancelled = false, prealpha = 'skipped', publishHotfix = 'skipped' }) => {
-    const ifMatch = block.match(/^    if:\s*(.+)$/m);
-    if (!ifMatch) return prealpha === 'success' && !cancelled;
-    const expr = ifMatch[1].trim().replace(/^\$\{\{\s*|\s*\}\}$/g, '');
-    // Evaluate standard GitHub Actions boolean expression with needs.*.result and cancelled().
-    const env = {
-      'needs.prealpha.result': prealpha,
-      'needs.publish-hotfix.result': publishHotfix,
-    };
-    let js = expr
-      .replace(/cancelled\(\)/g, JSON.stringify(cancelled))
-      .replace(/always\(\)/g, 'true')
-      .replace(/needs\.[a-z0-9-]+\.result/g, k => JSON.stringify(env[k] ?? 'skipped'));
-    return Boolean(Function(`"use strict"; return (${js});`)());
-  };
+  const parsed = parseWorkflowYaml(workflow('prealpha'));
+  const jobs = parsed.jobs ?? {};
+
+  const gateRuns = (job, { cancelled = false, prealpha = 'skipped', publishHotfix = 'skipped' }) => evalJobIf(job, {
+    __cancelled: cancelled,
+    'needs.prealpha.result': prealpha,
+    'needs.resolve-hotfix.result': publishHotfix === 'skipped' ? 'skipped' : 'success',
+    'needs.build-hotfix.result': publishHotfix === 'skipped' ? 'skipped' : 'success',
+    'needs.publish-hotfix.result': publishHotfix,
+  });
 
   for (const id of ['app-tests', 'setup-tests']) {
-    const block = jobBlock(id);
-    const needs = needsOf(block);
+    const job = jobs[id];
+    assert.ok(job, `Missing workflow job ${id}`);
+    const needs = jobNeeds(job);
     assert.ok(needs.includes('prealpha'), `${id} waits for prealpha`);
     assert.ok(needs.includes('resolve-hotfix'), `${id} reads resolve-hotfix outputs`);
     assert.ok(needs.includes('publish-hotfix'), `${id} waits for publish-hotfix`);
-    assert.equal(evalGate(block, { prealpha: 'success', publishHotfix: 'skipped' }), true, `${id} runs for main push`);
-    assert.equal(evalGate(block, { prealpha: 'skipped', publishHotfix: 'success' }), true, `${id} runs for hotfix dispatch`);
-    assert.equal(evalGate(block, { prealpha: 'failure', publishHotfix: 'skipped' }), false, `${id} skips on failed main push`);
-    assert.equal(evalGate(block, { prealpha: 'skipped', publishHotfix: 'failure' }), false, `${id} skips on failed hotfix`);
-    assert.equal(evalGate(block, { cancelled: true, prealpha: 'skipped', publishHotfix: 'success' }), false, `${id} skips when cancelled`);
+    assert.equal(gateRuns(job, { prealpha: 'success', publishHotfix: 'skipped' }), true, `${id} runs for main push`);
+    assert.equal(gateRuns(job, { prealpha: 'skipped', publishHotfix: 'success' }), true, `${id} runs for hotfix dispatch`);
+    assert.equal(gateRuns(job, { prealpha: 'failure', publishHotfix: 'skipped' }), false, `${id} skips on failed main push`);
+    assert.equal(gateRuns(job, { prealpha: 'skipped', publishHotfix: 'failure' }), false, `${id} skips on failed hotfix`);
+    assert.equal(gateRuns(job, { cancelled: true, prealpha: 'skipped', publishHotfix: 'success' }), false, `${id} skips when cancelled`);
   }
 
-  const appTests = jobBlock('app-tests');
-  assert.match(appTests, /ref:\s*\$\{\{\s*needs\.resolve-hotfix\.outputs\.sha\s*\}\}/);
-  assert.match(appTests, /version:\s*\$\{\{\s*needs\.resolve-hotfix\.outputs\.version\s*\}\}/);
-  assert.match(appTests, /build:\s*\$\{\{\s*needs\.build-hotfix\.outputs\.build\s*\}\}/);
+  const hotfixCtx = {
+    'needs.resolve-hotfix.outputs.sha': sha,
+    'needs.resolve-hotfix.outputs.version': '0.4.7',
+    'needs.build-hotfix.outputs.build': '9969',
+  };
+  const mainCtx = {
+    'needs.resolve-hotfix.outputs.sha': '',
+    'needs.resolve-hotfix.outputs.version': '',
+    'needs.build-hotfix.outputs.build': '',
+  };
 
-  const setupTests = jobBlock('setup-tests');
-  assert.match(setupTests, /ref:\s*["']?\$\{\{\s*needs\.resolve-hotfix\.outputs\.sha\s*\}\}["']?/);
+  const appTests = jobs['app-tests'];
+  assert.ok(jobNeeds(appTests).includes('build-hotfix'), 'app-tests reads build-hotfix outputs');
+  assert.equal(appTests.uses, './.github/workflows/ios-app.yml');
+  assert.equal(evalActionsField(appTests.with?.ref, hotfixCtx), sha, 'app-tests passes resolved hotfix commit');
+  assert.equal(evalActionsField(appTests.with?.version, hotfixCtx), '0.4.7', 'app-tests passes hotfix version');
+  assert.equal(evalActionsField(appTests.with?.build, hotfixCtx), '9969', 'app-tests passes hotfix build');
+  assert.equal(evalActionsField(appTests.with?.ref, mainCtx), '', 'app-tests defaults ref on main push');
+
+  const setupTests = jobs['setup-tests'];
+  const checkout = (setupTests.steps ?? []).find(step => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'));
+  assert.ok(checkout, 'setup-tests checks out the repository');
+  assert.ok(checkout.with && Object.hasOwn(checkout.with, 'ref'), 'setup-tests checkout must explicitly set ref');
+  assert.equal(evalActionsField(checkout.with.ref, hotfixCtx), sha, 'setup-tests checks out the resolved hotfix commit');
+  assert.equal(evalActionsField(checkout.with.ref, mainCtx), '', 'setup-tests defaults checkout ref on main push');
 });
