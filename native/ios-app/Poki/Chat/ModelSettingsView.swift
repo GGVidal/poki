@@ -175,6 +175,29 @@ enum ModelAccounts {
         return out.isEmpty ? AppLocalization.text(LocalizedStringResource("Not in use")) : out.joined(separator: ", ")
     }
 
+    /// The account's Text Chat row: the model the chat runs on when this account is the chat's, else
+    /// how many of its models Poki's menu offers. "Off" only when none are switched on, so switching a
+    /// model on no longer reads as off while another account answers.
+    static func textChatValue(_ provider: ModelProvider, storage: PokiStorage = .live) -> String {
+        guard canChat(provider) else { return AppLocalization.text(LocalizedStringResource("Not Supported")) }
+        if ModelKeys.selectedProvider(in: storage) == provider { return ModelKeys.selectedModelName(in: storage) }
+        return offered(ModelCatalog.available(provider, storage: storage).count)
+    }
+
+    /// The same for one custom provider: its model in use, or how many of its models are offered.
+    static func textChatValue(custom id: UUID, storage: PokiStorage = .live) -> String {
+        if ModelKeys.selectedProvider(in: storage) == .custom,
+           let chosen = CustomProviders.parse(ModelKeys.selectedModel(in: storage)), chosen.provider == id {
+            return chosen.model
+        }
+        let on = ModelCatalog.enabled(.custom, storage: storage)
+        return offered(ModelCatalog.all(custom: id, storage: storage).filter { on.contains($0.id) }.count)
+    }
+
+    private static func offered(_ count: Int) -> String {
+        count == 0 ? AppLocalization.text(LocalizedStringResource("Off")) : AppLocalization.text(LocalizedStringResource("\(count) Models"))
+    }
+
     /// The same for one custom provider.
     static func uses(_ custom: CustomProvider) -> String {
         var out: [String] = []
@@ -251,7 +274,7 @@ private struct AccountDetail: View {
             Section {
                 NavigationLink { TextChatFeature(provider: provider) } label: {
                     LabeledContent {
-                        Text(ModelKeys.selectedProvider == provider ? ModelKeys.selectedModelName : ModelAccounts.canChat(provider) ? AppLocalization.text(LocalizedStringResource("Off")) : AppLocalization.text(LocalizedStringResource("Not Supported")))
+                        Text(verbatim: ModelAccounts.textChatValue(provider))
                     } label: { SettingsLabel("Text Chat", systemImage: "bubble.left.and.text.bubble.right") }
                 }
                 .disabled(!ModelAccounts.canChat(provider))

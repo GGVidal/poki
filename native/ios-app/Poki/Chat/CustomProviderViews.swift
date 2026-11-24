@@ -36,7 +36,7 @@ struct CustomProviderDetail: View {
                 Section {
                     NavigationLink { TextChatFeature(provider: .custom, custom: id) } label: {
                         LabeledContent {
-                            Text(verbatim: chatValue(provider))
+                            Text(verbatim: ModelAccounts.textChatValue(custom: provider.id))
                         } label: { SettingsLabel("Text Chat", systemImage: "bubble.left.and.text.bubble.right") }
                     }
                     NavigationLink { LiveVoiceFeature(account: .custom(id)) } label: {
@@ -72,12 +72,6 @@ struct CustomProviderDetail: View {
         .sheet(isPresented: $editing, onDismiss: { version = ModelKeys.saved }) { CustomProviderEditor(id: id) }
     }
 
-    private func chatValue(_ provider: CustomProvider) -> String {
-        if ModelKeys.selectedProvider == .custom, let chosen = CustomProviders.parse(ModelKeys.selectedModel), chosen.provider == provider.id {
-            return chosen.model
-        }
-        return AppLocalization.text(LocalizedStringResource("Off"))
-    }
 
     /// "Responses", "Automatic, found Responses", with "Backup" for the addresses after the first.
     private func apiLine(_ endpoint: CustomEndpoint, first: Bool) -> String {
