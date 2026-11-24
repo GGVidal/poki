@@ -2653,4 +2653,39 @@ mod rate_limit_regressions {
             assert_eq!(c.apptokens, 2);
         });
     }
+
+    /// Codex review on #742: a recovery that needs a code must not start another one when Apple
+    /// turns the new session away as well (iOS loads teams right after the code).
+    #[test]
+    fn token_does_not_sign_in_again_after_a_code_recovery_is_turned_away_too() {
+        let (_home_guard, _dir) = crate::paths::test_home();
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior {
+                apptokens_status: 401,
+                apptokens_ec: -22411,
+                apptokens_em: TURNED_AWAY.into(),
+                ..MockBehavior::default()
+            })
+            .await;
+            seed_expired_session_with_kept_password();
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+
+            let Err(Error::NeedsCode(pending)) = signer.token().await else { panic!("expected the code prompt") };
+            signer.finish_sign_in(*pending, "654321").await.unwrap();
+            let before = mock.counts.lock().unwrap().clone();
+
+            let err = signer.token().await.unwrap_err();
+            let after = mock.counts.lock().unwrap().clone();
+            assert!(is_session_rejected(&err), "got {err}");
+            assert_eq!(after.srp_init - before.srp_init, 0, "no new sign-in after the code");
+            assert_eq!(after.total_codes_sent() - before.total_codes_sent(), 0, "no new code after the code");
+            assert!(store::load().unwrap().needs_reauth, "the person signs in next");
+
+            // The person signs in by hand: that lifts the guard.
+            *mock.behavior.lock().unwrap() = MockBehavior { hsc: 200, au: None, ..MockBehavior::default() };
+            signer.sign_in("person@example.com", "correct-horse-battery", true).await.unwrap();
+            assert!(!store::load().unwrap().rejected_resign_in);
+            assert!(signer.token().await.is_ok());
+        });
+    }
 }
