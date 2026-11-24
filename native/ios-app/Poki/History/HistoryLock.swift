@@ -661,12 +661,7 @@ struct BacktapeLockScreen: View {
             .background(Color(.systemGroupedBackground))
             .task { await lock.unlockWithBiometrics() }
             .task(id: lock.blockedUntil) {
-                // The wait's end shows by itself.
-                while let until = lock.blockedUntil, until > Date() {
-                    try? await Task.sleep(for: .seconds(1))
-                    now = Date()
-                }
-                now = Date()
+                await HistoryLockCountdown.run(until: lock.blockedUntil) { now = $0 }
             }
             .sensoryFeedback(.error, trigger: wrong)
         }
@@ -739,6 +734,24 @@ struct BacktapeLockScreen: View {
     }
 }
 
+/// Stop updating when SwiftUI cancels or replaces the view's countdown task.
+@MainActor
+enum HistoryLockCountdown {
+    static func run(
+        until: Date?,
+        sleep: () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
+        update: (Date) -> Void
+    ) async {
+        while !Task.isCancelled {
+            let now = Date()
+            update(now)
+            guard let until, until > now else { return }
+            do { try await sleep() }
+            catch { return }
+        }
+    }
+}
+
 /// The way in, as sections of a list: Face ID or Touch ID, the PIN, or making a PIN when the iPhone
 /// has neither set up.
 struct HistoryUnlockSections: View {
@@ -803,11 +816,7 @@ struct HistoryUnlockSections: View {
         }
         .task { await lock.unlockWithBiometrics() }
         .task(id: lock.blockedUntil) {
-            while let until = lock.blockedUntil, until > Date() {
-                try? await Task.sleep(for: .seconds(1))
-                now = Date()
-            }
-            now = Date()
+            await HistoryLockCountdown.run(until: lock.blockedUntil) { now = $0 }
         }
     }
 }
