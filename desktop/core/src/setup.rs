@@ -354,12 +354,15 @@ impl Signer {
             Err(e) if (gsa::is_session_expired(&e) || gsa::is_session_rejected(&e)) && self.account.password.is_some() => {
                 let rejected = gsa::is_session_rejected(&e);
                 tracing::warn!("Apple turned the session away ({e}); signing in again with the kept password");
+                let (id, pw) = (session.apple_id.clone(), self.account.password.clone().unwrap());
+                // A sign-in that fails on the way (no network, a 503) leaves the old session and
+                // no guard, so the next call tries again.
+                let outcome = self.background_sign_in(&id, &pw).await?;
                 if rejected {
                     self.account.rejected_resign_in = true;
                     self.persist()?;
                 }
-                let (id, pw) = (session.apple_id.clone(), self.account.password.clone().unwrap());
-                match self.background_sign_in(&id, &pw).await? {
+                match outcome {
                     None => {
                         let s = self.account.session.clone().unwrap();
                         match self.fetch_xcode_token(&s).await {

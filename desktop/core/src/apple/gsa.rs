@@ -2688,4 +2688,46 @@ mod rate_limit_regressions {
             assert!(signer.token().await.is_ok());
         });
     }
+
+    /// main-agent and Codex review on #742: a recovery sign-in that fails on the way (HTTP 503)
+    /// must not leave the guard set, or the next call would treat the old session as the new one
+    /// and stop for good.
+    #[test]
+    fn token_tries_again_after_a_recovery_sign_in_fails_on_the_way() {
+        let (_home_guard, _dir) = crate::paths::test_home();
+        run_in_vault(async {
+            let mock = start_mock_gsa(MockBehavior {
+                srp_status: 503,
+                apptokens_status: 401,
+                apptokens_ec: -22411,
+                apptokens_em: TURNED_AWAY.into(),
+                ..MockBehavior::default()
+            })
+            .await;
+            seed_expired_session_with_kept_password();
+            let mut signer = Signer::for_test(test_client(&mock.base_url)).unwrap();
+
+            let err = signer.token().await.unwrap_err();
+            assert!(!is_session_rejected(&err), "the 503 shows, got {err}");
+            let stored = store::load().unwrap();
+            assert!(!stored.rejected_resign_in, "a sign-in that never finished sets no guard");
+            assert!(!stored.needs_reauth);
+
+            // Apple answers again: the next call signs in with the kept password and gets the token.
+            *mock.counts.lock().unwrap() = Counts::default();
+            *mock.behavior.lock().unwrap() = MockBehavior {
+                hsc: 200,
+                au: None,
+                apptokens_status: 401,
+                apptokens_ec: -22411,
+                apptokens_em: TURNED_AWAY.into(),
+                second_apptokens: Some((200, 0, String::new())),
+                ..MockBehavior::default()
+            };
+            let token = signer.token().await;
+            assert!(token.is_ok(), "got {:?}", token.err().map(|e| e.to_string()));
+            assert_eq!(mock.counts.lock().unwrap().srp_complete, 1, "the retry signs in once");
+            assert!(!store::load().unwrap().needs_reauth);
+        });
+    }
 }
