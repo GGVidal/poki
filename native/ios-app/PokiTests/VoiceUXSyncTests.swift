@@ -5,44 +5,6 @@ import Security
 import XCTest
 @testable import Poki
 
-private final class SyncFakeClock: @unchecked Sendable {
-    var now = Date(timeIntervalSinceReferenceDate: 100_000)
-    private var waiters: [(until: Date, resume: CheckedContinuation<Void, Never>)] = []
-
-    @MainActor var clock: VoiceClock {
-        VoiceClock(now: { self.now }, sleep: { duration in
-            let components = duration.components
-            let seconds = Double(components.seconds) + Double(components.attoseconds) / 1e18
-            let until = self.now.addingTimeInterval(seconds)
-            await withTaskCancellationHandler {
-                await withCheckedContinuation { continuation in
-                    self.waiters.append((until, continuation))
-                }
-            } onCancel: {
-                Task { @MainActor in self.cancelExpired() }
-            }
-        })
-    }
-
-    @MainActor func advance(_ seconds: Double) async {
-        now = now.addingTimeInterval(seconds)
-        let ready = waiters.filter { $0.until <= now }
-        waiters.removeAll { $0.until <= now }
-        for waiter in ready { waiter.resume.resume() }
-        await settle()
-    }
-
-    @MainActor private func cancelExpired() {
-        let remaining = waiters
-        waiters.removeAll()
-        for waiter in remaining { waiter.resume.resume() }
-    }
-
-    @MainActor func settle() async {
-        for _ in 0..<40 { await Task.yield() }
-    }
-}
-
 @MainActor
 private final class SyncFakeCodexVoice: SubscriptionVoice {
     private var onEvent: ((String, [String: Any]) -> Void)?
@@ -95,7 +57,7 @@ final class VoiceUXSyncTests: XCTestCase {
     }
 
     private func makeVoice(
-        time: SyncFakeClock,
+        time: FakeTime,
         codex: (any SubscriptionVoice)? = nil,
         storage: PokiStorage? = nil,
         phoneTool: @escaping @MainActor (String, String) async -> PhoneAnswer = { _, _ in ("app: WeChat\nok", false, nil) }
@@ -129,7 +91,7 @@ final class VoiceUXSyncTests: XCTestCase {
     func testFollowUpVoiceTurnImmediatelyClearsPreviousDoneOutcomeOnLiveActivity() async throws {
         let chatGPT = try makeChatGPTStorage()
         defer { try? chatGPT.tearDown() }
-        let clock = SyncFakeClock()
+        let clock = FakeTime()
         let codex = SyncFakeCodexVoice()
         let (voice, currentLink) = makeVoice(time: clock, codex: codex, storage: chatGPT.storage)
         let activity = ActivityController()
@@ -223,7 +185,7 @@ final class VoiceUXSyncTests: XCTestCase {
     func testMultiStepLiveAndCodexOperationsEmitFactualProgressUpdateAfterSilenceInterval() async throws {
         // 1. OpenAI Live path: single quick step stays silent, multi-step across silence threshold sends factual commentary.
         do {
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let (voice, currentLink) = makeVoice(time: clock) { name, arguments in
                 if name == "open_app" { return ("app: 12306\nOpened 12306", false, nil) }
                 if arguments.contains("WeChat") { return ("app: WeChat\nMessage sent to File Transfer", false, nil) }
@@ -266,7 +228,7 @@ final class VoiceUXSyncTests: XCTestCase {
         do {
             let chatGPT = try makeChatGPTStorage()
             defer { try? chatGPT.tearDown() }
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let codex = SyncFakeCodexVoice()
             let (voice, _) = makeVoice(time: clock, codex: codex, storage: chatGPT.storage) { name, _ in
                 if name == "open_app" { return ("app: 12306\nOpened 12306", false, nil) }
@@ -293,7 +255,7 @@ final class VoiceUXSyncTests: XCTestCase {
 
         // 3. Standard Realtime path: emits a factual progress sync system note after silence threshold.
         do {
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let (voice, currentLink) = makeVoice(time: clock) { name, _ in
                 name == "look" ? ("app: 12306\nOpened", false, nil) : ("app: WeChat\nSent", false, nil)
             }
@@ -325,7 +287,7 @@ final class VoiceUXSyncTests: XCTestCase {
         do {
             let chatGPT = try makeChatGPTStorage()
             defer { try? chatGPT.tearDown() }
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let codex = SyncFakeCodexVoice()
             let (voice, currentLink) = makeVoice(time: clock, codex: codex, storage: chatGPT.storage)
             defer { voice.stop() }
@@ -366,7 +328,7 @@ final class VoiceUXSyncTests: XCTestCase {
 
         // 2. OpenAI Live path: input_audio_buffer.speech_started during .speaking immediately mutes, clears buffer, and enters .hearing.
         do {
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let (voice, currentLink) = makeVoice(time: clock)
             defer { voice.stop() }
             _ = voice.setBridge(BridgeStub.liveAddress)
@@ -393,7 +355,7 @@ final class VoiceUXSyncTests: XCTestCase {
 
         // 3. Standard Realtime path: input_audio_buffer.speech_started during .speaking immediately mutes and clears output buffer.
         do {
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let (voice, currentLink) = makeVoice(time: clock)
             defer { voice.stop() }
             await voice.start()
@@ -422,7 +384,7 @@ final class VoiceUXSyncTests: XCTestCase {
         do {
             let chatGPT = try makeChatGPTStorage()
             defer { try? chatGPT.tearDown() }
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let codex = SyncFakeCodexVoice()
             let (voice, currentLink) = makeVoice(time: clock, codex: codex, storage: chatGPT.storage)
             defer { voice.stop() }
@@ -446,7 +408,7 @@ final class VoiceUXSyncTests: XCTestCase {
         do {
             let chatGPT = try makeChatGPTStorage()
             defer { try? chatGPT.tearDown() }
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             let codex = SyncFakeCodexVoice()
             let (voice, _) = makeVoice(time: clock, codex: codex, storage: chatGPT.storage)
             let activity = ActivityController()
@@ -469,7 +431,7 @@ final class VoiceUXSyncTests: XCTestCase {
 
         // 3. In-flight or failed tools must NEVER trigger premature completion progress sync.
         do {
-            let clock = SyncFakeClock()
+            let clock = FakeTime()
             var releaseSecondTool: CheckedContinuation<PhoneAnswer, Never>?
             let (voice, currentLink) = makeVoice(time: clock) { name, _ in
                 if name == "open_app" { return ("app: 12306\nOpened", false, nil) }
