@@ -99,7 +99,10 @@ jobs:
       LABEL: ${{ fromJSON(needs.read.outputs.rec).version }}
       TAG: ${{ fromJSON(needs.read.outputs.rec).tag }}
       SOURCE: ${{ fromJSON(needs.read.outputs.rec).source }}
+      SOURCE_KIND: ${{ fromJSON(needs.read.outputs.rec).source_kind }}
       SHA: ${{ fromJSON(needs.read.outputs.rec).sha }}
+      BUILT_BY: ${{ fromJSON(needs.read.outputs.rec).built_by }}
+      IPA_SHA256: ${{ fromJSON(needs.read.outputs.rec).ipa_sha256 }}
       BASE: ${{ fromJSON(needs.read.outputs.rec).base_version }}
       BUILD: ${{ fromJSON(needs.read.outputs.rec).build }}
     steps:
@@ -113,34 +116,66 @@ jobs:
           path: pipeline
           sparse-checkout: .github/scripts
           persist-credentials: false
-      # A beta's files: the published hotfix Pre-alpha release or the main Pre-alpha run's artifact,
-      # downloaded and verified once for both the Alpha compatibility records and the Beta.
+      # A beta's files: downloaded from the exact source approved by the promotion record (the main
+      # Pre-alpha run's artifact or the verified hotfix Pre-alpha release) and verified once for both
+      # the Alpha compatibility records and the Beta.
       - name: The Pre-alpha run's build
         if: env.CHANNEL == 'beta'
         run: |
           set -euo pipefail
           rm -rf prealpha && mkdir -p prealpha
-          # A hotfix can use a commit that main also built with different version inputs.
           preview="app-$BASE-prealpha.$BUILD"
-          if [ "$(gh release view "$preview" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
-            source_sha="$(gh api "repos/$GH_REPO/commits/$preview" --jq .sha)"
-            [ "$source_sha" = "$SHA" ] || { echo "::error::release $preview is not the promoted commit"; exit 1; }
-            echo "IPA source: release $preview ($SOURCE, $SHA)"
-            ipa="Poki-external-$BASE-$BUILD.ipa"
-            gh release download "$preview" --dir prealpha --pattern "$ipa" --pattern Poki-signing.zip --pattern SHA256SUMS
-            awk -v name="$ipa" '$2 == name { print; found=1 } END { exit !found }' prealpha/SHA256SUMS > prealpha/IPA-SHA256SUMS
-            (cd prealpha && sha256sum --check IPA-SHA256SUMS)
-            # Older release manifests omit the signing archive; GitHub supplies its digest.
-            signing_digest="$(gh api "repos/$GH_REPO/releases/tags/$preview" --jq '.assets[] | select(.name == "Poki-signing.zip") | .digest')"
-            [[ "$signing_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::missing signing archive SHA-256"; exit 1; }
-            (cd prealpha && printf '%s  Poki-signing.zip\n' "${signing_digest#sha256:}" | sha256sum --check -)
-            cp "prealpha/$ipa" prealpha/Poki-external-unsigned.ipa
-          else
-            run="$(gh run list --workflow prealpha.yml --branch main --event push --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId')"
-            [ -n "$run" ] || { echo "::error::no successful main Pre-alpha run built $SHA (artifacts are kept 90 days)"; exit 1; }
-            echo "IPA source: Pre-alpha run $run ($SOURCE, $SHA)"
-            gh run download "$run" --name Poki-unsigned --dir prealpha
+          kind="${SOURCE_KIND:-}"
+          if [ -z "$kind" ]; then
+            if [ "$(gh release view "$preview" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
+              kind=release
+            else
+              kind=run
+            fi
           fi
+          case "$kind" in
+            release)
+              [ "$(gh release view "$preview" --json isDraft --jq .isDraft 2>/dev/null)" = false ] || { echo "::error::release $preview is missing or still a draft"; exit 1; }
+              source_sha="$(gh api "repos/$GH_REPO/commits/$preview" --jq .sha)"
+              [ "$source_sha" = "$SHA" ] || { echo "::error::release $preview is not the promoted commit"; exit 1; }
+              echo "IPA source: release $preview ($SOURCE, $SHA)"
+              ipa="Poki-external-$BASE-$BUILD.ipa"
+              gh release download "$preview" --dir prealpha --pattern "$ipa" --pattern Poki-signing.zip --pattern SHA256SUMS
+              awk -v name="$ipa" '$2 == name { print; found=1 } END { exit !found }' prealpha/SHA256SUMS > prealpha/IPA-SHA256SUMS
+              (cd prealpha && sha256sum --check IPA-SHA256SUMS)
+              if [ "${SOURCE_KIND:-}" = release ] || [ -n "${IPA_SHA256:-}" ]; then
+                [[ "${IPA_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::missing expected hotfix IPA SHA-256"; exit 1; }
+                (cd prealpha && printf '%s  %s\n' "$IPA_SHA256" "$ipa" | sha256sum --check -)
+              fi
+              # Older release manifests omit the signing archive; GitHub supplies its digest.
+              signing_digest="$(gh api "repos/$GH_REPO/releases/tags/$preview" --jq '.assets[] | select(.name == "Poki-signing.zip") | .digest')"
+              [[ "$signing_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::missing signing archive SHA-256"; exit 1; }
+              (cd prealpha && printf '%s  Poki-signing.zip\n' "${signing_digest#sha256:}" | sha256sum --check -)
+              cp "prealpha/$ipa" prealpha/Poki-external-unsigned.ipa
+              ;;
+            run)
+              if [ "${SOURCE_KIND:-}" = run ] || [ -n "${BUILT_BY:-}" ]; then
+                [[ "${BUILT_BY:-}" =~ ^https://[^/]+/(.*/)?runs/([0-9]+)$ ]] || { echo "::error::missing or invalid built_by run URL: ${BUILT_BY:-}"; exit 1; }
+                run="${BASH_REMATCH[2]}"
+                run_json="$(gh api "repos/$GH_REPO/actions/runs/$run")"
+                run_meta="$(jq -r '[.event // "", .head_branch // "", .head_sha // "", .conclusion // "", .path // ""] | join("|")' <<< "$run_json")"
+                IFS='|' read -r run_event run_branch run_sha run_conclusion run_path <<< "$run_meta"
+                if [ "$run_event" != push ] || [ "$run_branch" != main ] || [ "$run_sha" != "$SHA" ] || [ "$run_conclusion" != success ] || [ "$run_path" != .github/workflows/prealpha.yml ]; then
+                  echo "::error::Pre-alpha run $run does not match promoted main push ($SHA): event=$run_event branch=$run_branch sha=$run_sha conclusion=$run_conclusion path=$run_path"
+                  exit 1
+                fi
+              else
+                run="$(gh run list --workflow prealpha.yml --branch main --event push --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId')"
+                [ -n "$run" ] || { echo "::error::no successful main Pre-alpha run built $SHA (artifacts are kept 90 days)"; exit 1; }
+              fi
+              echo "IPA source: Pre-alpha run $run ($SOURCE, $SHA)"
+              gh run download "$run" --name Poki-unsigned --dir prealpha
+              ;;
+            *)
+              echo "::error::unknown source_kind: $kind"
+              exit 1
+              ;;
+          esac
           python3 pipeline/.github/scripts/verify-ipa-version.py prealpha/Poki-external-unsigned.ipa "$BASE" "$BUILD"
       # Only after the beta approval above: the build as app-<VERSION>-alpha.<build> on
       # app-alpha-latest (and the old ios-alpha-latest), for older clients, then the Beta below.

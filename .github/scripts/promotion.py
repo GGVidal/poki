@@ -144,7 +144,7 @@ def hotfix_prealpha(src, version, build, sha, release):
         sys.exit(f"The Pre-alpha run of {sha} did not succeed ({last['conclusion']}): {last['html_url']}. Its build or its tests failed; promote a build that passed both.")
 
     require_tests(good["id"], good["html_url"])
-    return src, sha, good["html_url"]
+    return src, sha, good["html_url"], "release", ipa_sha
 
 
 def prealpha(src):
@@ -152,7 +152,8 @@ def prealpha(src):
     src is a pre-alpha tag (ordinary or versioned hotfix), the commit it was built from, or empty for
     the one on app-prealpha-latest. A build that failed or was skipped has no tag and no IPA, so it
     is refused with its run."""
-    if not src:
+    from_rolling = not src
+    if from_rolling:
         ipa = next(n for n in gh("release", "view", "app-prealpha-latest", "--json", "assets", "--jq", ".assets[].name").splitlines() if n.startswith("Poki-external-") and n.endswith(".ipa"))
         stem = ipa[len("Poki-external-"):-len(".ipa")]
         src = "app-{}-prealpha.{}".format(*stem.rsplit("-", 1))
@@ -161,11 +162,12 @@ def prealpha(src):
         if not tag_exists(src):
             sys.exit(f"{src} does not exist. A Pre-alpha build is tagged only when it succeeds; pick a tag from app-prealpha-latest or the tag list.")
         sha = tag_sha(src)
-        rel = release_by_tag(src)
-        if rel is not None:
-            if rel.get("draft"):
-                sys.exit(f"{src} is still a draft release. Re-run the hotfix Pre-alpha workflow so it publishes before proposing Beta.")
-            return hotfix_prealpha(src, m_tag.group(1), m_tag.group(2), sha, rel)
+        if not from_rolling:
+            rel = release_by_tag(src)
+            if rel is not None:
+                if rel.get("draft"):
+                    sys.exit(f"{src} is still a draft release. Re-run the hotfix Pre-alpha workflow so it publishes before proposing Beta.")
+                return hotfix_prealpha(src, m_tag.group(1), m_tag.group(2), sha, rel)
     elif re.fullmatch(r"[0-9a-f]{7,40}", src):
         try:
             sha = gh("api", f"repos/{os.environ['GH_REPO']}/commits/{src}", "--jq", ".sha")
@@ -192,14 +194,14 @@ def prealpha(src):
         src = f"app-{version}-prealpha.{build}"
         if not tag_exists(src) or tag_sha(src) != sha:
             sys.exit(f"Pre-alpha run {good['url']} succeeded but {src} does not name {sha}.")
-    return src, sha, good["url"]
+    return src, sha, good["url"], "run", None
 
 
 def propose(channel, src=None, override=None):
     data = load()
     rec = {"channel": channel, "proposed": now().strftime("%Y-%m-%dT%H:%M:%SZ")}
     if channel == "beta":
-        src, sha, build_run = prealpha(src)
+        src, sha, build_run, source_kind, ipa_sha256 = prealpha(src)
         version, build = re.fullmatch(r"app-(\d+\.\d+\.\d+)-prealpha\.(\d+)", src).groups()
         taken = [t for t in gh("api", "--paginate", f"repos/{os.environ['GH_REPO']}/tags?per_page=100", "--jq", ".[].name").splitlines() if t.startswith(f"app-{version}-beta.")]
         taken += [p["tag"] for p in data["promotions"] if p["tag"].startswith(f"app-{version}-beta.")]
@@ -207,7 +209,9 @@ def propose(channel, src=None, override=None):
         label = f"{version}-beta.{k}"
         if tag_exists(f"app-{version}"):
             sys.exit(f"Poki {version} is already Stable; a beta of it would never be offered. Promote a newer pre-alpha.")
-        rec.update(version=label, tag=f"app-{label}", base_version=version, build=build, source=src, sha=sha, built_by=build_run)
+        rec.update(version=label, tag=f"app-{label}", base_version=version, build=build, source=src, source_kind=source_kind, sha=sha, built_by=build_run)
+        if ipa_sha256:
+            rec["ipa_sha256"] = ipa_sha256
         # Later pre-alphas must sort above this beta, so main moves on to the next version.
         current = VERSION_FILE.read_text().strip()
         if vkey(current) <= vkey(version):
@@ -258,6 +262,17 @@ def check(rec):
             sys.exit(f"promotion record field {key}={rec.get(key)!r} is not in the expected form")
     if not rec["tag"].endswith(rec["version"]) or not rec["version"].startswith(rec["base_version"]):
         sys.exit("promotion record's tag, version and base_version disagree")
+    if rec["channel"] == "beta" and "-prealpha." in rec["source"]:
+        kind = rec.get("source_kind")
+        if kind not in ("run", "release"):
+            sys.exit(f"beta promotion record field source_kind={kind!r} must be 'run' or 'release'")
+        built_by = str(rec.get("built_by", ""))
+        if not re.fullmatch(r"https://[^/\s]+/(?:.+/)?runs/\d+", built_by):
+            sys.exit(f"beta promotion record field built_by={built_by!r} must be a GitHub Actions run URL")
+        if kind == "release":
+            ipa_sha = str(rec.get("ipa_sha256", ""))
+            if not re.fullmatch(r"[0-9a-f]{64}", ipa_sha):
+                sys.exit(f"hotfix beta promotion record field ipa_sha256={ipa_sha!r} must be a 64-hex SHA-256")
     return rec
 
 
